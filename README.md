@@ -1,6 +1,8 @@
 # KotharWorks
 
-Java 25 LTS modular monorepo (`com.kotharworks`) — sister repository to `ptah`, built for pure Data-Oriented Java libraries (`libs/`) and lightweight, Virtual-Thread applications (`apps/`).
+Java 25 LTS modular monorepo (`com.kotharworks`) — sister repository to `ptah`,
+built for pure Data-Oriented Java libraries (`libs/`) and lightweight,
+Virtual-Thread applications (`apps/`).
 
 - **Language:** Pure Java 25 LTS (`-XX:+UseCompactObjectHeaders`, `-Werror`)
 - **Build:** Apache Maven Daemon (`mvnd`, configured via `.mvn/mvnd.properties`)
@@ -21,7 +23,9 @@ mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am
 mvnd test -pl libs/wilds -am
 ```
 
-*(Note: `.mvn/mvnd.properties` pins the KotharWorks daemon to JDK `25.0.3-tem` with a 512 MB max heap, so `mvnd` runs on Java 25 automatically without changing your global SDKMAN default Java version.)*
+*(Note: `.mvn/mvnd.properties` pins the KotharWorks daemon to JDK `25.0.3-tem`
+with a 512 MB max heap, so `mvnd` runs on Java 25 automatically without changing
+your global SDKMAN default Java version.)*
 
 ## License
 

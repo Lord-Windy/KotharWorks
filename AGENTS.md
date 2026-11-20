@@ -7,8 +7,8 @@ This file instructs AI coding agents on how to build, structure code, and use
 
 This git repository is the project. Use **`KOTHARWORKS`** (UPPERCASE,
 alphanumeric) as the `--project` identifier when creating or listing tasks in
-`st` (unless the user explicitly specifies `PTAH` for a cross-repo epic).
-Assume `samtasker` (`st`) is already initialized and configured by the user.
+`st` (unless the user explicitly specifies `PTAH` for a cross-repo epic). Assume
+`samtasker` (`st`) is already initialized and configured by the user.
 
 ## Project layout
 
@@ -57,7 +57,8 @@ mvnd clean
 ### Adding a new module
 
 1. Create `libs/<name>/pom.xml` or `apps/<name>/pom.xml` inheriting from
-   `com.kotharworks:kotharworks-parent` (`<relativePath>../../pom.xml</relativePath>`).
+   `com.kotharworks:kotharworks-parent`
+   (`<relativePath>../../pom.xml</relativePath>`).
 2. Add `<module>libs/<name></module>` (or `apps/<name>`) to root `pom.xml`.
 3. If it is a shared library, register its coordinates in root `pom.xml`
    `<dependencyManagement>`.
@@ -69,36 +70,40 @@ These rules exist specifically to keep code fast, readable, deterministic, and
 free of framework bloat:
 
 1. **Pure Java 25 LTS only.** Do not add Kotlin, Lombok, Spring Boot,
-   Hibernate/JPA, or annotation-processor magic. Warnings are errors (`-Werror`).
+   Hibernate/JPA, or annotation-processor magic. Warnings are errors
+   (`-Werror`).
 2. **Data-Oriented Java (OOP Patterns + FP):**
    - Use immutable `record`s for commands, events, value IDs, rule definitions,
      and fogged observation DTOs.
    - Use `sealed interface` + exhaustive `switch` expressions for closed
-     command, event, and result families so the compiler catches unhandled cases.
+     command, event, and result families so the compiler catches unhandled
+     cases.
    - Use clean `@FunctionalInterface`s or small classes for Strategy seams
      (policies, doctrines, ports).
 3. **Flat Entity Tables + Typed IDs (No Object-Reference Webs):**
    - Inside simulation state, store entities in flat indexed collections/maps
-     addressed by value IDs (e.g. `record CharacterId(int index, int generation)`
-     or monotonic `long` IDs) — **never** hold mutable object references across
-     entities (`Character` holding a direct `Party` or `Site` reference). This
-     keeps state trivially serializable, deterministic, and immune to aliasing
-     bugs.
+     addressed by value IDs (e.g.
+     `record CharacterId(int index, int generation)` or monotonic `long` IDs) —
+     **never** hold mutable object references across entities (`Character`
+     holding a direct `Party` or `Site` reference). This keeps state trivially
+     serializable, deterministic, and immune to aliasing bugs.
 4. **Pure Simulation Libraries (`libs/*`):**
-   - Simulation and procgen libraries must remain **100% pure and deterministic**:
-     no `System.currentTimeMillis()` / `Instant.now()`, no `Math.random()` /
-     `ThreadLocalRandom`, no file/network/SQL I/O, and no web/DB dependencies in
-     their `pom.xml`. Logical time and seeded RNGs are always passed in.
+   - Simulation and procgen libraries must remain **100% pure and
+     deterministic**: no `System.currentTimeMillis()` / `Instant.now()`, no
+     `Math.random()` / `ThreadLocalRandom`, no file/network/SQL I/O, and no
+     web/DB dependencies in their `pom.xml`. Logical time and seeded RNGs are
+     always passed in.
 5. **Concurrency — Virtual Threads, Zero Reactive Soup:**
    - Do not use `CompletableFuture` chains, WebFlux, or reactive streams. Use
-     Java 25 Virtual Threads (`Executors.newVirtualThreadPerTaskExecutor()`) with
-     straightforward synchronous code and explicit serialization around mutable
-     world state.
+     Java 25 Virtual Threads (`Executors.newVirtualThreadPerTaskExecutor()`)
+     with straightforward synchronous code and explicit serialization around
+     mutable world state.
 6. **When to use Hexagonal Architecture:**
    - **Applications (`apps/*`):** Yes — separate `domain/` (or service),
      `ports/`, `adapters/` (HTTP/HTML, Postgres/JDBI, clock), and `commands/`.
-   - **Libraries (`libs/*`):** Default to plain, cohesive packages. Do not invent
-     ports/adapters inside a pure library unless two real implementations exist.
+   - **Libraries (`libs/*`):** Default to plain, cohesive packages. Do not
+     invent ports/adapters inside a pure library unless two real implementations
+     exist.
 
 ## License Requirements
 
@@ -107,6 +112,7 @@ header with copyright to Samuel "Lord-Windy" Brown.** Use the year the file was
 created; do not bump existing files when editing them.
 
 For Java files (`.java`):
+
 ```java
 /*
  * Copyright 2026 Samuel "Lord-Windy" Brown
@@ -165,8 +171,11 @@ EOF
 ```
 
 Batch caveats:
-- **The exit code is 0 even if some items fail.** Check output for `"error"` lines.
-- **A reported-failed item may still have been created** if only dependency linking failed. Run `st list --project KOTHARWORKS --json` before retrying.
+
+- **The exit code is 0 even if some items fail.** Check output for `"error"`
+  lines.
+- **A reported-failed item may still have been created** if only dependency
+  linking failed. Run `st list --project KOTHARWORKS --json` before retrying.
 
 ## Working on & completing tickets
 

@@ -1,30 +1,28 @@
 # Ironwood Wilds — Accounts and Persistent Storage
 
-**Status:** proposal v0.1 · 2026-11-20 · author: Fable
-**Scope:** who a player is, how they prove it, and what gets written down —
-with the schemas.
-**Feeds ticket:** `9e03b041` ("which are missing: auth? world
-persistence?").
+**Status:** proposal v0.1 · 2026-11-20 · author: Fable **Scope:** who a player
+is, how they prove it, and what gets written down — with the schemas. **Feeds
+ticket:** `9e03b041` ("which are missing: auth? world persistence?").
 
----
+______________________________________________________________________
 
 ## 1. Summary
 
-Three kinds of data with three different needs. Treating them alike is the
-usual mistake.
+Three kinds of data with three different needs. Treating them alike is the usual
+mistake.
 
-| Kind | Examples | Shape | Lives for | Stored as |
-|---|---|---|---|---|
-| **Identity** | accounts, tokens, invites | small, relational, transactional | ever | SQL rows — schema `auth` |
-| **The world** | Families, Actors, stock, queues | one object in memory | a season | a journal of commands plus snapshots — schema `world` |
-| **The chronicle** | ladders, daily stats, the event archive, halls of fame | derived, append-only | ever | SQL rows — schema `chronicle` |
+| Kind              | Examples                                               | Shape                            | Lives for | Stored as                                             |
+| ----------------- | ------------------------------------------------------ | -------------------------------- | --------- | ----------------------------------------------------- |
+| **Identity**      | accounts, tokens, invites                              | small, relational, transactional | ever      | SQL rows — schema `auth`                              |
+| **The world**     | Families, Actors, stock, queues                        | one object in memory             | a season  | a journal of commands plus snapshots — schema `world` |
+| **The chronicle** | ladders, daily stats, the event archive, halls of fame | derived, append-only             | ever      | SQL rows — schema `chronicle`                         |
 
-The central choice: **the live world is not rows in a database.** It is
-memory, made durable by an append-only journal and periodic snapshots. SQL
-keeps what SQL is good at — identity, and asking questions afterwards.
+The central choice: **the live world is not rows in a database.** It is memory,
+made durable by an append-only journal and periodic snapshots. SQL keeps what
+SQL is good at — identity, and asking questions afterwards.
 
-Everything has two adapters, files and Postgres. Files come first: they
-keep tests hermetic and let the slice run before a database exists.
+Everything has two adapters, files and Postgres. Files come first: they keep
+tests hermetic and let the slice run before a database exists.
 
 ## 2. Accounts
 
@@ -38,29 +36,28 @@ keep tests hermetic and let the slice run before a database exists.
 
 - An **account** has a handle, an optional email, and a declared **kind** —
   `human`, `bot` or `hybrid` — which decides the ladder it is ranked on.
-- A **token** is the only credential. Programs use one; in the first
-  version, so does the website.
-- The **engine never sees an account.** It knows Family ids. The mapping
-  from account to Family lives outside it, which keeps journals and exports
+- A **token** is the only credential. Programs use one; in the first version, so
+  does the website.
+- The **engine never sees an account.** It knows Family ids. The mapping from
+  account to Family lives outside it, which keeps journals and exports
   pseudonymous.
 
 ### 2.2 Flows
 
-| Flow | Request | What happens |
-|---|---|---|
-| **Register** | `POST /v1/register {handle, house, kind, invite}` | Account row; token minted and shown **once**; the server issues `family.found`, journaled like any command |
-| **Sign in on the web** (v1) | paste the token | Kept in the browser. Exactly how SpaceTraders does it |
-| **A token for your bot** | `POST /v1/tokens {label, scope}` | A second token on the same account, revocable alone |
-| **Revoke** | `DELETE /v1/tokens/{id}` | Dead at once |
-| **Later** | password or OAuth; email recovery | See below |
+| Flow                        | Request                                           | What happens                                                                                               |
+| --------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Register**                | `POST /v1/register {handle, house, kind, invite}` | Account row; token minted and shown **once**; the server issues `family.found`, journaled like any command |
+| **Sign in on the web** (v1) | paste the token                                   | Kept in the browser. Exactly how SpaceTraders does it                                                      |
+| **A token for your bot**    | `POST /v1/tokens {label, scope}`                  | A second token on the same account, revocable alone                                                        |
+| **Revoke**                  | `DELETE /v1/tokens/{id}`                          | Dead at once                                                                                               |
+| **Later**                   | password or OAuth; email recovery                 | See below                                                                                                  |
 
-**Why token-paste first.** The first public build handles no passwords at
-all. The early audience writes bots and is at home with tokens. And a
-proper password hash costs about a tenth of a second of CPU, which must
-never run on the engine thread — moving it off needs samhttp's detached
-responses, which arrive with push. When passwords do come: `crypt_r` with
-yescrypt from libxcrypt, already on every box this runs on, executed on a
-samplex worker.
+**Why token-paste first.** The first public build handles no passwords at all.
+The early audience writes bots and is at home with tokens. And a proper password
+hash costs about a tenth of a second of CPU, which must never run on the engine
+thread — moving it off needs samhttp's detached responses, which arrive with
+push. When passwords do come: `crypt_r` with yescrypt from libxcrypt, already on
+every box this runs on, executed on a samplex worker.
 
 ### 2.3 Tokens
 
@@ -72,92 +69,88 @@ samplex worker.
   └────────────── fixed prefix, so secret scanners can spot a leak
 ```
 
-- Only `sha256(secret)` is stored. A stolen database yields no usable
-  tokens.
+- Only `sha256(secret)` is stored. A stolen database yields no usable tokens.
 - Comparison is constant-time.
-- Random bytes come from `getrandom(2)`, in the server — never in the
-  engine.
-- SHA-256 already exists in `samgrognard_hash.c`. Lift it into `samdata`;
-  the journal's chain needs it too.
+- Random bytes come from `getrandom(2)`, in the server — never in the engine.
+- SHA-256 already exists in `samgrognard_hash.c`. Lift it into `samdata`; the
+  journal's chain needs it too.
 
 ### 2.4 In the request path
 
-| Step | Cost | Notes |
-|---|---|---|
-| Parse the token; find its id in an in-memory map | a hash lookup | The map is loaded at start-up and updated on mint and revoke |
-| Compare hashes; check revoked and expired | — | No database on the hot path |
-| Resolve account → Family for this world | — | Cached with the token |
-| Rate-limit | a token bucket | Per token: commands 5/s, burst 20; reads 10/s, burst 40 *(placeholders)* |
-| Note last use | — | Batched by the writer thread |
+| Step                                             | Cost           | Notes                                                                    |
+| ------------------------------------------------ | -------------- | ------------------------------------------------------------------------ |
+| Parse the token; find its id in an in-memory map | a hash lookup  | The map is loaded at start-up and updated on mint and revoke             |
+| Compare hashes; check revoked and expired        | —              | No database on the hot path                                              |
+| Resolve account → Family for this world          | —              | Cached with the token                                                    |
+| Rate-limit                                       | a token bucket | Per token: commands 5/s, burst 20; reads 10/s, burst 40 *(placeholders)* |
+| Note last use                                    | —              | Batched by the writer thread                                             |
 
-Scopes: `read` (views and events), `play` (commands), `admin`. A token can
-only ever command its own account's Family.
+Scopes: `read` (views and events), `play` (commands), `admin`. A token can only
+ever command its own account's Family.
 
-Registration is limited per client address. The address comes from the
-header Caddy sets, and is trusted only because the server listens on
-loopback.
+Registration is limited per client address. The address comes from the header
+Caddy sets, and is trusted only because the server listens on loopback.
 
 ### 2.5 Names
 
-Handles and House names are the one place player-typed text enters the
-system. Allowed: letters, digits, space, hyphen, apostrophe; 3–24
-characters; unique on a folded key; a short reserved list. The web client
-escapes them everywhere regardless.
+Handles and House names are the one place player-typed text enters the system.
+Allowed: letters, digits, space, hyphen, apostrophe; 3–24 characters; unique on
+a folded key; a short reserved list. The web client escapes them everywhere
+regardless.
 
 ### 2.6 Privacy
 
-Email is optional and nothing else is personal. Deleting an account blanks
-its row to a tombstone; its House stays in the archive under its House
-name.
+Email is optional and nothing else is personal. Deleting an account blanks its
+row to a tombstone; its House stays in the archive under its House name.
 
 ## 3. The world: journal and snapshots
 
 ### 3.1 Why not rows
 
-| | A. Rows are the state | B. Memory, saved now and then | C. Memory, journal, snapshots |
-|---|---|---|---|
-| Write path | A transaction per command | Nothing until the save | Append one record |
-| The engine stays pure | No — the rules speak SQL | Yes | Yes |
-| A crash loses | Nothing | Everything since the last save (samvillage: five minutes) | The last unflushed batch — about 100 ms |
-| Replay, fork, the lab | No | No | **Yes** |
-| SQL over live state | Yes | No | Through the chronicle |
-| Verdict | Wrong tool | Fine offline | **Recommended** |
+|                       | A. Rows are the state     | B. Memory, saved now and then                             | C. Memory, journal, snapshots           |
+| --------------------- | ------------------------- | --------------------------------------------------------- | --------------------------------------- |
+| Write path            | A transaction per command | Nothing until the save                                    | Append one record                       |
+| The engine stays pure | No — the rules speak SQL  | Yes                                                       | Yes                                     |
+| A crash loses         | Nothing                   | Everything since the last save (samvillage: five minutes) | The last unflushed batch — about 100 ms |
+| Replay, fork, the lab | No                        | No                                                        | **Yes**                                 |
+| SQL over live state   | Yes                       | No                                                        | Through the chronicle                   |
+| Verdict               | Wrong tool                | Fine offline                                              | **Recommended**                         |
 
 C is your own automation-game note — "store only instruction logs and
-deterministic RNG seeds" — plus snapshots so a restart does not replay a
-whole season.
+deterministic RNG seeds" — plus snapshots so a restart does not replay a whole
+season.
 
 ### 3.2 The journal
 
-| Kind | Holds | Written |
-|---|---|---|
-| `cmd` | An accepted command: `seq`, world time `t`, Family, canonical JSON | When a command is applied |
-| `sys` | A command the server issued itself — `family.found`, admin actions, later standing orders | Likewise |
-| `mark` | A time mark; every few minutes also a **world hash** | By the housekeeping timer |
+| Kind   | Holds                                                                                     | Written                   |
+| ------ | ----------------------------------------------------------------------------------------- | ------------------------- |
+| `cmd`  | An accepted command: `seq`, world time `t`, Family, canonical JSON                        | When a command is applied |
+| `sys`  | A command the server issued itself — `family.found`, admin actions, later standing orders | Likewise                  |
+| `mark` | A time mark; every few minutes also a **world hash**                                      | By the housekeeping timer |
 
 - **Only accepted commands are journaled.** A rejection changed nothing.
 - **Canonical JSON**: sorted keys, no whitespace, integers only — the
   samgrognard rules — so the bytes that are hashed are the bytes that are
   stored.
-- **A hash chain.** Each record carries `sha256(previous ‖ seq ‖ t ‖
-  payload)`. Truncation and tampering show, and an exported season can be
-  verified by anyone.
-- **Hash checkpoints** are what make replay trustworthy: a replay that
-  reaches a different world hash stops at the first mark that disagrees.
+- **A hash chain.** Each record carries `sha256(previous ‖ seq ‖ t ‖ payload)`.
+  Truncation and tampering show, and an exported season can be verified by
+  anyone.
+- **Hash checkpoints** are what make replay trustworthy: a replay that reaches a
+  different world hash stops at the first mark that disagrees.
 
 ### 3.3 Snapshots
 
 A binary file of sections: a header (format, engine revision, rules digest,
-journal position, world time, world hash) and then one section per module,
-each with a tag, a version and a length.
+journal position, world time, world hash) and then one section per module, each
+with a tag, a version and a length.
 
-- Written field by field, little-endian, fixed widths. The world hash is a
-  hash of this stream, so it does not depend on struct layout or padding —
-  an improvement on `samvillage_world_hash`, which does.
-- The engine thread serialises into a buffer — milliseconds for megabytes
-  — and hands the buffer to the writer thread.
-- Taken every ten minutes and at clean shutdown. Keep the last six and one
-  per world day.
+- Written field by field, little-endian, fixed widths. The world hash is a hash
+  of this stream, so it does not depend on struct layout or padding — an
+  improvement on `samvillage_world_hash`, which does.
+- The engine thread serialises into a buffer — milliseconds for megabytes — and
+  hands the buffer to the writer thread.
+- Taken every ten minutes and at clean shutdown. Keep the last six and one per
+  world day.
 
 ### 3.4 Recovery
 
@@ -167,8 +160,8 @@ each with a tag, a version and a length.
 3. Check each hash checkpoint on the way.
 4. Set the world clock to the last record's time and open.
 
-It takes seconds. A crash loses only commands acknowledged in the final
-batch window that never reached disk — a known, small, documented amount.
+It takes seconds. A crash loses only commands acknowledged in the final batch
+window that never reached disk — a known, small, documented amount.
 
 ### 3.5 Epochs: when the code or the rules change
 
@@ -177,16 +170,15 @@ An **epoch** is one pairing of engine build and rules digest.
 - Starting a different build, or changed rules, opens a new epoch.
 - Snapshot sections carry versions, so a newer build can upgrade an older
   snapshot.
-- A journal segment replays only under the build that wrote it. Keep the
-  tag.
+- A journal segment replays only under the build that wrote it. Keep the tag.
 
-During alpha, short seasons make this rare: breaking changes ride the
-season boundary.
+During alpha, short seasons make this rare: breaking changes ride the season
+boundary.
 
 ### 3.6 Seasons, and the export
 
-A season is one row in `world.world` with its own seed. Closing one writes
-a final snapshot, the hall of fame, and an **export bundle**:
+A season is one row in `world.world` with its own seed. Closing one writes a
+final snapshot, the hall of fame, and an **export bundle**:
 
 ```
   season-01.iww/
@@ -196,15 +188,15 @@ a final snapshot, the hall of fame, and an **export bundle**:
 ```
 
 `samworld-lab replay`, `verify` and `fork` read it. It holds Family ids and
-House names, no accounts. This bundle is the raw material for anything you
-make from a season — and for the lab's most interesting question: *take
-the live world at day twelve and run it forward a different way.*
+House names, no accounts. This bundle is the raw material for anything you make
+from a season — and for the lab's most interesting question: *take the live
+world at day twelve and run it forward a different way.*
 
 ## 4. Schemas
 
-House conventions throughout: one database; a role created once, by hand,
-by `0000_role.sql`; numbered idempotent migrations embedded at build time
-and applied by `samworld-server --migrate`; ASCII-only SQL.
+House conventions throughout: one database; a role created once, by hand, by
+`0000_role.sql`; numbered idempotent migrations embedded at build time and
+applied by `samworld-server --migrate`; ASCII-only SQL.
 
 ### 4.1 `auth`
 
@@ -312,8 +304,8 @@ CREATE TABLE IF NOT EXISTS world.family_binding (
 );
 ```
 
-`payload` is `TEXT`, not `JSONB`, because Postgres re-serialises `JSONB`
-and the chain is over exact bytes. Cast it when querying.
+`payload` is `TEXT`, not `JSONB`, because Postgres re-serialises `JSONB` and the
+chain is over exact bytes. Cast it when querying.
 
 ### 4.3 `chronicle`
 
@@ -356,9 +348,9 @@ CREATE TABLE IF NOT EXISTS chronicle.honour (  -- the hall of fame; outlives eve
 );
 ```
 
-How it is fed: when a world day rolls over, the engine thread builds that
-day's rows from the omniscient statistics view and hands them to the writer
-thread. Events are archived in batches as they leave the in-memory rings.
+How it is fed: when a world day rolls over, the engine thread builds that day's
+rows from the omniscient statistics view and hands them to the writer thread.
+Events are archived in batches as they leave the in-memory rings.
 
 **This is the statistics-course payoff.** Questions become queries:
 
@@ -398,9 +390,9 @@ GROUP BY a.kind;
 {"seq":88213,"t":73211000,"k":"cmd","f":12,"p":{"actor":"a-104","args":{},"op":"queue.clear"},"h":"9f2c…"}
 ```
 
-Writes are temp file, `fsync`, rename — as in samtasker and samvillage. The
-file adapter serves the tests, the lab, local play, and the export bundle,
-which is simply this directory.
+Writes are temp file, `fsync`, rename — as in samtasker and samvillage. The file
+adapter serves the tests, the lab, local play, and the export bundle, which is
+simply this directory.
 
 ## 6. Ports
 
@@ -431,38 +423,38 @@ typedef struct AccountStore {
 } AccountStore;
 ```
 
-Each has a `file_` and a `pg_` adapter. The pattern is the one in
-`samtasker`'s repository and samtechtree's `st_reader.h`.
+Each has a `file_` and a `pg_` adapter. The pattern is the one in `samtasker`'s
+repository and samtechtree's `st_reader.h`.
 
 ## 7. The writer thread
 
-- It receives finished byte buffers over one bounded queue and never
-  touches the world.
-- **Group commit:** one transaction per hundred milliseconds or 256
-  records, whichever comes first.
-- **Acknowledge, then commit**, in the first version. A strict mode —
-  reply only once committed — needs detached responses.
+- It receives finished byte buffers over one bounded queue and never touches the
+  world.
+- **Group commit:** one transaction per hundred milliseconds or 256 records,
+  whichever comes first.
+- **Acknowledge, then commit**, in the first version. A strict mode — reply only
+  once committed — needs detached responses.
 - **If storage falls behind,** the server turns read-only until the queue
   drains: commands answer `503`, views keep working.
-- `libpq` is used by exactly this one thread, so it needs no lock.
-  samdashboard needs an app-wide mutex because its handlers share the
-  connection; this design sidesteps that.
+- `libpq` is used by exactly this one thread, so it needs no lock. samdashboard
+  needs an app-wide mutex because its handlers share the connection; this design
+  sidesteps that.
 
 ## 8. Operations
 
-| Matter | Approach |
-|---|---|
-| Role and migrations | `0000_role.sql` once, by hand; then `samworld-server --migrate` |
-| Secrets | `~/.config/ptah-web/samworld-server.env` holds `SAMWORLD_DB` — the ptah-web convention; never in the repository |
-| Backups | Nightly `pg_dump` of `auth` and `chronicle`. The world is covered by its snapshots and the season export. Restore once, deliberately, before trusting it |
-| Retention | Journal kept whole for the season. Snapshots pruned. The event archive is optional per season |
-| Without a database | The server still runs, on files. With Postgres configured but unreachable at start, it refuses to open the world rather than fork history |
+| Matter              | Approach                                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Role and migrations | `0000_role.sql` once, by hand; then `samworld-server --migrate`                                                                                          |
+| Secrets             | `~/.config/ptah-web/samworld-server.env` holds `SAMWORLD_DB` — the ptah-web convention; never in the repository                                          |
+| Backups             | Nightly `pg_dump` of `auth` and `chronicle`. The world is covered by its snapshots and the season export. Restore once, deliberately, before trusting it |
+| Retention           | Journal kept whole for the season. Snapshots pruned. The event archive is optional per season                                                            |
+| Without a database  | The server still runs, on files. With Postgres configured but unreachable at start, it refuses to open the world rather than fork history                |
 
 ## 9. Slice scope
 
-| In the slice | After |
-|---|---|
-| File adapters for everything | Postgres adapters, when going online |
-| Token-only accounts; invite codes | Passwords or OAuth; email recovery |
-| Journal, snapshots, the crash-recovery test | Epochs with section upgrades |
+| In the slice                                                    | After                                                   |
+| --------------------------------------------------------------- | ------------------------------------------------------- |
+| File adapters for everything                                    | Postgres adapters, when going online                    |
+| Token-only accounts; invite codes                               | Passwords or OAuth; email recovery                      |
+| Journal, snapshots, the crash-recovery test                     | Epochs with section upgrades                            |
 | The export bundle, because it *is* the file adapter's directory | The chronicle: event archive, daily stats, hall of fame |

@@ -1,15 +1,25 @@
 # 05 — Accounts, Auth & PostgreSQL Schema Architecture
 
 You asked:
-> *"How we deal with accounts, and persistent storage in general under schemas."*
 
-Ptah already has a battle-tested PostgreSQL philosophy (`apps/samdashboard` owning `dashboard.*`, `apps/samtechtree` owning `techtree.*`, `libs/samtasker` using `libpq` single-transaction saves and idempotent DDL). For **Ironwood Wilds**, separating data into **three dedicated PostgreSQL schemas by lifecycle** solves accounts, bot keys, world wipes, and hypothesis archiving cleanly from day one.
+> *"How we deal with accounts, and persistent storage in general under
+> schemas."*
 
----
+Ptah already has a battle-tested PostgreSQL philosophy (`apps/samdashboard`
+owning `dashboard.*`, `apps/samtechtree` owning `techtree.*`, `libs/samtasker`
+using `libpq` single-transaction saves and idempotent DDL). For **Ironwood
+Wilds**, separating data into **three dedicated PostgreSQL schemas by
+lifecycle** solves accounts, bot keys, world wipes, and hypothesis archiving
+cleanly from day one.
+
+______________________________________________________________________
 
 ## 1. Why Three Schemas? (Lifecycle Isolation)
 
-In an online simulation with periodic **Server Restarts / Charter Seasons** (and population experiments), mixing accounts, historical experiment telemetry, and ephemeral tree stumps in one schema makes resets terrifying. Splitting by **retention lifetime** makes resets trivial:
+In an online simulation with periodic **Server Restarts / Charter Seasons** (and
+population experiments), mixing accounts, historical experiment telemetry, and
+ephemeral tree stumps in one schema makes resets terrifying. Splitting by
+**retention lifetime** makes resets trivial:
 
 ```
 PostgreSQL Database (ptah / ironwood)
@@ -40,24 +50,44 @@ PostgreSQL Database (ptah / ironwood)
 ```
 
 **Season Reset Workflow:**
-1. Summarize final `wilds.households` into `wilds_meta.chronicle` and mark `wilds_meta.seasons.ended_at = now()`.
-2. `DROP SCHEMA wilds CASCADE;` → re-apply `wilds` migration DDL (`--migrate`) → seed `wilds.world_clock` with the new `world_seed` and `WorldHypothesisConfig`.
-3. Every human browser session and every bot `Bearer` token in `auth.*` stays valid — on their next request, they click **"Sign New Charter"** (or `POST /api/v1/charter/join`) and land fresh on the new coast!
 
----
+1. Summarize final `wilds.households` into `wilds_meta.chronicle` and mark
+   `wilds_meta.seasons.ended_at = now()`.
+2. `DROP SCHEMA wilds CASCADE;` → re-apply `wilds` migration DDL (`--migrate`) →
+   seed `wilds.world_clock` with the new `world_seed` and
+   `WorldHypothesisConfig`.
+3. Every human browser session and every bot `Bearer` token in `auth.*` stays
+   valid — on their next request, they click **"Sign New Charter"** (or
+   `POST /api/v1/charter/join`) and land fresh on the new coast!
+
+______________________________________________________________________
 
 ## 2. Accounts, Browser Sessions & Bot API Keys (`auth` Schema)
 
-Humans and bots authenticate to the **same Account**, which owns at most **one Household per active World/Season** (preventing multi-account mule feeding unless explicitly allowed in a sandbox bot-cohort test).
+Humans and bots authenticate to the **same Account**, which owns at most **one
+Household per active World/Season** (preventing multi-account mule feeding
+unless explicitly allowed in a sandbox bot-cohort test).
 
 ### 2.1 Dual Credential Paths, One Tenancy Context
-- **Humans (Browser Tabs):** Register/login via standard HTML form (`POST /auth/register`, `POST /auth/login`).
-  - Passwords hashed with **Argon2id** (or PBKDF2-HMAC-SHA256 if keeping zero external crypto libs via a small audited C11 SHA-256/HMAC module, matching `samgrognard`'s internal SHA-256 precedent!).
-  - Login sets `Set-Cookie: iww_sid=<32-byte hex>; HttpOnly; SameSite=Lax; Path=/` (plus `Secure` behind TLS/Caddy/Nginx).
-  - Mutating HTML form posts carry a per-session CSRF token; JSON API calls accept either the session cookie (with `SameSite` + custom header `X-IWW-Client: web`) or an `Authorization: Bearer` header.
-- **Bots & CLI (`samwilds-cli`, Python/C bots):** Generate up to `N` named API keys from the Account tab (`iww_k_...`).
-  - **Raw tokens are shown once and never stored in Postgres** — only ` token_sha256 BYTEA` is stored, so a database backup never leaks live credentials.
-  - Bots pass `Authorization: Bearer iww_k_<hex>` on HTTP requests or in the opening `{"op":"auth","token":"..."}` line on the raw TCP bot socket.
+
+- **Humans (Browser Tabs):** Register/login via standard HTML form
+  (`POST /auth/register`, `POST /auth/login`).
+  - Passwords hashed with **Argon2id** (or PBKDF2-HMAC-SHA256 if keeping zero
+    external crypto libs via a small audited C11 SHA-256/HMAC module, matching
+    `samgrognard`'s internal SHA-256 precedent!).
+  - Login sets
+    `Set-Cookie: iww_sid=<32-byte hex>; HttpOnly; SameSite=Lax; Path=/` (plus
+    `Secure` behind TLS/Caddy/Nginx).
+  - Mutating HTML form posts carry a per-session CSRF token; JSON API calls
+    accept either the session cookie (with `SameSite` + custom header
+    `X-IWW-Client: web`) or an `Authorization: Bearer` header.
+- **Bots & CLI (`samwilds-cli`, Python/C bots):** Generate up to `N` named API
+  keys from the Account tab (`iww_k_...`).
+  - **Raw tokens are shown once and never stored in Postgres** — only
+    ` token_sha256 BYTEA` is stored, so a database backup never leaks live
+    credentials.
+  - Bots pass `Authorization: Bearer iww_k_<hex>` on HTTP requests or in the
+    opening `{"op":"auth","token":"..."}` line on the raw TCP bot socket.
 
 ### 2.2 Concrete `auth` DDL
 
@@ -94,14 +124,21 @@ CREATE TABLE IF NOT EXISTS auth.api_keys (
 );
 ```
 
----
+______________________________________________________________________
 
 ## 3. Live World Schema (`wilds.*`) & Sparse Procedural Deltas
 
 ### 3.1 Sparse Procedural Persistence (`wilds.sites_delta`)
-Because `libs/samprocgen` deterministically computes every region `(rx, ry)` and its default sites from `world_seed`, **we never populate 100,000 wilderness sites into Postgres at world creation**.
+
+Because `libs/samprocgen` deterministically computes every region `(rx, ry)` and
+its default sites from `world_seed`, **we never populate 100,000 wilderness
+sites into Postgres at world creation**.
+
 - Untouched forest = **0 database rows**.
-- A row enters `wilds.sites_delta` *only* when a site's state diverges from pure procedural math (e.g., ore depleted from `50 → 37`, regrow timer set, or a Barrow room cleared) or when a Household records discovering a hidden survey site (`wilds.household_discoveries`).
+- A row enters `wilds.sites_delta` *only* when a site's state diverges from pure
+  procedural math (e.g., ore depleted from `50 → 37`, regrow timer set, or a
+  Barrow room cleared) or when a Household records discovering a hidden survey
+  site (`wilds.household_discoveries`).
 
 ### 3.2 Core `wilds` Tables (Representative DDL)
 
@@ -182,18 +219,36 @@ CREATE TABLE IF NOT EXISTS wilds.sites_delta (
 );
 ```
 
----
+______________________________________________________________________
 
 ## 4. RAM vs. PostgreSQL Sync & Reboot Time Semantics
 
 ### 4.1 RAM Is Authoritative; Postgres Checkpoints Dirty Rows
-Running SQL queries inside every mining completion or bot poll would bottleneck throughput and couple `libs/samwilds` to `libpq`. Instead:
-1. **Boot (`load_world`):** `pg_wilds.c` reads `wilds.*` once into `SamWildsWorld`'s arena pools and rebuilds the `SamWildsEventHeap` from every `slot_idx = 0` row in `wilds.action_queues` + `holds.next_raid_due_ms`.
-2. **Runtime:** Every pool slot has a `bool dirty` bit. When a character finishes an action, levels up, or edits a queue, their slot bit flips `dirty = true`.
-3. **Flush Cycle (Every 5s + `SIGTERM`):** The persistence adapter copies dirty structs into a staging buffer, clears the dirty bits, releases the world lock, and executes **one batched `BEGIN ... UPSERT ... COMMIT` transaction** via `libpq` (`PQexecParams` / `COPY` / `UNNEST` arrays).
-4. **Immediate Writes:** `auth.*` mutations (account signup, API key creation/revocation) commit synchronously before returning HTTP `201`.
+
+Running SQL queries inside every mining completion or bot poll would bottleneck
+throughput and couple `libs/samwilds` to `libpq`. Instead:
+
+1. **Boot (`load_world`):** `pg_wilds.c` reads `wilds.*` once into
+   `SamWildsWorld`'s arena pools and rebuilds the `SamWildsEventHeap` from every
+   `slot_idx = 0` row in `wilds.action_queues` + `holds.next_raid_due_ms`.
+2. **Runtime:** Every pool slot has a `bool dirty` bit. When a character
+   finishes an action, levels up, or edits a queue, their slot bit flips
+   `dirty = true`.
+3. **Flush Cycle (Every 5s + `SIGTERM`):** The persistence adapter copies dirty
+   structs into a staging buffer, clears the dirty bits, releases the world
+   lock, and executes **one batched `BEGIN ... UPSERT ... COMMIT` transaction**
+   via `libpq` (`PQexecParams` / `COPY` / `UNNEST` arrays).
+4. **Immediate Writes:** `auth.*` mutations (account signup, API key
+   creation/revocation) commit synchronously before returning HTTP `201`.
 
 ### 4.2 Simulation Clock vs. Wall Clock Across Downtime
-Notice all timestamps in `wilds.*` are **`sim_clock_ms` (`uint64_t` milliseconds since Season Start)**, NOT `TIMESTAMPTZ` wall-clock dates! Why?
-- If you take the server down for 30 minutes on a Friday afternoon to deploy an update, **`sim_clock_ms` pauses cleanly at the exact shutdown millisecond** and resumes when the server boots back up.
-- Nobody's delve party gets slaughtered during a deploy, raid timers don't pile up simultaneously on boot, and headless `samgenai` runs use the exact same `sim_clock_ms` representation without touching the OS wall clock!
+
+Notice all timestamps in `wilds.*` are **`sim_clock_ms` (`uint64_t` milliseconds
+since Season Start)**, NOT `TIMESTAMPTZ` wall-clock dates! Why?
+
+- If you take the server down for 30 minutes on a Friday afternoon to deploy an
+  update, **`sim_clock_ms` pauses cleanly at the exact shutdown millisecond**
+  and resumes when the server boots back up.
+- Nobody's delve party gets slaughtered during a deploy, raid timers don't pile
+  up simultaneously on boot, and headless `samgenai` runs use the exact same
+  `sim_clock_ms` representation without touching the OS wall clock!

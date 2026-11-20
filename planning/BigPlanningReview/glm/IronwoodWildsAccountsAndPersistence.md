@@ -6,41 +6,40 @@
 
 ## 1. The rule: two kinds of data, two homes
 
-1. **Account & meta data** (accounts, sessions, API keys, seasons,
-   leaderboards, audit): plain relational rows in PostgreSQL — the
-   samtasker/samtechtree/samdashboard house pattern (libpq, numbered
-   migrations, `--migrate`, role-separated schema).
+1. **Account & meta data** (accounts, sessions, API keys, seasons, leaderboards,
+   audit): plain relational rows in PostgreSQL — the
+   samtasker/samtechtree/samdashboard house pattern (libpq, numbered migrations,
+   `--migrate`, role-separated schema).
 2. **World data** (everything inside one running world): **snapshot +
-   append-only journal**, with Postgres as the durable store and the
-   query projections rebuilt from events. The DB never holds
-   authoritative world *state* — the engine does, and its artifacts
-   (snapshot blobs + journal rows) are what persist.
+   append-only journal**, with Postgres as the durable store and the query
+   projections rebuilt from events. The DB never holds authoritative world
+   *state* — the engine does, and its artifacts (snapshot blobs + journal rows)
+   are what persist.
 
-Why not normalized world tables (a `people` table, a `buildings`
-table…): the engine's state is ECS component arrays whose shape changes
-every feature; a relational mapping of world internals couples schema
-migrations to gameplay code. Snapshots+journal decouple them, and the
-determinism contract (Architecture §4) needs the journal anyway. Relational
-**projections** (§5) give the SQL answers (leaderboards, stats) without
-making SQL the truth.
+Why not normalized world tables (a `people` table, a `buildings` table…): the
+engine's state is ECS component arrays whose shape changes every feature; a
+relational mapping of world internals couples schema migrations to gameplay
+code. Snapshots+journal decouple them, and the determinism contract
+(Architecture §4) needs the journal anyway. Relational **projections** (§5) give
+the SQL answers (leaderboards, stats) without making SQL the truth.
 
 ## 2. Accounts model
 
 - One **account** (email, password hash Argon2id, created_at, status).
-- One **household per account per season** (enforced unique) — your folk
-  live in exactly one world at a time. (Decision: keeps spectate/chronicle
-  identity clean; multi-household accounts are a later data change, not
-  an architecture one.)
-- **API keys** (per account, scoped: `read` / `command` / `admin`),
-  revocable, last-used timestamps.
+- One **household per account per season** (enforced unique) — your folk live in
+  exactly one world at a time. (Decision: keeps spectate/chronicle identity
+  clean; multi-household accounts are a later data change, not an architecture
+  one.)
+- **API keys** (per account, scoped: `read` / `command` / `admin`), revocable,
+  last-used timestamps.
 - **Sessions** for browsers (token, expiry, IP recorded).
-- Lifetime stats per account across seasons (games played, Charters
-  total, folk lost) — fed by projections (§5).
+- Lifetime stats per account across seasons (games played, Charters total, folk
+  lost) — fed by projections (§5).
 
 ## 3. Schemas (v1 DDL sketch)
 
-Two PG schemas, two owners, mirroring the samtechtree discipline
-(one-time `0000_role.sql`, then `--migrate` as the app role):
+Two PG schemas, two owners, mirroring the samtechtree discipline (one-time
+`0000_role.sql`, then `--migrate` as the app role):
 
 ```sql
 -- schema: accounts (owned by samwilds app role)
@@ -118,26 +117,26 @@ CREATE TABLE household_points (           -- materialized, event-fed
 CREATE TABLE account_lifetime ( ... );    -- cross-season stats
 ```
 
-Notes: journal rows are `(commands applied) + (events emitted) +
-(per-tick world_hash)` — the same three artifacts the engine's
-determinism contract produces, stored once. `snapshots.blob` is opaque
-to SQL (engine codec; versioned, refuse-on-mismatch like samvillage
-saves). Chartered points live *only* in projection + events — never a
-second mutable truth.
+Notes: journal rows are
+`(commands applied) + (events emitted) + (per-tick world_hash)` — the same three
+artifacts the engine's determinism contract produces, stored once.
+`snapshots.blob` is opaque to SQL (engine codec; versioned, refuse-on-mismatch
+like samvillage saves). Chartered points live *only* in projection + events —
+never a second mutable truth.
 
 ## 4. Write paths (who writes what, when)
 
-| Writer | What | When |
-|---|---|---|
+| Writer                                           | What                                                        | When                                               |
+| ------------------------------------------------ | ----------------------------------------------------------- | -------------------------------------------------- |
 | tick host (sim thread, via async journal writer) | journal appends (batch per tick), cadence snapshots (5 min) | during tick, fire-and-forget with backpressure cap |
-| commands/ | accounts, sessions, api_keys, households (signup/landing) | request time, outside sim |
-| projection updater (event subscriber) | household_points, lifetime stats | on event, idempotent by (seq) |
-| admin console | seasons lifecycle rows, audit rows | gated pages |
+| commands/                                        | accounts, sessions, api_keys, households (signup/landing)   | request time, outside sim                          |
+| projection updater (event subscriber)            | household_points, lifetime stats                            | on event, idempotent by (seq)                      |
+| admin console                                    | seasons lifecycle rows, audit rows                          | gated pages                                        |
 
-Journal writes go through a bounded queue to libpq; if PG hiccups, the
-sim keeps ticking with the journal buffered in-process (memory cap +
-spill to local file) — a database outage must not stop the world, and
-the world_hash chain reveals any gap on recovery.
+Journal writes go through a bounded queue to libpq; if PG hiccups, the sim keeps
+ticking with the journal buffered in-process (memory cap + spill to local file)
+— a database outage must not stop the world, and the world_hash chain reveals
+any gap on recovery.
 
 ## 5. Season lifecycle (the resets, made graceful)
 
@@ -154,31 +153,30 @@ archived      final snapshot + journal digest; projections frozen into
               cheap; keep everything, it's the content)
 ```
 
-- New season = new `seasons` row with fresh seed/params. Accounts,
-  keys, lifetime stats carry over untouched — "server restarts" are a
-  *feature* with a first-class data story, not an ops apology.
-- Rollback/forensics: any tick is `snapshot(t-k) + journal replay k` —
-  disputed raid, suspected dupe bug, or "watch week 3 again" all use
-  the same mechanism.
+- New season = new `seasons` row with fresh seed/params. Accounts, keys,
+  lifetime stats carry over untouched — "server restarts" are a *feature* with a
+  first-class data story, not an ops apology.
+- Rollback/forensics: any tick is `snapshot(t-k) + journal replay k` — disputed
+  raid, suspected dupe bug, or "watch week 3 again" all use the same mechanism.
 
 ## 6. Backups & ops
 
-- PG: standard pg_dump cadence + WAL archiving (accounts/journal are
-  the crown jewels; snapshots are re-derivable from journal but kept).
-- Config: samhttp INI (ports) + season params in DB; secrets via env
-  (PGPASSWORD etc. per house pattern).
-- Retention: everything, indefinitely, until storage says otherwise —
-  journals double as content (chronicle/timelapse) and QA
-  (regression replays for rules changes, samgrognard-style).
+- PG: standard pg_dump cadence + WAL archiving (accounts/journal are the crown
+  jewels; snapshots are re-derivable from journal but kept).
+- Config: samhttp INI (ports) + season params in DB; secrets via env (PGPASSWORD
+  etc. per house pattern).
+- Retention: everything, indefinitely, until storage says otherwise — journals
+  double as content (chronicle/timelapse) and QA (regression replays for rules
+  changes, samgrognard-style).
 
 ## 7. Decision log
 
-| # | Decision | Note |
-|---|---|---|
-| S1 | Accounts/meta relational; world = snapshot+journal, SQL is store not truth | decouples schema churn from gameplay; determinism needs the journal anyway |
-| S2 | One household per account per season | clean identity; later relaxation is data-only |
-| S3 | Projections (points/leaderboards) event-fed, rebuildable | one mutable truth (events), many query shapes |
-| S4 | Journal append-only, gapless seq, world-hash chain rows | audit + forensics + content from one artifact |
-| S5 | Sim survives PG outages (bounded buffer + spill) | the world stops for nobody |
-| S6 | Seasons are rows; archiving is a lifecycle, not deletion | resets become a designed feature |
-| S7 | Argon2id + scoped API keys + PG sessions | house-standard crypto, bot-friendly, no OAuth in v1 |
+| #   | Decision                                                                   | Note                                                                       |
+| --- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| S1  | Accounts/meta relational; world = snapshot+journal, SQL is store not truth | decouples schema churn from gameplay; determinism needs the journal anyway |
+| S2  | One household per account per season                                       | clean identity; later relaxation is data-only                              |
+| S3  | Projections (points/leaderboards) event-fed, rebuildable                   | one mutable truth (events), many query shapes                              |
+| S4  | Journal append-only, gapless seq, world-hash chain rows                    | audit + forensics + content from one artifact                              |
+| S5  | Sim survives PG outages (bounded buffer + spill)                           | the world stops for nobody                                                 |
+| S6  | Seasons are rows; archiving is a lifecycle, not deletion                   | resets become a designed feature                                           |
+| S7  | Argon2id + scoped API keys + PG sessions                                   | house-standard crypto, bot-friendly, no OAuth in v1                        |
