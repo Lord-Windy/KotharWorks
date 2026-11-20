@@ -3,7 +3,7 @@
 Java 25 LTS modular monorepo (`com.kotharworks`) — sister repository to `ptah`, built for pure Data-Oriented Java libraries (`libs/`) and lightweight, Virtual-Thread applications (`apps/`).
 
 - **Language:** Pure Java 25 LTS (`-XX:+UseCompactObjectHeaders`, `-Werror`)
-- **Build:** Apache Maven multi-module reactor (`./mvnw` included; `mvnd` compatible)
+- **Build:** Apache Maven Daemon (`mvnd`, configured via `.mvn/mvnd.properties`)
 - **Inventory:** See [PROJECTS.md](PROJECTS.md)
 - **Agent & Ticket Workflow:** See [AGENTS.md](AGENTS.md)
 - **Planning Docs:** See [planning/README.md](planning/README.md)
@@ -12,16 +12,16 @@ Java 25 LTS modular monorepo (`com.kotharworks`) — sister repository to `ptah`
 
 ```bash
 # Run all tests across every library and application
-./mvnw test
+mvnd test
 
 # Run the Ironwood Wilds server hello-world scaffold
-./mvnw -q compile exec:java -pl apps/wilds-server -am
+mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am
 
 # Test a single module (and any upstream library dependencies)
-./mvnw test -pl libs/wilds -am
+mvnd test -pl libs/wilds -am
 ```
 
-*(If you have SDKMAN installed, `.sdkmanrc` pins `java=25.0.3-tem`, and `./mvnw` automatically selects it even in non-interactive shells. Installing `mvnd` via `sdk install mvnd` drops warm incremental test runs below half a second.)*
+*(Note: `.mvn/mvnd.properties` pins the KotharWorks daemon to JDK `25.0.3-tem` with a 512 MB max heap, so `mvnd` runs on Java 25 automatically without changing your global SDKMAN default Java version.)*
 
 ## License
 

@@ -35,7 +35,7 @@ See `planning/README.md` and `planning/BigPlanningReview/carbon/README.md`.
 Hexagonal server entry point for Ironwood Wilds (planned: Virtual-Thread HTTP/WS
 adapters, PostgreSQL `auth`/`wilds_meta`/`wilds` adapters, server-rendered
 multi-tab HTML UI). Currently prints the `WildsEngine` scaffold greeting via
-`./mvnw -q compile exec:java -pl apps/wilds-server -am`.
+`mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am`.
 
 ## External dependencies
 

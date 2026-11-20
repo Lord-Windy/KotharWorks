@@ -18,7 +18,7 @@ Reusable libraries live in `libs/` and runnable applications live in `apps/`.
 ```text
 kotharworks/
 ├── pom.xml                  # Root Maven parent & reactor (<modules>)
-├── mvnw                     # Self-bootstrapping Maven 3.9.9 wrapper (uses JDK 25)
+├── .mvn/mvnd.properties     # Pins mvnd daemon to JDK 25 (25.0.3-tem)
 ├── libs/
 │   └── <name>/              # Pure library module (com.kotharworks:<name>)
 └── apps/
@@ -30,26 +30,28 @@ For per-module descriptions, status, and dependencies, see
 
 ## Build System
 
-Always prefer `./mvnw` (or `mvnd` if installed on `PATH`). Never introduce
-Gradle or Kotlin build files.
+Use **`mvnd`** (Apache Maven Daemon, installed via SDKMAN at
+`~/.sdkman/candidates/mvnd/current/bin/mvnd`). `.mvn/mvnd.properties`
+automatically boots the daemon on JDK 25 without altering global `JAVA_HOME`.
+Never introduce Gradle or Kotlin build files.
 
 ### Common Commands
 
 ```bash
 # Compile and run all tests across the monorepo
-./mvnw test
+mvnd test
 
 # Test a single module and its upstream monorepo dependencies
-./mvnw test -pl libs/wilds -am
+mvnd test -pl libs/wilds -am
 
 # Run a single test class
-./mvnw test -pl libs/wilds -Dtest=WildsEngineTest
+mvnd test -pl libs/wilds -Dtest=WildsEngineTest
 
 # Execute an application module directly from reactor classes
-./mvnw -q compile exec:java -pl apps/wilds-server -am
+mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am
 
 # Clean all target/ directories
-./mvnw clean
+mvnd clean
 ```
 
 ### Adding a new module
@@ -177,7 +179,7 @@ Batch caveats:
    ```bash
    st status <KEY> in-progress
    ```
-3. Implement and verify `./mvnw test` passes cleanly with zero warnings.
+3. Implement and verify `mvnd test` passes cleanly with zero warnings.
 4. **Commit and push** before marking `done` (once a remote is configured):
    ```bash
    git add <files>

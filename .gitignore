@@ -7,9 +7,6 @@ pom.xml.versionsBackup
 pom.xml.next
 release.properties
 
-# Maven Wrapper local jars (only-script downloads to ~/.m2/wrapper)
-.mvn/wrapper/maven-wrapper.jar
-
 # IDEs & editors
 .idea/
 *.iml
