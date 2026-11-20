@@ -1,0 +1,29 @@
+# Maven build outputs
+**/target/
+dependency-reduced-pom.xml
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+
+# Maven Wrapper local jars (only-script downloads to ~/.m2/wrapper)
+.mvn/wrapper/maven-wrapper.jar
+
+# IDEs & editors
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.project
+.classpath
+.settings/
+
+# OS & local env
+.DS_Store
+*~
+*.swp
+.env
+*.local.conf
+my_config.*

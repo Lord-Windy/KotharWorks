@@ -1,0 +1,180 @@
+// samworld command flow and lazy time — Ironwood Wilds (proposal, Fable, 2026-11-20)
+// Style: docs/dot/preferred-flow.md
+//
+// legend: command #2563eb solid · trigger #6b7280 dashed · schedule #be123c solid
+//         change #b45309 solid · facts #15803d dashed · record #7c3aed solid
+//
+// Read it as: a command or a look TRIGGERS advance_to; advance_to drains the
+// due-queue in (at, seq) order; only then is the command checked and applied.
+//
+// render: dot -Tsvg samworld-command-flow.dot -o samworld-command-flow.svg
+
+digraph samworld_command_flow {
+    graph [fontname="Helvetica", bgcolor="white", rankdir=LR, compound=true,
+           outputorder=edgesfirst, nodesep=0.6, ranksep=1.5]
+    node  [fontname="Helvetica", fontsize=12]
+    edge  [fontname="Helvetica", fontsize=11, arrowsize=0.8]
+
+    // ------------------------------------------------------------ outside
+    subgraph cluster_outside {
+        label="Outside"; style="rounded,filled"; fillcolor="#f3f4f6"; color="#d1d5db"
+
+        client [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>Client (person or bot)</B></FONT></TD></TR>
+            <TR><TD PORT="send">sends</TD><TD>op · actor · args · id</TD></TR>
+            <TR><TD PORT="look">looks</TD><TD>views · events</TD></TR>
+            <TR><TD PORT="count">counts down</TD><TD>ends_at − now</TD></TR>
+          </TABLE>>]
+    }
+
+    // ------------------------------------------------------------- driver
+    subgraph cluster_driver {
+        label="Server driver · owns the clock and all I/O"; style="rounded,filled"; fillcolor="#e0f2fe"; color="#a5cfe8"
+
+        gate [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>Transport gate</B></FONT></TD></TR>
+            <TR><TD PORT="token">token</TD><TD>account, then Family</TD></TR>
+            <TR><TD PORT="limit">rate limit</TD><TD>per token</TD></TR>
+            <TR><TD PORT="idem">idempotency</TD><TD>id seen: same reply</TD></TR>
+            <TR><TD PORT="decode">decode</TD><TD>arg spec to struct</TD></TR>
+          </TABLE>>]
+
+        clock [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>World clock</B></FONT></TD></TR>
+            <TR><TD PORT="now">now</TD><TD>wall to world ms</TD></TR>
+            <TR><TD PORT="beat">housekeeping</TD><TD>1 Hz</TD></TR>
+          </TABLE>>]
+
+        reply [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>Reply</B></FONT></TD></TR>
+            <TR><TD PORT="ok">ok or error</TD><TD>stable code</TD></TR>
+            <TR><TD PORT="sync">sync</TD><TD>now · rev · next_due</TD></TR>
+          </TABLE>>]
+    }
+
+    // ------------------------------------------------------------- engine
+    subgraph cluster_engine {
+        label="Engine (samworld + samtime) · pure"; style="rounded,filled"; fillcolor="#dcfce7"; color="#a7d9b7"
+
+        advance [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>advance_to(now)</B></FONT></TD></TR>
+            <TR><TD PORT="drain">drain</TD><TD>pop while due</TD></TR>
+            <TR><TD PORT="stamp">stamp</TD><TD>now = entry.at</TD></TR>
+          </TABLE>>]
+
+        due [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>Due-queue</B></FONT></TD></TR>
+            <TR><TD PORT="heap">heap</TD><TD>ordered (at, seq)</TD></TR>
+            <TR><TD PORT="kinds">entries</TD><TD>action done · arrival · day</TD></TR>
+          </TABLE>>]
+
+        submit [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>submit</B></FONT></TD></TR>
+            <TR><TD PORT="authz">authorize</TD><TD>your Actor? alive?</TD></TR>
+            <TR><TD PORT="check">check</TD><TD>pure · const world</TD></TR>
+            <TR><TD PORT="apply">apply</TD><TD>cannot fail</TD></TR>
+          </TABLE>>]
+
+        driver [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>Action driver</B></FONT></TD></TR>
+            <TR><TD PORT="start">start next</TD><TD>take inputs · a slot</TD></TR>
+            <TR><TD PORT="done">unit done</TD><TD>give outputs · XP</TD></TR>
+            <TR><TD PORT="soft">fail-soft</TD><TD>skip · note why</TD></TR>
+          </TABLE>>]
+
+        world [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>World state</B></FONT></TD></TR>
+            <TR><TD PORT="actors">Actors</TD><TD>state · queue · pack</TD></TR>
+            <TR><TD PORT="nodes">nodes</TD><TD>flows: value · rate · as_of</TD></TR>
+            <TR><TD PORT="rev">revisions</TD><TD>per Family</TD></TR>
+          </TABLE>>]
+
+        events [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>Events</B></FONT></TD></TR>
+            <TR><TD PORT="ring">feeds</TD><TD>cursor · audience</TD></TR>
+            <TR><TD PORT="text">text</TD><TD>from pack templates</TD></TR>
+          </TABLE>>]
+    }
+
+    // ------------------------------------------------------------ storage
+    subgraph cluster_store {
+        label="Writer thread, then storage"; style="rounded,filled"; fillcolor="#fae8ff"; color="#dcb8e6"
+
+        journal [shape=plaintext, label=<
+          <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#888888">
+            <TR><TD BGCOLOR="#3d4450" COLSPAN="2"><FONT COLOR="#ffffff"><B>Journal</B></FONT></TD></TR>
+            <TR><TD PORT="rec">record</TD><TD>seq · t · payload · chain</TD></TR>
+            <TR><TD PORT="mark">marks</TD><TD>time · world hash</TD></TR>
+          </TABLE>>]
+    }
+
+    // Reply-direction flows are declared tail-first with dir=back, so that
+    // ranks follow the request path (the client on the left) in any engine.
+
+    // ------------------------------------------------------------ command
+    client:send -> gate:token
+        [label="POST /v1/commands", class="flow-command", color="#2563eb", fontcolor="#2563eb"]
+    gate:decode -> submit:authz
+        [label="SamWorldCommand", class="flow-command", color="#2563eb", fontcolor="#2563eb",
+         headlabel="after advance", labeldistance=2]
+
+    // ------------------------------------------------------------ trigger
+    gate:decode -> advance:drain
+        [label="before every command", class="flow-trigger", style=dashed, color="#6b7280", fontcolor="#6b7280"]
+    client:look -> advance:drain
+        [label="any read", class="flow-trigger", style=dashed, color="#6b7280", fontcolor="#6b7280"]
+    clock:beat -> advance:drain
+        [label="heartbeat", class="flow-trigger", style=dashed, color="#6b7280", fontcolor="#6b7280"]
+    clock:now -> advance:stamp
+        [label="world now", class="flow-trigger", style=dashed, color="#6b7280", fontcolor="#6b7280"]
+
+    // ----------------------------------------------------------- schedule
+    advance:drain -> due:heap
+        [label="pop what is due", class="flow-schedule", color="#be123c", fontcolor="#be123c"]
+    due:kinds -> driver:done
+        [label="action done", class="flow-schedule", color="#be123c", fontcolor="#be123c"]
+    due:heap -> driver:start
+        [label="push the end time", dir=back, class="flow-schedule", color="#be123c", fontcolor="#be123c"]
+
+    // ------------------------------------------------------------- change
+    submit:apply -> driver:start
+        [label="queue · start", class="flow-change", color="#b45309", fontcolor="#b45309"]
+    driver:start -> world:nodes
+        [label="take at start", class="flow-change", color="#b45309", fontcolor="#b45309"]
+    driver:done -> world:actors
+        [label="give at completion", class="flow-change", color="#b45309", fontcolor="#b45309"]
+    submit:apply -> world:rev
+        [label="bump", class="flow-change", color="#b45309", fontcolor="#b45309"]
+
+    // -------------------------------------------------------------- facts
+    driver:done -> events:ring
+        [label="action.done, stamped entry.at", class="flow-facts", style=dashed, color="#15803d", fontcolor="#15803d"]
+    driver:soft -> events:ring
+        [label="action.failed", class="flow-facts", style=dashed, color="#15803d", fontcolor="#15803d"]
+    reply:ok -> submit:check
+        [label="rejected: world untouched", dir=back, class="flow-facts", style=dashed, color="#15803d", fontcolor="#15803d"]
+    reply:sync -> submit:apply
+        [label="result", dir=back, class="flow-facts", style=dashed, color="#15803d", fontcolor="#15803d"]
+    client:count -> reply:sync
+        [label="now · ends_at", dir=back, class="flow-facts", style=dashed, color="#15803d", fontcolor="#15803d"]
+    client:look -> events:text
+        [label="feed", dir=back, class="flow-facts", style=dashed, color="#15803d", fontcolor="#15803d"]
+    client:look -> world:rev
+        [label="views, ETag = rev", dir=back, class="flow-facts", style=dashed, color="#15803d", fontcolor="#15803d"]
+
+    // ------------------------------------------------------------- record
+    submit:apply -> journal:rec
+        [label="accepted only", class="flow-record", color="#7c3aed", fontcolor="#7c3aed"]
+    clock:beat -> journal:mark
+        [label="time marks", class="flow-record", color="#7c3aed", fontcolor="#7c3aed"]
+}
