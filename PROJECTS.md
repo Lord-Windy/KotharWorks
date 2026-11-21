@@ -48,6 +48,22 @@ fuzz harnesses. See
 
 ## Applications (`apps/`)
 
+### wilds-headless — headless CLI & WAL replay rig
+
+**Status:** in-development · **Artifact:** `com.kotharworks:wilds-headless` ·
+**Package:** `com.kotharworks.wilds.headless` · **Depends on:** `wilds`
+
+Zero-server command-line harness over the pure `WildsEngine` (Ticket 05). Subcommands:
+`run` registers seeded test owners, queues sample `Travel`/`Wait` loops, and
+fast-forwards 24 logical hours in milliseconds via `advanceToNextEvent()`;
+`replay --wal <file>` re-drives a `.jsonl` write-ahead log (`WalRecord` `clockAdvance`/
+`commandEntry` entries, optional `WAL_HEADER` version triple) and verifies pinned
+`WorldHash` values inline bit-for-bit; `inspect` prints the seeded bootstrap place
+graph with edge travel times and `glance`/`look`/`examine` stub descriptions. Seeds
+accept signed decimal or full 64-bit unsigned `0x`/`0X` hex. Run via
+`mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-headless -am
+-Dexec.args="inspect --seed 0x49524F4E"`.
+
 ### wilds-server — Ironwood Wilds server host
 
 **Status:** scaffold · **Artifact:** `com.kotharworks:wilds-server` ·
@@ -60,13 +76,14 @@ multi-tab HTML UI). Currently prints the `WildsEngine` scaffold greeting via
 
 ## External dependencies
 
-| Dependency    | Scope | Used by                 |
-| ------------- | ----- | ----------------------- |
-| JUnit Jupiter | test  | `wilds`, `wilds-server` |
+| Dependency    | Scope | Used by                          |
+| ------------- | ----- | -------------------------------- |
+| JUnit Jupiter | test  | `wilds`, `wilds-headless`, `wilds-server` |
 
 ## Dependency graph
 
 ```text
 libs/wilds           (zero runtime deps)
+  ├── apps/wilds-headless
   └── apps/wilds-server
 ```
