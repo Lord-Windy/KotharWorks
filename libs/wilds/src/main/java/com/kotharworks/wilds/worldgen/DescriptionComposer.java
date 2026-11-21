@@ -17,7 +17,7 @@ package com.kotharworks.wilds.worldgen;
 
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.PlaceId;
-import com.kotharworks.wilds.state.WorldState;
+import com.kotharworks.wilds.observe.WorldView;
 
 /**
  * Procgen strategy seam: composes the deterministic inspection text for a place or
@@ -26,13 +26,14 @@ import com.kotharworks.wilds.state.WorldState;
  * <p><strong>Procgen adapter contract.</strong> A future {@code libs/procgen} module
  * will supply its own {@code DescriptionComposer} (prose grammars, biome-flavored
  * vocabulary, name generators). The host application ({@code WildsEngine}/
- * {@code WorldHost}, Ticket 04) injects the chosen implementation at construction
- * time; nothing in {@code com.kotharworks.wilds.state}, the command plumbing, or the
- * replay codecs changes — the engine only ever calls this single method to render
- * observations. Strategy seam, not state: no composer is ever stored inside
- * {@code WorldState}.
+ * {@code ObservationProjector}, Ticket 04) injects the chosen implementation at
+ * observation time; nothing in {@code com.kotharworks.wilds.state}, the command
+ * plumbing, or the replay codecs changes — the projector only ever calls this single
+ * method to render observations, exclusively through deeply immutable
+ * {@link WorldView} snapshots so undiscovered rows can never leak into prose.
+ * Strategy seam, not state: no composer is ever stored inside {@code WorldState}.
  *
- * <p>Implementations must be deterministic functions of ({@code state}, {@code target},
+ * <p>Implementations must be deterministic functions of ({@code view}, {@code target},
  * {@code zoom}) — no wall clock, no unseeded randomness.
  */
 @FunctionalInterface
@@ -52,6 +53,6 @@ public interface DescriptionComposer {
         }
     }
 
-    /** Composes the description of {@code target} within {@code state} at {@code zoom}. */
-    String compose(WorldState state, InspectTarget target, ZoomLevel zoom);
+    /** Composes the description of {@code target} within {@code view} at {@code zoom}. */
+    String compose(WorldView view, InspectTarget target, ZoomLevel zoom);
 }

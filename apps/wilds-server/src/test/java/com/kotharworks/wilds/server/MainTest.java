@@ -22,9 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MainTest {
 
     @Test
-    void bannerRendersEngineGreeting() {
+    void bannerRendersScaffoldWorldHash() {
         String text = Main.banner(1L);
-        assertTrue(text.contains("KotharWorks :: Ironwood Wilds"));
-        assertTrue(text.contains("kotharworks/wilds scaffold"));
+        assertTrue(text.startsWith("KotharWorks :: Ironwood Wilds — scaffold world "));
+        assertTrue(text.contains("(API v1)"));
     }
 }

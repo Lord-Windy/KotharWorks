@@ -15,8 +15,9 @@
  */
 package com.kotharworks.wilds.server;
 
-import com.kotharworks.wilds.seed.WorldSeed;
 import com.kotharworks.wilds.WildsEngine;
+import com.kotharworks.wilds.command.WorldCommand;
+import com.kotharworks.wilds.seed.WorldSeed;
 
 public final class Main {
 
@@ -24,7 +25,9 @@ public final class Main {
 
     public static String banner(long seed) {
         var engine = new WildsEngine(new WorldSeed(seed));
-        return "KotharWorks :: Ironwood Wilds — " + engine.hello();
+        engine.apply(new WorldCommand.RegisterOwner(1L, "Wanderer", "Scout"));
+        return "KotharWorks :: Ironwood Wilds — scaffold world " + engine.worldHash()
+                + " (API v" + WildsEngine.API_VERSION + ")";
     }
 
     public static void main(String[] args) {

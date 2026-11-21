@@ -17,12 +17,12 @@ package com.kotharworks.wilds.worldgen;
 
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.PlaceId;
+import com.kotharworks.wilds.observe.WorldView;
 import com.kotharworks.wilds.state.ActorRow;
 import com.kotharworks.wilds.state.ActiveTask;
 import com.kotharworks.wilds.state.PlaceEdge;
 import com.kotharworks.wilds.state.PlaceRow;
 import com.kotharworks.wilds.state.TaskSpec;
-import com.kotharworks.wilds.state.WorldState;
 
 import java.util.NoSuchElementException;
 import java.util.Objects;
@@ -38,18 +38,18 @@ public final class StubDescriptionComposer implements DescriptionComposer {
     public static final StubDescriptionComposer INSTANCE = new StubDescriptionComposer();
 
     @Override
-    public String compose(WorldState state, InspectTarget target, ZoomLevel zoom) {
-        Objects.requireNonNull(state, "state");
+    public String compose(WorldView view, InspectTarget target, ZoomLevel zoom) {
+        Objects.requireNonNull(view, "view");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(zoom, "zoom");
         return switch (target) {
-            case InspectTarget.PlaceTarget placeTarget -> composePlace(state, placeTarget.placeId(), zoom);
-            case InspectTarget.ActorTarget actorTarget -> composeActor(state, actorTarget.actorId(), zoom);
+            case InspectTarget.PlaceTarget placeTarget -> composePlace(view, placeTarget.placeId(), zoom);
+            case InspectTarget.ActorTarget actorTarget -> composeActor(view, actorTarget.actorId(), zoom);
         };
     }
 
-    private String composePlace(WorldState state, PlaceId placeId, ZoomLevel zoom) {
-        PlaceRow row = state.places().getOrNull(placeId);
+    private String composePlace(WorldView view, PlaceId placeId, ZoomLevel zoom) {
+        PlaceRow row = view.place(placeId).orElse(null);
         if (row == null) {
             throw new NoSuchElementException("no live place " + placeId.toWire());
         }
@@ -68,7 +68,7 @@ public final class StubDescriptionComposer implements DescriptionComposer {
                 }
             }
             case EXAMINE -> {
-                text.append(" | seed 0x").append(Long.toHexString(state.seed().value()));
+                text.append(" | seed 0x").append(Long.toHexString(view.seed().value()));
                 for (PlaceEdge edge : row.edges()) {
                     text.append(System.lineSeparator())
                             .append("  -> ").append(edge.to().toWire())
@@ -79,8 +79,8 @@ public final class StubDescriptionComposer implements DescriptionComposer {
         return text.toString();
     }
 
-    private String composeActor(WorldState state, ActorId actorId, ZoomLevel zoom) {
-        ActorRow row = state.actors().getOrNull(actorId);
+    private String composeActor(WorldView view, ActorId actorId, ZoomLevel zoom) {
+        ActorRow row = view.actor(actorId).orElse(null);
         if (row == null) {
             throw new NoSuchElementException("no live actor " + actorId.toWire());
         }
@@ -93,10 +93,10 @@ public final class StubDescriptionComposer implements DescriptionComposer {
                 // Headline only.
             }
             case LOOK -> {
-                appendEnergy(text, state, row);
+                appendEnergy(text, view, row);
             }
             case EXAMINE -> {
-                appendEnergy(text, state, row);
+                appendEnergy(text, view, row);
                 if (row.activeTask() == null) {
                     text.append(System.lineSeparator()).append("  idle");
                 } else {
@@ -119,8 +119,8 @@ public final class StubDescriptionComposer implements DescriptionComposer {
         return text.toString();
     }
 
-    private static void appendEnergy(StringBuilder text, WorldState state, ActorRow row) {
-        text.append(" energy ").append(row.energyMilli().valueMilliAt(state.nowMs()))
+    private static void appendEnergy(StringBuilder text, WorldView view, ActorRow row) {
+        text.append(" energy ").append(row.energyMilli().valueMilliAt(view.nowMs()))
                 .append('/').append(row.energyMilli().maxMilli());
     }
 

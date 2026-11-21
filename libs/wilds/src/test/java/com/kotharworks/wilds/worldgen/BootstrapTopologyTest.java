@@ -17,6 +17,7 @@ package com.kotharworks.wilds.worldgen;
 
 import com.kotharworks.wilds.id.PlaceId;
 import com.kotharworks.wilds.id.RuleId;
+import com.kotharworks.wilds.observe.WorldView;
 import com.kotharworks.wilds.rules.RuleRegistry;
 import com.kotharworks.wilds.seed.WorldSeed;
 import com.kotharworks.wilds.sim.LazyGauge;
@@ -138,24 +139,25 @@ class BootstrapTopologyTest {
                         null, List.of(), QueueFailurePolicy.ADVANCE));
 
         var composer = StubDescriptionComposer.INSTANCE;
+        WorldView view = WorldView.of(state);
 
         String[] placeZooms = {
-                composer.compose(state, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.GLANCE),
-                composer.compose(state, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.LOOK),
-                composer.compose(state, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.EXAMINE)};
+                composer.compose(view, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.GLANCE),
+                composer.compose(view, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.LOOK),
+                composer.compose(view, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.EXAMINE)};
         assertDistinctNonBlank(placeZooms, "place");
         assertEquals(placeZooms[0], composer.compose(
-                state, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.GLANCE));
+                view, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.GLANCE));
         assertEquals(placeZooms[2], composer.compose(
-                state, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.EXAMINE));
+                view, new InspectTarget.PlaceTarget(origin.id()), ZoomLevel.EXAMINE));
 
         String[] actorZooms = {
-                composer.compose(state, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.GLANCE),
-                composer.compose(state, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.LOOK),
-                composer.compose(state, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.EXAMINE)};
+                composer.compose(view, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.GLANCE),
+                composer.compose(view, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.LOOK),
+                composer.compose(view, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.EXAMINE)};
         assertDistinctNonBlank(actorZooms, "actor");
         assertEquals(actorZooms[1], composer.compose(
-                state, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.LOOK));
+                view, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.LOOK));
 
         assertNotEquals(placeZooms[0], actorZooms[0], "place and actor descriptions must differ");
     }

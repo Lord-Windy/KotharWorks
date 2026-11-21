@@ -33,7 +33,16 @@ entity rows (`OwnerRow`, `PlaceRow`, `ActorRow`, `TaskSpec`, `ActiveTask`) in
 `com.kotharworks.wilds.rules`, the `WorldTopologyBootstrap`/`DescriptionComposer`
 procgen strategy seams with deterministic stubs in `com.kotharworks.wilds.worldgen`,
 and the zero-dependency `JsonCodec`, `SnapshotCodec`, and canonical SHA-256-based
-`WorldHash` in `com.kotharworks.wilds.replay`. See
+`WorldHash` in `com.kotharworks.wilds.replay`. Ticket 04 completes the engine: the
+`WildsEngine` facade with side-effect-free Phase-1 `WorldCommand` validation
+(`ErrorCode`, `Phase1Result`, `Phase1Validator` in `com.kotharworks.wilds.command`),
+the two-phase task mechanics and queue runner with O(1) heap-ticket cancellation
+(`TaskMechanic`, `TaskQueueRunner`, `WaitMechanic`, `TravelMechanic` in
+`com.kotharworks.wilds.task`), the outward-only `WorldEvent` outbox with monotonic
+cursors (`com.kotharworks.wilds.event`), the deeply immutable `WorldView` and
+fog-of-war `ObservationProjector` (`com.kotharworks.wilds.observe`), the
+`CommandCodec`/`WalRecord` replay codecs, and the golden replay + 5,000-step seeded
+fuzz harnesses. See
 [`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 

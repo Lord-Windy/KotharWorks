@@ -21,6 +21,6 @@ package com.kotharworks.wilds.state;
 public enum QueueFailurePolicy {
     /** Drop the failed task and advance to the next queued task. */
     ADVANCE,
-    /** Stop consuming the queue when a task fails; leave the remaining tasks queued. */
+    /** Clear the pending queue and stand idle when a task fails. */
     HALT_ON_FAIL
 }

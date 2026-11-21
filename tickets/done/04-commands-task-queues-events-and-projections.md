@@ -1,7 +1,7 @@
 # Ticket 04 — Commands, Two-Phase Task Queues, Events, Fog Projector & Golden Harness
 
 - **`st` Key:** `d8ed0e93` (`KOTHARWORKS` · `tech-wilds`)
-- **Status:** Backlog *(auto-promotes when `0aaf30bb` completes)*
+- **Status:** Done
 - **Depends on:** Ticket `03` (`0aaf30bb`)
 - **Modules touched:** `libs/wilds`, `PROJECTS.md` *(mark `libs/wilds` `in-development`)*
 
