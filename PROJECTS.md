@@ -27,7 +27,14 @@ and the JDK 25 `java.lang.classfile` bytecode & reflection purity gate
 `OwnerId`/`ActorId`/`PlaceId` + `RuleId` with parse/round-trip validation in
 `com.kotharworks.wilds.id`, and the dense `EntityTable`, integer `LazyGauge`,
 and `(dueAtMs, seq)` `DueEventHeap` simulation structures in
-`com.kotharworks.wilds.sim`. See [`planning/README.md`](planning/README.md) and
+`com.kotharworks.wilds.sim`. Ticket 03 adds the neutral `WorldState` schema and
+entity rows (`OwnerRow`, `PlaceRow`, `ActorRow`, `TaskSpec`, `ActiveTask`) in
+`com.kotharworks.wilds.state`, the compile-time `RuleRegistry` in
+`com.kotharworks.wilds.rules`, the `WorldTopologyBootstrap`/`DescriptionComposer`
+procgen strategy seams with deterministic stubs in `com.kotharworks.wilds.worldgen`,
+and the zero-dependency `JsonCodec`, `SnapshotCodec`, and canonical SHA-256-based
+`WorldHash` in `com.kotharworks.wilds.replay`. See
+[`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 
 ## Applications (`apps/`)

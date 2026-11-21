@@ -16,6 +16,7 @@
 package com.kotharworks.wilds;
 
 import com.kotharworks.wilds.seed.SeededRng;
+import com.kotharworks.wilds.state.WorldState;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -123,6 +124,11 @@ class WildsArchitectureGateTest {
     @Test
     void wildsEngineStateRootIsPureDeterministic() {
         assertPureDeterministicStateRoot(WildsEngine.class);
+    }
+
+    @Test
+    void worldStateRootIsPureDeterministic() {
+        assertPureDeterministicStateRoot(WorldState.class);
     }
 
     @Test

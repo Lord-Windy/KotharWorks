@@ -1,7 +1,7 @@
 # Ticket 03 — Neutral WorldState, RuleRegistry, Procgen Seams, JsonCodec & WorldHash
 
 - **`st` Key:** `0aaf30bb` (`KOTHARWORKS` · `tech-wilds`)
-- **Status:** Backlog *(auto-promotes when `29b0e00a` completes)*
+- **Status:** Done
 - **Depends on:** Ticket `02` (`29b0e00a`)
 - **Modules touched:** `libs/wilds`
 
