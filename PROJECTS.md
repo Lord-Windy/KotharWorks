@@ -23,7 +23,11 @@ command dispatch. Holds the `WildsEngine` scaffold (`API_VERSION = 1`) pinned by
 `WildsEngineTest`, the domain-separated seeded RNG primitives `WorldSeed`
 (FNV-1a + SplitMix64) and integer-only `SeededRng` in `com.kotharworks.wilds.seed`,
 and the JDK 25 `java.lang.classfile` bytecode & reflection purity gate
-(`WildsArchitectureGateTest`). See [`planning/README.md`](planning/README.md) and
+(`WildsArchitectureGateTest`). Ticket 02 adds the generational wire IDs
+`OwnerId`/`ActorId`/`PlaceId` + `RuleId` with parse/round-trip validation in
+`com.kotharworks.wilds.id`, and the dense `EntityTable`, integer `LazyGauge`,
+and `(dueAtMs, seq)` `DueEventHeap` simulation structures in
+`com.kotharworks.wilds.sim`. See [`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 
 ## Applications (`apps/`)
