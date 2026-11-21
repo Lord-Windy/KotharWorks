@@ -15,7 +15,7 @@
  */
 package com.kotharworks.wilds.server;
 
-import com.kotharworks.procgen.WorldSeed;
+import com.kotharworks.wilds.seed.WorldSeed;
 import com.kotharworks.wilds.WildsEngine;
 
 public final class Main {

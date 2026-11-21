@@ -15,7 +15,7 @@
  */
 package com.kotharworks.wilds;
 
-import com.kotharworks.procgen.WorldSeed;
+import com.kotharworks.wilds.seed.WorldSeed;
 
 import java.util.Objects;
 

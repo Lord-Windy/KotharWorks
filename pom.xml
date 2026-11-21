@@ -30,7 +30,6 @@
 
     <modules>
         <!-- Libraries -->
-        <module>libs/procgen</module>
         <module>libs/wilds</module>
 
         <!-- Applications -->
@@ -53,11 +52,6 @@
     <dependencyManagement>
         <dependencies>
             <!-- Internal monorepo libraries -->
-            <dependency>
-                <groupId>com.kotharworks</groupId>
-                <artifactId>procgen</artifactId>
-                <version>${project.version}</version>
-            </dependency>
             <dependency>
                 <groupId>com.kotharworks</groupId>
                 <artifactId>wilds</artifactId>

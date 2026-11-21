@@ -12,26 +12,18 @@ commands, and the `st` agent workflow, see [AGENTS.md](AGENTS.md).
 
 ## Libraries (`libs/`)
 
-### procgen — Seeded spatial math & procedural text
-
-**Status:** scaffold · **Artifact:** `com.kotharworks:procgen` · **Package:**
-`com.kotharworks.procgen` · **Depends on:** —
-
-Order-independent coordinate hashing (`WorldSeed`), phonotactic low-fantasy
-names & character personas, and hierarchical slot/template prose generation.
-Zero external runtime dependencies. See
-[`planning/ironwood_wilds_planning/03-ProceduralGeneration.md`](planning/ironwood_wilds_planning/03-ProceduralGeneration.md).
-
 ### wilds — Ironwood Wilds simulation engine
 
-**Status:** scaffold · **Artifact:** `com.kotharworks:wilds` · **Package:**
-`com.kotharworks.wilds` · **Depends on:** `procgen`
+**Status:** in-development · **Artifact:** `com.kotharworks:wilds` · **Package:**
+`com.kotharworks.wilds` · **Depends on:** — (zero runtime dependencies)
 
 Headless, deterministic Java 25 simulation core for **Ironwood Wilds**: pure
 logical-millisecond clock, integer-only state, zero I/O, zero wall-clock calls,
-command dispatch. Currently holds the `WildsEngine` hello-world scaffold
-(`API_VERSION = 1`) pinned by `WildsEngineTest`. See
-[`planning/README.md`](planning/README.md) and
+command dispatch. Holds the `WildsEngine` scaffold (`API_VERSION = 1`) pinned by
+`WildsEngineTest`, the domain-separated seeded RNG primitives `WorldSeed`
+(FNV-1a + SplitMix64) and integer-only `SeededRng` in `com.kotharworks.wilds.seed`,
+and the JDK 25 `java.lang.classfile` bytecode & reflection purity gate
+(`WildsArchitectureGateTest`). See [`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 
 ## Applications (`apps/`)
@@ -48,14 +40,13 @@ multi-tab HTML UI). Currently prints the `WildsEngine` scaffold greeting via
 
 ## External dependencies
 
-| Dependency    | Scope | Used by                            |
-| ------------- | ----- | ---------------------------------- |
-| JUnit Jupiter | test  | `procgen`, `wilds`, `wilds-server` |
+| Dependency    | Scope | Used by                 |
+| ------------- | ----- | ----------------------- |
+| JUnit Jupiter | test  | `wilds`, `wilds-server` |
 
 ## Dependency graph
 
 ```text
-libs/procgen        (zero runtime deps)
-  └── libs/wilds
-        └── apps/wilds-server
+libs/wilds           (zero runtime deps)
+  └── apps/wilds-server
 ```
