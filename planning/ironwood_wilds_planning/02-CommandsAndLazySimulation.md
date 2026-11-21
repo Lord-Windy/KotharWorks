@@ -101,7 +101,7 @@ public void advanceTo(long targetNowMs) {
 
 ---
 
-## 3. Wire Command Envelope, `cmdId` Idempotency & Synchronous Admission
+## 3. Wire Command Envelope, `cmdId` Idempotency, `expectedRevision` & Commit-Before-Mutate Admission
 
 ### 3.1 One Mutation Endpoint: `POST /api/v1/commands`
 Humans (browser forms/fetch) and bots share **one** polymorphic command endpoint—zero UI-private routes:
@@ -113,6 +113,7 @@ Authorization: Bearer iw_bot_9f8a2c11_...
   "cmdId": "01934e2a-7c10-7b32-9a14-8d2f4e6a9012",
   "type": "enqueue",
   "character": "chr:0:1",
+  "expectedRevision": 12,
   "actions": [
     { "kind": "TRAVEL", "targetSite": "site:4:1" },
     { "kind": "GATHER", "targetSite": "site:4:1", "node": "hematite_seam", "batches": 3 },
@@ -122,10 +123,15 @@ Authorization: Bearer iw_bot_9f8a2c11_...
 }
 ```
 
-### 3.2 Avoiding the Pre-Mailbox TOCTOU Race (Synchronous `WorldHost` Admission)
-> **Critical Implementation Rule:** Never validate dynamic state (`character alive?`, `queue < 5?`) on an HTTP Virtual Thread against a stale `WorldView` before committing to `command_wal`—two rapid bot POSTs would both see `4/5`, both commit to the truth log, and violate invariants inside the engine.
+- **`cmdId` (UUIDv7 — Mandatory Idempotency Key):** Safely deduplicates network retries.
+- **`expectedRevision` (`Long` — Optional Optimistic Concurrency / ETag Guard):** Every `CharacterRow` and `HoldRow` carries a monotonic `long revision` (incremented whenever a command mutates its queue/doctrine **or** when `DueEventHeap` finishes/advances an action). Callers may omit `expectedRevision` (`null`) for unconditional fire-and-forget appends, while the `/play` Web UI **always** sends `expectedRevision` on `replace_queue`, `cancel_queue`, `set_fail_policy`, `write_hold_doctrine`, and `stage_shipment` so a stale browser tab never silently clobbers an action that just transitioned underneath the user (`409 STALE_STATE`).
 
-Instead, because parking a Java 25 Virtual Thread on a reply slot for `< 1ms` is practically free, admission runs **synchronously inside `WorldHost`**:
+### 3.2 Avoiding Both Pre-Mailbox TOCTOU Races and RAM/DB Split-Brain (`WorldHost`)
+> **Critical Implementation Rules:**
+> 1. **Never validate on HTTP threads:** Validating dynamic state (`character alive?`, `queue < 5?`, `expectedRevision`) against a `WorldView` snapshot before entering `WorldHost` creates a classic TOCTOU race.
+> 2. **Never mutate RAM before Postgres commits:** Phase-1 validation is **100% pure (read-only)**, and `WorldHost` commits `command_wal` synchronously **before** mutating `WorldState` or emitting SSE events. If Postgres throws `SQLException`, `WorldState` remains untouched (`503 Service Unavailable`) and RAM never drifts ahead of disk.
+
+Parking a Java 25 Virtual Thread on a reply slot while a single-row Postgres `INSERT` commits (`~0.3–1ms`) is practically free, so admission runs **synchronously inside `WorldHost`**:
 
 ```text
   Client ──► HTTP Adapter (VT)
@@ -138,21 +144,30 @@ Instead, because parking a Java 25 Virtual Thread on a reply slot for `< 1ms` is
              WorldHost Single-Writer Thread
                1. Deduplicate `cmdId` in recent-cache / DB (`UNIQUE (chronicle_id, cmd_id)`):
                   if already seen -> return cached original CommandReceipt immediately!
-               2. Stamp `admittedMs = currentLogicalMs`; call `engine.advanceTo(admittedMs)`
-                  so any actions/raids completing up to this exact millisecond resolve first.
-               3. Run Phase-1 Validation against LIVE `WorldState`:
-                  • If rejected -> return `409 Conflict` (`QUEUE_FULL`, `CHARACTER_DEAD`, etc.);
-                    NOTHING written to `command_wal`!
-               4. Commit accepted `(wal_seq, admittedMs, cmdId, cmd)` to `wilds_world.command_wal`
-                  (10ms micro-batch group-commit for high throughput + durability).
-               5. Apply command to `WorldState` -> if character was `IDLE_PATIENT`, run Phase-2
-                  start check & schedule completion on `DueEventHeap` -> publish new `WorldView`.
-               6. Complete `replyBox` with `200 OK` + updated `CharacterQueueDto`; push SSE events!
+               2. Stamp `admittedMs = currentLogicalMs`:
+                  • If `engine.peekNextDueMs() <= admittedMs`, commit `CLOCK_ADVANCE(admittedMs)`
+                    to `command_wal` FIRST, then call `engine.advanceTo(admittedMs)` (and append
+                    any emitted `chronicle_events` / `battle_chronicles` rows).
+               3. Run PURE (read-only) Phase-1 Validation against LIVE `WorldState`:
+                  • Checks ownership, alive, `expectedRevision` (`409 STALE_STATE`), queue cap, tech/skill, fog.
+                  • If rejected -> return `409 Conflict` (+ current revision/state);
+                    NOTHING mutated in RAM and NOTHING written to `command_wal`!
+               4. Commit accepted `(wal_seq, admittedMs, cmdId, cmd)` synchronously to
+                  `wilds_world.command_wal` BEFORE mutating `WorldState`:
+                  • If Postgres throws `SQLException` -> return `503` (caller safely retries same `cmdId`);
+                    `WorldState` in RAM is untouched!
+               5. Apply pre-validated command to `WorldState` (incrementing entity `revision`; if
+                  character was `IDLE_PATIENT`, run Phase-2 start check & schedule on `DueEventHeap`),
+                  persist any immediate append-only `chronicle_events`, and publish new `WorldView`.
+               6. Complete `replyBox` with `200 OK` + updated `CharacterQueueDto` (`revision`); push SSE!
 ```
 
+> **Passive 1 Hz Live Pump Follows the Exact Same Rule:** When the 1 Hz wall-clock pump wakes and sees `engine.peekNextDueMs() <= targetMs` (or once every `60s` of quiet uptime), `WorldHost` commits a lightweight `CLOCK_ADVANCE(targetMs)` row to `command_wal` **before** calling `engine.advanceTo(targetMs)`, publishing `WorldView`, or pushing SSE events. Even an abrupt `kill -9` four minutes after the last snapshot—with zero player commands in between—never rewinds already-streamed SSE events!
+
 **Why this contract is rock-solid:**
-- **`command_wal` is 100% Clean Truth:** Every row in `command_wal` is guaranteed admissible and totally ordered by `(admittedMs, wal_seq)`.
-- **Idempotent Retries:** If a bot's connection drops mid-flight and it retries the same `cmdId`, step 1 returns the original receipt without double-queuing.
+- **`command_wal` is 100% Clean Truth:** Every row in `command_wal` is guaranteed admissible and totally ordered by `(admittedMs, wal_seq)`, and `expectedRevision` doubles as an inline causal assertion during replay.
+- **Zero Split-Brain on DB Errors:** Because `validatePhase1` is side-effect-free and `command_wal` commits before `WorldState` mutates, Postgres failures never leave dirty uncommitted state in memory.
+- **Idempotent Retries:** If a bot's connection drops mid-flight (or receives `503`) and retries the same `cmdId`, step 1 either returns the cached receipt or cleanly processes it once.
 
 ---
 
@@ -160,12 +175,13 @@ Instead, because parking a Java 25 Virtual Thread on a reply slot for `< 1ms` is
 
 Because queued actions execute minutes after submission, the world **will** change in between. Every action passes two distinct checks:
 
-### Phase 1: Enqueue-Time Validation (Strict on Static Gates, Optimistic on Future State)
-Checked inside `WorldHost` during `POST /api/v1/commands`. Any failure rejects the whole command atomically (`409 Conflict` with stable error code):
+### Phase 1: Enqueue-Time Validation (100% Pure Read-Only Check Before WAL Commit)
+Checked inside `WorldHost` during `POST /api/v1/commands` **without mutating `WorldState`**. Any failure rejects the whole command atomically (`409 Conflict` with stable error code + current entity `revision`):
 
 | Check | Error Code (`409`) | Notes |
 | :--- | :--- | :--- |
 | Authority | `FORBIDDEN` | Character/Hold belongs to another Household. |
+| Optimistic Revision (ETag) | `STALE_STATE` | Non-null `expectedRevision` does not match current `CharacterRow.revision` or `HoldRow.revision` (e.g., active action finished or another tab edited it underneath the caller). |
 | Mortal & Solo State | `CHARACTER_DEAD` / `LOCKED_IN_PARTY` | Characters marching in an active Party cannot take solo tab actions. |
 | Queue Capacity | `QUEUE_FULL` | Cap: `1 active + 5 pending` slots per character. |
 | Tech & Skill Gates | `TECH_LOCKED` / `SKILL_TOO_LOW` | Checked against Household's unlocked techs & character's current skill level. |

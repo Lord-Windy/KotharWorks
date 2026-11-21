@@ -29,13 +29,11 @@ PostgreSQL Database: `kotharworks`  (JDBI 3 + HikariCP · Zero Hibernate/JPA · 
 │   ├── doctrine_blueprints   Saved Hold Raid & PvM Party Gambit presets carried across seasons
 │   └── champion_genomes      (Phase 2) Archived `SamVM` LGP genomes & lineage metadata
 │
-└── Schema 3: `wilds_world`   (Active Chronicle State — Archived & Truncated on Season Reset)
-    ├── command_wal           THE SOURCE OF TRUTH: ordered admissible commands + `cmd_id` unique key
-    ├── world_checkpoints     Tick-boundary `WorldState` snapshots (fast boot cache, NOT truth)
-    ├── chronicle_events      Rebuildable public/household event & fogged-rumor projection
-    ├── characters_live       Inspectable SQL projection of living/fallen settlers & personas
-    ├── holds_live            Inspectable SQL projection of Holds, Vaults & Awareness
-    └── battle_chronicles     Immutable PvM & Raid reports (powers `/api/v1/public/battles/{id}`)
+└── Schema 3: `wilds_world`   (Active Chronicle State — 100% Append-Only · Archived & Truncated on Season Reset)
+    ├── command_wal           THE SOURCE OF TRUTH: ordered admissible commands, `cmd_id` unique key & `CLOCK_ADVANCE` markers
+    ├── world_checkpoints     Tick-boundary `WorldState` JSONB snapshots (fast boot cache + `psql` JSONB inspection)
+    ├── chronicle_events      Append-only public/household event & fogged-rumor log (`?since=cursor` catch-up)
+    └── battle_chronicles     Append-only PvM & Raid reports (powers `/api/v1/public/battles/{id}`)
 ```
 
 ---
@@ -163,44 +161,49 @@ CREATE TABLE wilds_meta.doctrine_blueprints (
 
 ---
 
-## 4. Schema 3: `wilds_world` — Command Log as Truth + Snapshot Cache
+## 4. Schema 3: `wilds_world` — 100% Append-Only WAL, Checkpoints & Event Logs
 
-Why **Command Log + Tick-Boundary Snapshots** beats both snapshot-only and full event-sourcing:
+Why **Command Log + Tick-Boundary Snapshots** beats snapshot-only, event-sourcing, and per-entity SQL `UPDATE` sync:
 - **Snapshot-only** loses recent actions on crash and destroys bug reproducibility.
 - **Event-sourcing** couples durability to high-churn `WorldEvent` schemas (which evolve frequently as UI/Chronicle prose improves).
-- **Command-Log-as-Truth (`command_wal`)** stores compact, stable `WorldCommand` envelopes (`~300/house/day`). Because `WildsEngine` is a pure deterministic function of `(world_seed, rules_version, command_wal)`, any snapshot or projection can be rebuilt from `wal_seq = 1` at any time!
+- **Per-entity live table `UPDATE`s (`UPDATE characters SET ...`)** require multi-row locking or invite out-of-order async sync bugs between RAM and Postgres.
+- **100% Append-Only `wilds_world` (`INSERT` only, zero `UPDATE`s):** Only the single `WorldHost` thread writes to `wilds_world`, and every table in this schema is strictly append-only (`command_wal`, `world_checkpoints`, `chronicle_events`, `battle_chronicles`—never mutable entity-sync tables). Live HTTP reads come lock-free from in-memory `WorldView`, while operators debugging in `psql` can query `world_checkpoints.state_json` directly via Postgres JSONB operators. Because `WildsEngine` is a pure deterministic function of `(world_seed, rules_version, command_wal)`, any snapshot or event log can be rebuilt from `wal_seq = 1` at any time!
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS wilds_world;
 
--- 1. THE SOURCE OF TRUTH: Ordered Admissible Commands + Clock-Advance Anchors
+-- 1. THE SOURCE OF TRUTH: Ordered Admissible Commands + Passive CLOCK_ADVANCE Anchors
 CREATE TABLE wilds_world.command_wal (
     chronicle_id    INT NOT NULL,
     wal_seq         BIGINT GENERATED ALWAYS AS IDENTITY,
     admitted_ms     BIGINT NOT NULL,                     -- Exact logical ms when WorldHost applied it
-    house_id        BIGINT,                              -- NULL for system clock-checkpoint markers
-    cmd_id          UUID NOT NULL,                       -- Client UUIDv7 idempotency key
+    house_id        BIGINT,                              -- NULL strictly for system CLOCK_ADVANCE markers
+    cmd_id          UUID,                                -- Client UUIDv7 idempotency key (NULL for CLOCK_ADVANCE)
     cmd_type        TEXT NOT NULL,
     payload_json    JSONB NOT NULL,
     world_hash      BIGINT,                              -- Optional periodic inline WorldHash assertion!
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (chronicle_id, wal_seq),
-    UNIQUE (chronicle_id, cmd_id)                        -- Enforces exactly-once idempotency!
+    UNIQUE (chronicle_id, cmd_id),                       -- Enforces exactly-once idempotency on commands!
+    CHECK (
+        (cmd_type = 'CLOCK_ADVANCE' AND house_id IS NULL AND cmd_id IS NULL)
+        OR (cmd_type <> 'CLOCK_ADVANCE' AND house_id IS NOT NULL AND cmd_id IS NOT NULL)
+    )
 );
 
--- 2. FAST-BOOT CACHE: Written at Clean Tick Boundaries (Every 5m + SIGTERM)
+-- 2. FAST-BOOT CACHE & JSONB INSPECTION: Written at Clean Tick Boundaries (Every 5m + SIGTERM)
 CREATE TABLE wilds_world.world_checkpoints (
     chronicle_id    INT NOT NULL,
     checkpoint_id   BIGINT GENERATED ALWAYS AS IDENTITY,
     up_to_wal_seq   BIGINT NOT NULL,                     -- Subsumes command_wal <= up_to_wal_seq
     logical_ms      BIGINT NOT NULL,
     world_hash      BIGINT NOT NULL,                     -- Verified on load!
-    state_json      JSONB NOT NULL,
+    state_json      JSONB NOT NULL,                      -- Full WorldState JSONB (inspectable in psql)
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (chronicle_id, checkpoint_id)
 );
 
--- 3. REBUILDABLE PROJECTIONS: Chronicle Wire (with Fogged Rumors) & Live SQL Views
+-- 3. APPEND-ONLY EVENT & BATTLE LOGS (Idempotent ON CONFLICT DO NOTHING on Replay)
 CREATE TABLE wilds_world.chronicle_events (
     chronicle_id    INT NOT NULL,
     event_cursor    BIGINT NOT NULL,
@@ -213,32 +216,9 @@ CREATE TABLE wilds_world.chronicle_events (
     PRIMARY KEY (chronicle_id, event_cursor)
 );
 
-CREATE TABLE wilds_world.characters_live (
-    character_ref   TEXT PRIMARY KEY,                    -- e.g. 'chr:0:1'
-    house_id        BIGINT NOT NULL,
-    full_name       TEXT NOT NULL,
-    persona_json    JSONB NOT NULL,                      -- Origin, temperament, quirk, scars
-    alive           BOOLEAN NOT NULL,
-    location_desc   TEXT NOT NULL,
-    active_action   TEXT,
-    active_due_ms   BIGINT,
-    skills_json     JSONB NOT NULL,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE wilds_world.holds_live (
-    hold_ref        TEXT PRIMARY KEY,
-    house_id        BIGINT NOT NULL UNIQUE,
-    hold_name       TEXT NOT NULL,
-    awareness_milli BIGINT NOT NULL,
-    vault_cap       INT NOT NULL,
-    stockpile_json  JSONB NOT NULL,
-    buildings_json  JSONB NOT NULL,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE TABLE wilds_world.battle_chronicles (
-    battle_id       BIGINT PRIMARY KEY,
+    chronicle_id    INT NOT NULL,
+    battle_id       BIGINT NOT NULL,
     house_id        BIGINT NOT NULL,
     kind            TEXT NOT NULL CHECK (kind IN ('PVM_EXPEDITION', 'HOLD_RAID')),
     occurred_ms     BIGINT NOT NULL,
@@ -246,7 +226,8 @@ CREATE TABLE wilds_world.battle_chronicles (
     outcome         TEXT NOT NULL,
     prose_report    TEXT NOT NULL,
     structured_json JSONB NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (chronicle_id, battle_id)
 );
 ```
 
@@ -257,10 +238,11 @@ CREATE TABLE wilds_world.battle_chronicles (
 ### Zero-Framework Forward SQL Migrator (`~100 LOC`)
 Plain SQL files live in `apps/wilds-server/src/main/resources/db/V001__auth.sql`, `V002__wilds_meta.sql`, `V003__wilds_world.sql`. On boot, a tiny JDBC runner checks `public.schema_migrations`, applies any unapplied `V###` scripts inside a transaction, and refuses to boot if an unknown future migration version is present. No Flyway or Liquibase dependencies required.
 
-### Lifecycle A: Routine Restart / Crash Recovery (`PAUSE_WHILE_DOWN` Default)
-1. **Graceful `SIGTERM`:** `WorldHost` halts the mailbox, drains `advanceTo(currentLogicalMs)`, writes a final `world_checkpoints` row (`up_to_wal_seq = K`, `world_hash = H`), and exits cleanly.
-2. **Crash Recovery (`kill -9`):** On startup, `WorldHost` loads the latest `world_checkpoints` row, verifies `engine.worldHash() == checkpoint.worldHash()`, and replays `SELECT * FROM wilds_world.command_wal WHERE wal_seq > up_to_wal_seq ORDER BY wal_seq ASC`, advancing to each `admitted_ms` and re-applying each command.
-3. **`PAUSE_WHILE_DOWN` Clock Rule:** The live 1 Hz clock pump tracks `logicalMs` as an offset from the last persisted tick—**server maintenance downtime never fast-forwards unmonitored raids or wastes buffs while the server process was offline**.
+### Lifecycle A: Routine Restart / Crash Recovery (`PAUSE_WHILE_DOWN` + Zero Time-Rewind)
+1. **Commit-Before-Mutate & `CLOCK_ADVANCE` Anchors:** `WorldHost` commits every `WorldCommand` to `command_wal` **before** mutating `WorldState`. Likewise, whenever the 1 Hz live pump sees due events (`engine.peekNextDueMs() <= targetMs`)—or once every `60s` of quiet uptime—`WorldHost` commits a `CLOCK_ADVANCE` row (`admitted_ms = targetMs`) to `command_wal` **before** calling `engine.advanceTo(targetMs)`, publishing `WorldView`, or pushing SSE events. If Postgres throws `SQLException`, `WorldHost` stays cleanly paused at the last committed millisecond without dirtying RAM.
+2. **Graceful `SIGTERM`:** `WorldHost` halts the mailbox, commits a final `CLOCK_ADVANCE(currentLogicalMs)`, drains `advanceTo(currentLogicalMs)`, writes a `world_checkpoints` row (`up_to_wal_seq = K`, `world_hash = H`), prunes ancient checkpoint rows (`checkpoint_id < latest - 12`), and exits cleanly.
+3. **Crash Recovery (`kill -9`):** On startup, `WorldHost` loads the latest `world_checkpoints` row, verifies `engine.worldHash() == checkpoint.worldHash()`, and replays `SELECT * FROM wilds_world.command_wal WHERE chronicle_id = ? AND wal_seq > up_to_wal_seq ORDER BY wal_seq ASC`—stepping to each `CLOCK_ADVANCE` / command `admitted_ms`, re-applying commands, and idempotently backfilling any missing `chronicle_events` / `battle_chronicles` rows via `INSERT ... ON CONFLICT DO NOTHING`. Even if `kill -9` strikes 4 minutes after a checkpoint with zero player commands in between, **no already-emitted SSE cursor is ever rewound**.
+4. **`PAUSE_WHILE_DOWN` Clock Rule:** The live 1 Hz clock pump resumes `logicalMs` from the last persisted `admitted_ms` / `checkpoint.logical_ms`—**server maintenance downtime never fast-forwards unmonitored raids or wastes buffs while the server process was offline**.
 
 ### Lifecycle B: Planned Chronicle Reset
 1. Final snapshot + `wilds_world.command_wal` are exported to a compressed `.jsonl.zst` archive bundle (playable forever in `apps/wilds-headless replay`).

@@ -13,7 +13,7 @@
 | Channel | Endpoint | Role | Why Chosen Over Alternatives |
 | :--- | :--- | :--- | :--- |
 | **REST Reads** | `GET /api/v1/*` | Rules catalog, fogged Household/Hold/Site views, cursor catch-up (`?since=cursor`) | Stateless, cacheable projections off immutable `WorldView`; trivial to test with `curl`. |
-| **Polymorphic Mutations** | `POST /api/v1/commands` | All player & bot commands (`cmdId` UUIDv7 + `sealed` payload) | One decoder, one rate-limiter, DB-enforced idempotency; Web UI forms/fetch use the exact same envelope as bots. |
+| **Polymorphic Mutations** | `POST /api/v1/commands` | All player & bot commands (`cmdId` UUIDv7 + optional `expectedRevision` + `sealed` payload) | One decoder, one rate-limiter, DB-enforced idempotency + ETag-equivalent optimistic concurrency (`409 STALE_STATE`); Web UI forms/fetch use the exact same envelope as bots. |
 | **Live Event Push (SSE)** | `GET /api/v1/stream?since=cursor` | Live `action.*`, `level.up`, `raid.*`, `shipment.*`, `rumor.heard` | Mutations are infrequent while event watching is continuous. On JDK `HttpServer` + Virtual Threads, **SSE is ~25 lines of plain HTTP** (vs. hundreds of lines of RFC 6455 WebSocket frame-masking), auto-reconnects natively via browser `EventSource`, and works seamlessly behind nginx/Cloudflare. |
 
 *(Optional Post-Slice Escape Hatch: Because `apps/wilds-server` is hexagonal, adding a 60-line raw NDJSON `ServerSocket` adapter on `:8124` later for zero-HTTP C bots requires zero changes to `WorldHost` or `libs/wilds`—keeping Slice 0 focused on one rock-solid REST + SSE contract.)*
@@ -66,9 +66,10 @@ Clients **never** receive raw `WorldState`. `ObservationProjector` is a pure fun
 ### Rendering Stack
 - **Java 25 Escape-by-Default `Html` Builder:** Fast, compile-time-checked SSR HTML functions in `apps/wilds-server/adapters/web`. Zero React, zero Vite/npm, zero reflection template engines; forms even degrade gracefully if JS is disabled.
 - **~250 Lines of Vanilla JS (`wilds-ui.js`):**
-  1. Connects `EventSource('/api/v1/stream?since=' + cursor)` to prepend live Chronicle/Journal entries and refresh affected panels when an action completes or a raid warning sounds.
-  2. Interpolates **smooth 60fps progress bars & tab countdowns locally** from `{startedAtMs, dueAtMs, serverNowMs}` (`clockSkewMs = performance.now() - serverNowMs`)—consuming **zero network bandwidth** between discrete completions!
-  3. Binds crisp keyboard shortcuts: **`1–9`** for Character Tabs, **`H`** for Hold & Raid Plan, **`T`** for Tech Tree, **`E`** for PvM Expeditions, **`O`** for Chronicle Observatory.
+  1. Connects `EventSource('/api/v1/stream?since=' + cursor)` to prepend live Chronicle/Journal entries and refresh affected panels (and their `revision` tokens) when an action completes or a raid warning sounds.
+  2. Sends `expectedRevision` (embedded on each Character/Hold form) on queue replace/cancel and doctrine/staging POSTs—catching `409 STALE_STATE` cleanly by refreshing the panel if an action transitioned milliseconds before the click.
+  3. Interpolates **smooth 60fps progress bars & tab countdowns locally** from `{startedAtMs, dueAtMs, serverNowMs}` (`clockSkewMs = performance.now() - serverNowMs`)—consuming **zero network bandwidth** between discrete completions!
+  4. Binds crisp keyboard shortcuts: **`1–9`** for Character Tabs, **`H`** for Hold & Raid Plan, **`T`** for Tech Tree, **`E`** for PvM Expeditions, **`O`** for Chronicle Observatory.
 
 ### Interactive Prototype & Rendered Views
 Open **[`prototype/index.html`](prototype/index.html)** in any browser to test tab switching, `Examine` drawers, Character Personas & Journals, and queue appending:

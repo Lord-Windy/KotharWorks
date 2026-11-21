@@ -34,9 +34,9 @@
 <polygon fill="#2d2312" stroke="none" points="17,-182.88 17,-204.88 282,-204.88 282,-182.88 17,-182.88"/>
 <text xml:space="preserve" text-anchor="start" x="22" y="-191.38" font-family="Liberation Sans" font-weight="bold" font-size="10.00" fill="#f2cc60">«Command Pattern» sealed WorldCommand</text>
 <text xml:space="preserve" text-anchor="start" x="22" y="-168.12" font-family="Liberation Sans" font-size="10.00" fill="#e6edf3">• EnqueueActions / ReplacePendingQueue / CancelQueue</text>
-<text xml:space="preserve" text-anchor="start" x="22" y="-146.12" font-family="Liberation Sans" font-size="10.00" fill="#e6edf3">• StartBuilding / WriteHoldDoctrine</text>
+<text xml:space="preserve" text-anchor="start" x="22" y="-146.12" font-family="Liberation Sans" font-size="10.00" fill="#e6edf3">• StartBuilding / WriteHoldDoctrine (+ expectedRevision)</text>
 <text xml:space="preserve" text-anchor="start" x="22" y="-124.12" font-family="Liberation Sans" font-size="10.00" fill="#e6edf3">• StageShipment / RecruitSettler / FormAndDispatchParty</text>
-<text xml:space="preserve" text-anchor="start" x="22" y="-104.38" font-family="Liberation Sans" font-size="8.00" fill="#8b949e">Single POST /api/v1/commands + cmdId UUIDv7 + exhaustive switch</text>
+<text xml:space="preserve" text-anchor="start" x="22" y="-104.38" font-family="Liberation Sans" font-size="8.00" fill="#8b949e">POST /api/v1/commands · cmdId UUIDv7 + ETag expectedRevision</text>
 </g>
 <!-- strategy_pattern -->
 <g id="node2" class="node">
@@ -82,7 +82,7 @@
 <polygon fill="none" stroke="#2ea043" points="1134.75,-173.12 1134.75,-298.88 1420.75,-298.88 1420.75,-173.12 1134.75,-173.12"/>
 <polygon fill="#1b3624" stroke="none" points="1135.75,-277.88 1135.75,-297.88 1419.75,-297.88 1419.75,-277.88 1135.75,-277.88"/>
 <text xml:space="preserve" text-anchor="start" x="1139.75" y="-285.38" font-family="Liberation Sans" font-weight="bold" font-size="10.00" fill="#7ee787">CharacterRow (+ CharacterPersona)</text>
-<text xml:space="preserve" text-anchor="start" x="1139.75" y="-264.88" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">PK CharacterId(index, gen) · &quot;chr:0:1&quot;</text>
+<text xml:space="preserve" text-anchor="start" x="1139.75" y="-264.88" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">PK CharacterId(index, gen) · long revision</text>
 <text xml:space="preserve" text-anchor="start" x="1139.75" y="-244.12" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">CharacterPersona (Origin, Voice, Quirk, Scars)</text>
 <text xml:space="preserve" text-anchor="start" x="1139.75" y="-223.38" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">int health · LazyGauge staminaMilli (int!)</text>
 <text xml:space="preserve" text-anchor="start" x="1139.75" y="-202.62" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">SkillSheet · EquipmentLoadout · JournalSeeds</text>
@@ -101,7 +101,7 @@
 <polygon fill="none" stroke="#2ea043" points="1143.75,-39.5 1143.75,-144.5 1411.75,-144.5 1411.75,-39.5 1143.75,-39.5"/>
 <polygon fill="#1b3624" stroke="none" points="1144.75,-123.5 1144.75,-143.5 1410.75,-143.5 1410.75,-123.5 1144.75,-123.5"/>
 <text xml:space="preserve" text-anchor="start" x="1148.75" y="-131" font-family="Liberation Sans" font-weight="bold" font-size="10.00" fill="#7ee787">HoldRow &amp; BuildingRow</text>
-<text xml:space="preserve" text-anchor="start" x="1148.75" y="-110.5" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">PK HoldId(index, gen) · FK HouseholdId</text>
+<text xml:space="preserve" text-anchor="start" x="1148.75" y="-110.5" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">PK HoldId(index, gen) · long revision</text>
 <text xml:space="preserve" text-anchor="start" x="1148.75" y="-89.75" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">Stockpile baileyStock + beaconStagedStock</text>
 <text xml:space="preserve" text-anchor="start" x="1148.75" y="-69" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">int vaultProtectedCap · long awarenessMilli</text>
 <text xml:space="preserve" text-anchor="start" x="1148.75" y="-48.25" font-family="Liberation Mono" font-size="10.00" fill="#e6edf3">HoldDefenseDoctrine · List&lt;BuildingId&gt;</text>

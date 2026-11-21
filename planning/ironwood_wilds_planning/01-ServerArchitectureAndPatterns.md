@@ -64,6 +64,7 @@ public record CharacterPersona(
 public record CharacterRow(
     CharacterId id,
     HouseholdId householdId,
+    long revision,                 // monotonic state/queue revision -> optimistic expectedRevision (409 STALE_STATE)
     CharacterPersona persona,      // seeded procedural character & history!
     LocationRef location,          // sealed: AtHold(HoldId) | AtSite(SiteId) | InParty(PartyId)
     boolean alive,
@@ -81,6 +82,7 @@ public record CharacterRow(
 public record HoldRow(
     HoldId id,
     HouseholdId ownerId,
+    long revision,                 // monotonic hold/doctrine/staging revision -> optimistic expectedRevision
     SiteId clearingSiteId,
     String name,
     Stockpile baileyStock,         // integer item counts; exposed beyond vaultProtectedCap
@@ -143,19 +145,19 @@ Every player/bot mutation is an immutable Java 25 `record` in a closed `sealed` 
 ```java
 public sealed interface WorldCommand {
     record FoundHousehold(HouseholdId id, String houseName, SiteId landingSite) implements WorldCommand {}
-    record EnqueueActions(HouseholdId actor, CharacterId characterId, List<ActionSpec> actions) implements WorldCommand {}
-    record ReplacePendingQueue(HouseholdId actor, CharacterId characterId, List<ActionSpec> actions) implements WorldCommand {}
-    record CancelQueue(HouseholdId actor, CharacterId characterId, boolean cancelActive) implements WorldCommand {}
-    record SetQueueFailurePolicy(HouseholdId actor, CharacterId characterId, QueueFailurePolicy policy) implements WorldCommand {}
+    record EnqueueActions(HouseholdId actor, CharacterId characterId, Long expectedRevision, List<ActionSpec> actions) implements WorldCommand {}
+    record ReplacePendingQueue(HouseholdId actor, CharacterId characterId, Long expectedRevision, List<ActionSpec> actions) implements WorldCommand {}
+    record CancelQueue(HouseholdId actor, CharacterId characterId, Long expectedRevision, boolean cancelActive) implements WorldCommand {}
+    record SetQueueFailurePolicy(HouseholdId actor, CharacterId characterId, Long expectedRevision, QueueFailurePolicy policy) implements WorldCommand {}
     record StartBuilding(HouseholdId actor, HoldId holdId, RuleId buildingDefId) implements WorldCommand {}
-    record WriteHoldDoctrine(HouseholdId actor, HoldId holdId, HoldDefenseDoctrine doctrine) implements WorldCommand {}
-    record StageShipment(HouseholdId actor, HoldId holdId, Map<RuleId, Integer> manifest) implements WorldCommand {}
+    record WriteHoldDoctrine(HouseholdId actor, HoldId holdId, Long expectedRevision, HoldDefenseDoctrine doctrine) implements WorldCommand {}
+    record StageShipment(HouseholdId actor, HoldId holdId, Long expectedRevision, Map<RuleId, Integer> manifest) implements WorldCommand {}
     record RecruitSettler(HouseholdId actor, HoldId holdId) implements WorldCommand {}
     record FormAndDispatchParty(HouseholdId actor, HoldId holdId, String partyName,
                                 List<PartyMemberSpec> roster, SiteId targetLair, CombatDoctrine doctrine) implements WorldCommand {}
 }
 ```
-Because `CommandDispatcher` uses an exhaustive `switch` under `-Werror`, **adding a new command type is a compile-time error everywhere it must be handled**, and the exact command record serializes 1:1 into `wilds_world.command_wal`.
+Because `CommandDispatcher` uses an exhaustive `switch` under `-Werror`, **adding a new command type is a compile-time error everywhere it must be handled**, and the exact command record (including optional `expectedRevision` optimistic-concurrency guards) serializes 1:1 into `wilds_world.command_wal`.
 
 ### Pattern 3: Strategy Pattern -> `ActionMechanic<P>`, Formula Curves & Bot `Doctrine`
 - **`ActionMechanic<P>`:** Each action family (`TRAVEL`, `GATHER`, `CRAFT`, `CONSTRUCT`, `REPAIR`, `RESEARCH`, `REST`, `MUSTER_PARTY`) implements `validateEnqueue`, `planStart`, `onComplete`, and `onCancel`. Most new gathering/crafting content is purely a new `RuleRegistry` row using the existing `GatherMechanic` or `CraftMechanic`!
@@ -179,25 +181,27 @@ Entity-to-entity `Observer` callbacks inside a simulation are **banned** (they h
 
 ---
 
-## 4. Concurrency Model: Single-Writer `WorldHost` + Lock-Free `WorldView` Reads
+## 4. Concurrency Model: Single-Writer `WorldHost` + Lock-Free `WorldView` MVCC Reads
 
 ```text
   [VT: POST /api/v1/commands] ──┐
-  [VT: 1 Hz Wall-Clock Pump ] ──┴──► Bounded Mailbox Queue ──► ┌─────────────────────────────────┐
-                                                               │ WorldHost Single-Writer Thread  │
-                                                               │ 1. Check cmdId idempotency      │
-                                                               │ 2. engine.advanceTo(admitMs)    │
-                                                               │ 3. Phase-1 validate & apply cmd │
-                                                               │ 4. Commit valid cmd -> WAL      │
-                                                               │ 5. Reply 200/409 to caller slot │
-                                                               │ 6. Publish immutable WorldView  │
-                                                               │ 7. Drain events -> SSE EventBus │
-                                                               └────────────────┬────────────────┘
-  [VT: GET /api/v1/household] ◄── Reads volatile immutable WorldView ───────────┘ (ZERO LOCKS!)
+  [VT: 1 Hz Wall-Clock Pump ] ──┴──► Bounded Mailbox Queue ──► ┌─────────────────────────────────────────┐
+                                                               │ WorldHost Single-Writer Thread          │
+                                                               │ 1. Check cmdId idempotency              │
+                                                               │ 2. Persist CLOCK_ADVANCE & advanceTo()  │
+                                                               │ 3. Pure Phase-1 validate (+ revision!)  │
+                                                               │ 4. Commit command_wal BEFORE mutating!  │
+                                                               │ 5. Apply cmd -> mutate WorldState       │
+                                                               │ 6. Persist append-only chronicle_events │
+                                                               │ 7. Publish immutable WorldView + reply  │
+                                                               │ 8. Drain events -> SSE EventBus         │
+                                                               └────────────────────┬────────────────────┘
+  [VT: GET /api/v1/household] ◄── Reads volatile immutable WorldView ───────────────┘ (IN-MEMORY MVCC · ZERO LOCKS!)
 ```
 
-- **Zero Locks in `libs/wilds`:** Only the single `WorldHost` platform thread ever touches `WorldState`.
-- **Zero Read Contention:** Because all entity rows are immutable `record`s, `WorldHost` publishes an immutable `WorldView` snapshot reference after each batch; thousands of `GET` requests and SSE projections read concurrently without blocking the simulation.
+- **`SERIALIZABLE` Writes Without Mutexes:** Only the single `WorldHost` thread ever touches `WorldState`. One Chronicle maps to one `WorldHost` writer (scaling horizontally by sharding Chronicles if ever needed), while all CPU-heavy work—JWT verification, JSON parsing, HTML rendering, `examine` prose generation, and SSE fan-out—runs in parallel across all cores on Virtual Threads.
+- **In-Memory MVCC (Zero Read Contention):** Because all entity rows are immutable `record`s (`CharacterRow`, `HoldRow`), `WorldHost` publishes an immutable `WorldView` snapshot reference after each committed step; thousands of `GET` requests read a consistent point-in-time view concurrently without locks or torn reads.
+- **Strict Commit-Before-Mutate Discipline:** `WorldHost` never mutates `WorldState` or broadcasts SSE events before the corresponding `command_wal` entry (`WorldCommand` or `CLOCK_ADVANCE`) commits in Postgres—eliminating split-brain drift if the database throws `SQLException`.
 - **Zero Engine Mode Flags:** Live mode pumps `advanceTo(nowMs)` at 1 Hz; `apps/wilds-headless` and Phase 2 `wilds-arena` simply call `advanceToNextEvent()` in a tight loop on 500 parallel `WildsEngine` instances across Virtual Threads.
 
 ---

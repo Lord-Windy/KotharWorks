@@ -39,9 +39,9 @@ digraph EntitySchemaAndPatterns {
             <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="5" BGCOLOR="#1f242d" COLOR="#d29922">
                 <TR><TD BGCOLOR="#2d2312" ALIGN="LEFT"><B><FONT COLOR="#f2cc60">«Command Pattern» sealed WorldCommand</FONT></B></TD></TR>
                 <TR><TD ALIGN="LEFT">• EnqueueActions / ReplacePendingQueue / CancelQueue</TD></TR>
-                <TR><TD ALIGN="LEFT">• StartBuilding / WriteHoldDoctrine</TD></TR>
+                <TR><TD ALIGN="LEFT">• StartBuilding / WriteHoldDoctrine (+ expectedRevision)</TD></TR>
                 <TR><TD ALIGN="LEFT">• StageShipment / RecruitSettler / FormAndDispatchParty</TD></TR>
-                <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="8" COLOR="#8b949e">Single POST /api/v1/commands + cmdId UUIDv7 + exhaustive switch</FONT></TD></TR>
+                <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="8" COLOR="#8b949e">POST /api/v1/commands · cmdId UUIDv7 + ETag expectedRevision</FONT></TD></TR>
             </TABLE>
         >];
 
@@ -86,7 +86,7 @@ digraph EntitySchemaAndPatterns {
         char_tbl [label=<
             <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="4" BGCOLOR="#16221b" COLOR="#2ea043">
                 <TR><TD BGCOLOR="#1b3624" ALIGN="LEFT"><B><FONT COLOR="#7ee787">CharacterRow (+ CharacterPersona)</FONT></B></TD></TR>
-                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">PK CharacterId(index, gen) · "chr:0:1"</FONT></TD></TR>
+                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">PK CharacterId(index, gen) · long revision</FONT></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">CharacterPersona (Origin, Voice, Quirk, Scars)</FONT></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">int health · LazyGauge staminaMilli (int!)</FONT></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">SkillSheet · EquipmentLoadout · JournalSeeds</FONT></TD></TR>
@@ -97,7 +97,7 @@ digraph EntitySchemaAndPatterns {
         hold_tbl [label=<
             <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="4" BGCOLOR="#16221b" COLOR="#2ea043">
                 <TR><TD BGCOLOR="#1b3624" ALIGN="LEFT"><B><FONT COLOR="#7ee787">HoldRow &amp; BuildingRow</FONT></B></TD></TR>
-                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">PK HoldId(index, gen) · FK HouseholdId</FONT></TD></TR>
+                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">PK HoldId(index, gen) · long revision</FONT></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">Stockpile baileyStock + beaconStagedStock</FONT></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">int vaultProtectedCap · long awarenessMilli</FONT></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">HoldDefenseDoctrine · List&lt;BuildingId&gt;</FONT></TD></TR>

@@ -90,7 +90,7 @@ digraph PostgresSchemas {
     }
 
     subgraph cluster_world {
-        label=<<b>Schema 3: wilds_world</b>  <font point-size="9" color="#7ee787">(Active Chronicle · Archived &amp; Truncated on Reset)</font>>;
+        label=<<b>Schema 3: wilds_world</b>  <font point-size="9" color="#7ee787">(100% Append-Only · Zero UPDATE Sync · Truncated on Reset)</font>>;
         fontcolor="#3fb950";
         color="#1f4729";
         bgcolor="#101a14";
@@ -100,17 +100,17 @@ digraph PostgresSchemas {
             <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="4" BGCOLOR="#16241b" COLOR="#2ea043">
                 <TR><TD BGCOLOR="#1d3826" ALIGN="LEFT"><B><FONT COLOR="#7ee787">command_wal (TRUTH) &amp; checkpoints</FONT></B></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">wal_seq · admitted_ms · UNIQUE(cmd_id)</FONT></TD></TR>
+                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">CLOCK_ADVANCE anchors (0 SSE rewind!)</FONT></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">up_to_wal_seq · world_hash · state_json</FONT></TD></TR>
-                <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="8" COLOR="#9ca3af">Boot = Snapshot + WAL Tail · PAUSE_WHILE_DOWN</FONT></TD></TR>
             </TABLE>
         >];
 
         world_proj [label=<
             <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="4" BGCOLOR="#16241b" COLOR="#2ea043">
-                <TR><TD BGCOLOR="#1d3826" ALIGN="LEFT"><B><FONT COLOR="#7ee787">Rebuildable Projections</FONT></B></TD></TR>
+                <TR><TD BGCOLOR="#1d3826" ALIGN="LEFT"><B><FONT COLOR="#7ee787">Append-Only Event &amp; Battle Logs</FONT></B></TD></TR>
                 <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">chronicle_events (+ fogged public_rumor)</FONT></TD></TR>
-                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">characters_live (+ persona_json)</FONT></TD></TR>
-                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">holds_live · battle_chronicles</FONT></TD></TR>
+                <TR><TD ALIGN="LEFT"><FONT FACE="Liberation Mono">battle_chronicles (PvM &amp; Hold Raids)</FONT></TD></TR>
+                <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="8" COLOR="#9ca3af">INSERT-only · Live reads use MVCC WorldView</FONT></TD></TR>
             </TABLE>
         >];
     }

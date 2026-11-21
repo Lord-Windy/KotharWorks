@@ -92,13 +92,13 @@ digraph SystemArchitecture {
             fillcolor="#241e14",
             color="#d29922",
             penwidth=1.8,
-            label=<<b>WorldHost (Single-Writer Mailbox + 1 Hz Pump)</b><br/><font point-size="9" color="#e3b341">Synchronous cmdId Validation · PAUSE_WHILE_DOWN · Lock-Free WorldView</font>>
+            label=<<b>WorldHost (Single-Writer Mailbox + 1 Hz Pump)</b><br/><font point-size="9" color="#e3b341">cmdId + expectedRevision · Commit-Before-Mutate · Lock-Free MVCC WorldView</font>>
         ];
 
         persist_port [
             fillcolor="#1b2738",
             color="#388bfd",
-            label=<<b>WorldStorePort &amp; EventBusPort</b><br/><font point-size="9" color="#9ca3af">Command WAL (Truth) + Tick-Boundary Snapshots + Fogged Rumors</font>>
+            label=<<b>WorldStorePort &amp; EventBusPort</b><br/><font point-size="9" color="#9ca3af">Append-Only WAL (+ CLOCK_ADVANCE) · Snapshots · Fogged Rumors</font>>
         ];
     }
 

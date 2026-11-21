@@ -50,7 +50,7 @@ digraph CommandAndLazyHeap {
     pop_event [
         fillcolor="#261f14",
         color="#d29922",
-        label=<<b>1. Pop Earliest ScheduledEvent (dueAtMs, seq)</b><br/><font point-size="9" color="#e3b341">Step clock to exact ev.dueAtMs · Skip in O(1) if heapTicket cancelled</font>>
+        label=<<b>1. Commit CLOCK_ADVANCE -&gt; Pop ScheduledEvent (dueAtMs, seq)</b><br/><font point-size="9" color="#e3b341">Commit WAL anchor BEFORE mutating · Step clock · O(1) heapTicket skip</font>>
     ];
 
     complete_action [
@@ -68,13 +68,13 @@ digraph CommandAndLazyHeap {
     phase1_val [
         fillcolor="#172332",
         color="#58a6ff",
-        label=<<b>Phase 1: Synchronous WorldHost Validation + cmdId Dedup</b><br/><font point-size="9" color="#9ca3af">Check Ownership, Alive, Queue Cap (&lt;=5), Tech/Skill Gate -&gt; Commit to command_wal</font>>
+        label=<<b>Phase 1: Pure Read-Only Validation + Commit-Before-Mutate</b><br/><font point-size="9" color="#9ca3af">Check cmdId, expectedRevision, Alive, Queue &lt;=5 -&gt; Commit command_wal FIRST -&gt; Mutate RAM</font>>
     ];
 
     reject_409 [
         fillcolor="#33171a",
         color="#f85149",
-        label=<<b>Immediate 409 Conflict</b><br/><font point-size="9" color="#ffa198">QUEUE_FULL · TECH_LOCKED · SKILL_TOO_LOW<br/>Not written to command_wal!</font>>
+        label=<<b>Immediate 409 Conflict</b><br/><font point-size="9" color="#ffa198">STALE_STATE · QUEUE_FULL · TECH_LOCKED<br/>0 RAM mutation · Not written to command_wal!</font>>
     ];
 
     phase2_val [

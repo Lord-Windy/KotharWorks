@@ -178,58 +178,58 @@
 <!-- mailbox -->
 <g id="node9" class="node">
 <title>mailbox</title>
-<path fill="#241e14" stroke="#d29922" stroke-width="1.8" d="M499.52,-377.95C499.52,-377.95 176.48,-377.95 176.48,-377.95 170.48,-377.95 164.48,-371.95 164.48,-365.95 164.48,-365.95 164.48,-353.95 164.48,-353.95 164.48,-347.95 170.48,-341.95 176.48,-341.95 176.48,-341.95 499.52,-341.95 499.52,-341.95 505.52,-341.95 511.52,-347.95 511.52,-353.95 511.52,-353.95 511.52,-365.95 511.52,-365.95 511.52,-371.95 505.52,-377.95 499.52,-377.95"/>
-<text xml:space="preserve" text-anchor="start" x="213.88" y="-360.5" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">WorldHost (Single&#45;Writer Mailbox + 1 Hz Pump)</text>
-<text xml:space="preserve" text-anchor="start" x="176" y="-351.4" font-family="Liberation Sans" font-size="9.00" fill="#e3b341">Synchronous cmdId Validation · PAUSE_WHILE_DOWN · Lock&#45;Free WorldView</text>
+<path fill="#241e14" stroke="#d29922" stroke-width="1.8" d="M499.64,-377.95C499.64,-377.95 168.36,-377.95 168.36,-377.95 162.35,-377.95 156.35,-371.95 156.35,-365.95 156.35,-365.95 156.35,-353.95 156.35,-353.95 156.35,-347.95 162.35,-341.95 168.35,-341.95 168.35,-341.95 499.64,-341.95 499.64,-341.95 505.64,-341.95 511.64,-347.95 511.64,-353.95 511.64,-353.95 511.64,-365.95 511.64,-365.95 511.64,-371.95 505.64,-377.95 499.64,-377.95"/>
+<text xml:space="preserve" text-anchor="start" x="209.88" y="-360.5" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">WorldHost (Single&#45;Writer Mailbox + 1 Hz Pump)</text>
+<text xml:space="preserve" text-anchor="start" x="167.88" y="-351.4" font-family="Liberation Sans" font-size="9.00" fill="#e3b341">cmdId + expectedRevision · Commit&#45;Before&#45;Mutate · Lock&#45;Free MVCC WorldView</text>
 </g>
 <!-- auth_guard&#45;&gt;mailbox -->
 <g id="edge9" class="edge">
 <title>auth_guard&#45;&gt;mailbox</title>
-<path fill="none" stroke="#d29922" stroke-width="1.3" d="M279.27,-436.28C290.83,-421.46 306.38,-401.5 318.58,-385.85"/>
-<polygon fill="#d29922" stroke="#d29922" stroke-width="1.3" points="320.52,-387.64 323.06,-380.11 316.38,-384.41 320.52,-387.64"/>
-<text xml:space="preserve" text-anchor="middle" x="366.87" y="-403.9" font-family="Liberation Sans" font-size="9.00" fill="#8b949e"> CommandSubmission(cmdId)</text>
+<path fill="none" stroke="#d29922" stroke-width="1.3" d="M278.41,-436.28C289.34,-421.46 304.07,-401.5 315.62,-385.85"/>
+<polygon fill="#d29922" stroke="#d29922" stroke-width="1.3" points="317.49,-387.74 319.83,-380.14 313.27,-384.62 317.49,-387.74"/>
+<text xml:space="preserve" text-anchor="middle" x="364.63" y="-403.9" font-family="Liberation Sans" font-size="9.00" fill="#8b949e"> CommandSubmission(cmdId)</text>
 </g>
 <!-- postgres -->
 <g id="node16" class="node">
 <title>postgres</title>
-<path fill="#1a2230" stroke="#58a6ff" stroke-width="1.6" d="M625.64,-81.5C625.64,-85.11 558.12,-88.05 475,-88.05 391.88,-88.05 324.36,-85.11 324.36,-81.5 324.36,-81.5 324.36,-22.55 324.36,-22.55 324.36,-18.94 391.88,-16 475,-16 558.12,-16 625.64,-18.94 625.64,-22.55 625.64,-22.55 625.64,-81.5 625.64,-81.5"/>
-<path fill="none" stroke="#58a6ff" stroke-width="1.6" d="M625.64,-81.5C625.64,-77.89 558.12,-74.95 475,-74.95 391.88,-74.95 324.36,-77.89 324.36,-81.5"/>
-<text xml:space="preserve" text-anchor="start" x="369.62" y="-61.58" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">PostgreSQL (JDBI + ~100 LOC Migrator)</text>
-<text xml:space="preserve" text-anchor="start" x="335.88" y="-52.48" font-family="Liberation Sans" font-size="9.00" fill="#79c0ff">Schema 1: auth (Users UUID, OIDC Links, Bot Keys — 0 Passwords)</text>
-<text xml:space="preserve" text-anchor="start" x="341.5" y="-43.48" font-family="Liberation Sans" font-size="9.00" fill="#79c0ff">Schema 2: wilds_meta (Houses by UserId, Replay Triple, Legacy)</text>
-<text xml:space="preserve" text-anchor="start" x="355.38" y="-34.48" font-family="Liberation Sans" font-size="9.00" fill="#79c0ff">Schema 3: wilds_world (command_wal Truth + Snapshots)</text>
+<path fill="#1a2230" stroke="#58a6ff" stroke-width="1.6" d="M622.64,-81.5C622.64,-85.11 555.12,-88.05 472,-88.05 388.88,-88.05 321.36,-85.11 321.36,-81.5 321.36,-81.5 321.36,-22.55 321.36,-22.55 321.36,-18.94 388.88,-16 472,-16 555.12,-16 622.64,-18.94 622.64,-22.55 622.64,-22.55 622.64,-81.5 622.64,-81.5"/>
+<path fill="none" stroke="#58a6ff" stroke-width="1.6" d="M622.64,-81.5C622.64,-77.89 555.12,-74.95 472,-74.95 388.88,-74.95 321.36,-77.89 321.36,-81.5"/>
+<text xml:space="preserve" text-anchor="start" x="366.62" y="-61.58" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">PostgreSQL (JDBI + ~100 LOC Migrator)</text>
+<text xml:space="preserve" text-anchor="start" x="332.88" y="-52.48" font-family="Liberation Sans" font-size="9.00" fill="#79c0ff">Schema 1: auth (Users UUID, OIDC Links, Bot Keys — 0 Passwords)</text>
+<text xml:space="preserve" text-anchor="start" x="338.5" y="-43.48" font-family="Liberation Sans" font-size="9.00" fill="#79c0ff">Schema 2: wilds_meta (Houses by UserId, Replay Triple, Legacy)</text>
+<text xml:space="preserve" text-anchor="start" x="352.38" y="-34.48" font-family="Liberation Sans" font-size="9.00" fill="#79c0ff">Schema 3: wilds_world (command_wal Truth + Snapshots)</text>
 </g>
 <!-- auth_guard&#45;&gt;postgres -->
 <g id="edge10" class="edge">
 <title>auth_guard&#45;&gt;postgres</title>
-<path fill="none" stroke="#388bfd" stroke-width="1.3" stroke-dasharray="5,2" d="M182.94,-436.04C148.06,-421.55 115,-398.03 115,-360.95 115,-360.95 115,-360.95 115,-157.75 115,-113.1 218.4,-86.23 314.37,-70.9"/>
-<polygon fill="#388bfd" stroke="#388bfd" stroke-width="1.3" points="314.68,-73.51 321.69,-69.76 313.87,-68.33 314.68,-73.51"/>
+<path fill="none" stroke="#388bfd" stroke-width="1.3" stroke-dasharray="5,2" d="M175.42,-435.97C139.86,-421.67 107,-398.34 107,-360.95 107,-360.95 107,-360.95 107,-157.75 107,-112.16 213.54,-85.26 311.5,-70.17"/>
+<polygon fill="#388bfd" stroke="#388bfd" stroke-width="1.3" points="311.67,-72.8 318.7,-69.08 310.89,-67.61 311.67,-72.8"/>
 </g>
 <!-- persist_port -->
 <g id="node10" class="node">
 <title>persist_port</title>
-<path fill="#1b2738" stroke="#388bfd" d="M488.27,-265.45C488.27,-265.45 205.73,-265.45 205.73,-265.45 199.73,-265.45 193.73,-259.45 193.73,-253.45 193.73,-253.45 193.73,-241.45 193.73,-241.45 193.73,-235.45 199.73,-229.45 205.73,-229.45 205.73,-229.45 488.27,-229.45 488.27,-229.45 494.27,-229.45 500.27,-235.45 500.27,-241.45 500.27,-241.45 500.27,-253.45 500.27,-253.45 500.27,-259.45 494.27,-265.45 488.27,-265.45"/>
-<text xml:space="preserve" text-anchor="start" x="261.88" y="-248" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">WorldStorePort &amp; EventBusPort</text>
-<text xml:space="preserve" text-anchor="start" x="205.25" y="-238.9" font-family="Liberation Sans" font-size="9.00" fill="#9ca3af">Command WAL (Truth) + Tick&#45;Boundary Snapshots + Fogged Rumors</text>
+<path fill="#1b2738" stroke="#388bfd" d="M489.27,-265.45C489.27,-265.45 194.73,-265.45 194.73,-265.45 188.73,-265.45 182.73,-259.45 182.73,-253.45 182.73,-253.45 182.73,-241.45 182.73,-241.45 182.73,-235.45 188.73,-229.45 194.73,-229.45 194.73,-229.45 489.27,-229.45 489.27,-229.45 495.27,-229.45 501.27,-235.45 501.27,-241.45 501.27,-241.45 501.27,-253.45 501.27,-253.45 501.27,-259.45 495.27,-265.45 489.27,-265.45"/>
+<text xml:space="preserve" text-anchor="start" x="256.88" y="-248" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">WorldStorePort &amp; EventBusPort</text>
+<text xml:space="preserve" text-anchor="start" x="194.25" y="-238.9" font-family="Liberation Sans" font-size="9.00" fill="#9ca3af">Append&#45;Only WAL (+ CLOCK_ADVANCE) · Snapshots · Fogged Rumors</text>
 </g>
 <!-- mailbox&#45;&gt;persist_port -->
 <g id="edge12" class="edge">
 <title>mailbox&#45;&gt;persist_port</title>
-<path fill="none" stroke="#6e7681" stroke-width="1.3" d="M339.45,-341.2C340.9,-323.37 343.15,-295.69 344.82,-275.2"/>
-<polygon fill="#6e7681" stroke="#6e7681" stroke-width="1.3" points="347.43,-275.44 345.43,-267.76 342.2,-275.02 347.43,-275.44"/>
+<path fill="none" stroke="#6e7681" stroke-width="1.3" d="M335.29,-341.2C336.58,-323.37 338.58,-295.69 340.06,-275.2"/>
+<polygon fill="#6e7681" stroke="#6e7681" stroke-width="1.3" points="342.68,-275.43 340.6,-267.76 337.44,-275.05 342.68,-275.43"/>
 </g>
 <!-- mailbox&#45;&gt;engine_facade -->
 <g id="edge11" class="edge">
 <title>mailbox&#45;&gt;engine_facade</title>
-<path fill="none" stroke="#3fb950" stroke-width="1.8" d="M379.74,-341.09C407.1,-329.99 443.9,-316.22 477.5,-307.45 499.49,-301.71 505.8,-304.3 528,-299.45 566.68,-291 609.33,-279.18 643.61,-269.05"/>
+<path fill="none" stroke="#3fb950" stroke-width="1.8" d="M376.98,-341.13C405.15,-330.05 443.01,-316.29 477.5,-307.45 499.51,-301.81 505.8,-304.3 528,-299.45 566.68,-291 609.33,-279.18 643.61,-269.05"/>
 <polygon fill="#3fb950" stroke="#3fb950" stroke-width="1.8" points="644,-271.68 650.44,-267.02 642.5,-266.65 644,-271.68"/>
 <text xml:space="preserve" text-anchor="middle" x="521.75" y="-309.4" font-family="Liberation Sans" font-size="9.00" fill="#8b949e"> apply() / advanceTo()</text>
 </g>
 <!-- persist_port&#45;&gt;postgres -->
 <g id="edge13" class="edge">
 <title>persist_port&#45;&gt;postgres</title>
-<path fill="none" stroke="#58a6ff" stroke-width="1.5" d="M358.36,-229.28C377.86,-199.81 418.29,-138.72 446.03,-96.81"/>
-<polygon fill="#58a6ff" stroke="#58a6ff" stroke-width="1.5" points="448.19,-98.29 450.14,-90.59 443.82,-95.39 448.19,-98.29"/>
+<path fill="none" stroke="#58a6ff" stroke-width="1.5" d="M353.54,-229.28C373.39,-199.75 414.57,-138.47 442.75,-96.54"/>
+<polygon fill="#58a6ff" stroke="#58a6ff" stroke-width="1.5" points="444.76,-98.27 446.76,-90.58 440.4,-95.34 444.76,-98.27"/>
 </g>
 <!-- world_state -->
 <g id="node12" class="node">
@@ -276,22 +276,22 @@
 <!-- procgen -->
 <g id="node15" class="node">
 <title>procgen</title>
-<path fill="#1c2128" stroke="#f0883e" stroke-width="1.6" d="M976.27,-73.72C976.27,-73.72 669.73,-73.72 669.73,-73.72 663.73,-73.72 657.73,-67.72 657.73,-61.72 657.73,-61.72 657.73,-42.33 657.73,-42.33 657.73,-36.33 663.73,-30.32 669.73,-30.32 669.73,-30.32 976.27,-30.32 976.27,-30.32 982.27,-30.32 988.27,-36.33 988.27,-42.33 988.27,-42.33 988.27,-61.72 988.27,-61.72 988.27,-67.72 982.27,-73.72 976.27,-73.72"/>
-<text xml:space="preserve" text-anchor="start" x="710.88" y="-57.08" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">libs/procgen (Zero Runtime Deps, Zero I/O)</text>
-<text xml:space="preserve" text-anchor="start" x="695.88" y="-47.98" font-family="Liberation Sans" font-size="9.00" fill="#ffa657">WorldSeed Streams · Region Passes &amp; Waypoints · MythFlags</text>
-<text xml:space="preserve" text-anchor="start" x="669.25" y="-38.98" font-family="Liberation Sans" font-size="9.00" fill="#ffa657">NameGrammar · Persona &amp; JournalComposer · glance/look/examine Prose</text>
+<path fill="#1c2128" stroke="#f0883e" stroke-width="1.6" d="M973.27,-73.72C973.27,-73.72 666.73,-73.72 666.73,-73.72 660.73,-73.72 654.73,-67.72 654.73,-61.72 654.73,-61.72 654.73,-42.33 654.73,-42.33 654.73,-36.33 660.73,-30.32 666.73,-30.32 666.73,-30.32 973.27,-30.32 973.27,-30.32 979.27,-30.32 985.27,-36.33 985.27,-42.33 985.27,-42.33 985.27,-61.72 985.27,-61.72 985.27,-67.72 979.27,-73.72 973.27,-73.72"/>
+<text xml:space="preserve" text-anchor="start" x="707.88" y="-57.08" font-family="Liberation Sans" font-weight="bold" font-size="11.00" fill="#e6edf3">libs/procgen (Zero Runtime Deps, Zero I/O)</text>
+<text xml:space="preserve" text-anchor="start" x="692.88" y="-47.98" font-family="Liberation Sans" font-size="9.00" fill="#ffa657">WorldSeed Streams · Region Passes &amp; Waypoints · MythFlags</text>
+<text xml:space="preserve" text-anchor="start" x="666.25" y="-38.98" font-family="Liberation Sans" font-size="9.00" fill="#ffa657">NameGrammar · Persona &amp; JournalComposer · glance/look/examine Prose</text>
 </g>
 <!-- world_state&#45;&gt;procgen -->
 <g id="edge20" class="edge">
 <title>world_state&#45;&gt;procgen</title>
-<path fill="none" stroke="#f0883e" stroke-width="1.3" d="M1048.73,-136.56C1002.66,-119.51 937.86,-95.53 889.5,-77.63"/>
-<polygon fill="#f0883e" stroke="#f0883e" stroke-width="1.3" points="890.46,-75.19 882.51,-75.05 888.64,-80.11 890.46,-75.19"/>
+<path fill="none" stroke="#f0883e" stroke-width="1.3" d="M1048.12,-136.56C1001.47,-119.47 935.81,-95.43 886.9,-77.52"/>
+<polygon fill="#f0883e" stroke="#f0883e" stroke-width="1.3" points="888.07,-75.16 880.13,-75.04 886.27,-80.09 888.07,-75.16"/>
 </g>
 <!-- strategies&#45;&gt;procgen -->
 <g id="edge21" class="edge">
 <title>strategies&#45;&gt;procgen</title>
-<path fill="none" stroke="#f0883e" stroke-width="1.3" d="M868.47,-136.56C859.97,-120.94 848.3,-99.51 838.92,-82.27"/>
-<polygon fill="#f0883e" stroke="#f0883e" stroke-width="1.3" points="841.35,-81.25 835.46,-75.91 836.74,-83.76 841.35,-81.25"/>
+<path fill="none" stroke="#f0883e" stroke-width="1.3" d="M867.86,-136.56C858.91,-120.94 846.64,-99.51 836.76,-82.27"/>
+<polygon fill="#f0883e" stroke="#f0883e" stroke-width="1.3" points="839.11,-81.1 833.1,-75.89 834.55,-83.71 839.11,-81.1"/>
 </g>
 </g>
 </svg>
