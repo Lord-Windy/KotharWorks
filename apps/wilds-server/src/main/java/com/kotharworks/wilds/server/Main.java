@@ -15,22 +15,55 @@
  */
 package com.kotharworks.wilds.server;
 
-import com.kotharworks.wilds.WildsEngine;
-import com.kotharworks.wilds.command.WorldCommand;
-import com.kotharworks.wilds.seed.WorldSeed;
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 
+/**
+ * Thin entry point: parse flags, boot the hexagonal server, print the listen
+ * line, and park the main thread until the process is killed (the shutdown
+ * hook checkpoints the world through {@code WorldHost#close}).
+ */
 public final class Main {
 
-    private Main() {}
+    private static final String USAGE = """
+            usage: wilds-server [flags]
+              --port <int>                      bind port (default 8080, loopback only)
+              --seed <long>                     world seed (default 1)
+              --time-scale <long>               logical ms per wall ms (default 1)
+              --pump-interval-ms <long>         wall interval between pump ticks (default 1000)
+              --auth-mode dev-local|oidc        auth mode (default dev-local)
+              --public-origin <url>             external origin (default http://127.0.0.1:<port>)
+              --oidc-issuer <url>               OIDC issuer (OIDC mode)
+              --oidc-client-id <id>             OIDC resource client id (OIDC mode)
+              --oidc-client-secret <secret>     OIDC client secret (OIDC mode)
+              --oidc-authorization-endpoint <url>
+              --oidc-token-endpoint <url>
+              --oidc-jwks-uri <url>
+              --rate-per-sec <long>             per-seat sustained rate (default 10)
+              --rate-burst <long>               per-seat burst (default 20)
+            """;
 
-    public static String banner(long seed) {
-        var engine = new WildsEngine(new WorldSeed(seed));
-        engine.apply(new WorldCommand.RegisterOwner(1L, "Wanderer", "Scout"));
-        return "KotharWorks :: Ironwood Wilds — scaffold world " + engine.worldHash()
-                + " (API v" + WildsEngine.API_VERSION + ")";
+    private Main() {
     }
 
-    public static void main(String[] args) {
-        System.out.println(banner(1L));
+    public static void main(String[] args) throws IOException, InterruptedException {
+        ServerConfig config;
+        try {
+            config = ServerConfig.parse(args).validated();
+        } catch (IllegalArgumentException e) {
+            System.err.println("wilds-server: " + e.getMessage());
+            System.err.print(USAGE);
+            System.exit(2);
+            return;
+        }
+        try (WildsServer server = new WildsServer(config)) {
+            server.start();
+            System.out.println("wilds-server listening on http://127.0.0.1:" + server.port()
+                    + " (mode=" + config.authMode().name().toLowerCase(java.util.Locale.ROOT)
+                    + ", timeScale=" + config.timeScale() + ", world=" + config.worldSeed() + ")");
+            Runtime.getRuntime().addShutdownHook(
+                    Thread.ofVirtual().name("wilds-server-shutdown").unstarted(server::close));
+            TimeUnit.DAYS.sleep(365_000L); // park main; virtual-thread executors are daemons
+        }
     }
 }

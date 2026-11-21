@@ -1,0 +1,126 @@
+/*
+ * Copyright 2026 Samuel "Lord-Windy" Brown
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.kotharworks.wilds.server.ports;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import com.kotharworks.auth.principal.UserId;
+import com.kotharworks.wilds.command.WorldCommand;
+import com.kotharworks.wilds.replay.WalRecord;
+import com.kotharworks.wilds.server.domain.ControllerKind;
+
+/**
+ * Persistence port for the simulation world: permanent seat metadata, the
+ * append-only command WAL (strictly pre-mutation parameters — Commit-Before-
+ * Mutate needs zero post-apply {@code UPDATE}s), the idempotent event log with
+ * its public projection, and checkpoint + WAL-tail recovery.
+ *
+ * <p>Every append method may throw on storage failure; {@code WorldHost}
+ * translates that into a {@code STORAGE_UNAVAILABLE} outcome with the in-RAM
+ * world untouched.
+ */
+public interface WorldStorePort {
+
+    // ------------------------------------------------------------- seat metadata
+
+    /**
+     * Creates a permanent seat. The seat name is trimmed and must be 3..40
+     * chars of non-ISO-control characters; HTML-significant characters
+     * ({@code < > & "}) are deliberately allowed here — output escaping lives
+     * in HTML rendering, not in storage validation.
+     *
+     * @throws IllegalArgumentException on blank/short/long/control names, or a
+     *                                  duplicate seat name (message prefixed
+     *                                  {@code DUPLICATE_SEAT})
+     */
+    SeatRecord createSeat(UserId owner, String seatName, ControllerKind kind);
+
+    /** Every seat owned by {@code owner}, ascending by seat id. */
+    List<SeatRecord> findSeatsByOwner(UserId owner);
+
+    /** The seat with this id, or empty. */
+    Optional<SeatRecord> findSeatById(long seatId);
+
+    // ------------------------------------------------------------- world metadata
+
+    /**
+     * Returns the single active world, creating it on first call with the
+     * given version triple; later calls must pass the identical triple.
+     *
+     * @throws IllegalStateException on a version-triple mismatch with the
+     *                               stored active world
+     */
+    WorldRecord ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
+            int protocolVersion);
+
+    // ------------------------------------------------------------- command WAL
+
+    /** Whether a command with this {@code cmdId} is already committed (pre-restart idempotency). */
+    boolean existsByCmdId(int worldId, UUID cmdId);
+
+    /**
+     * Appends a {@code CLOCK_ADVANCE} anchor; Commit-Before-Mutate requires
+     * this to hit the WAL <b>before</b> the engine clock moves.
+     *
+     * @return the assigned {@code walSeq}
+     */
+    long appendClockAdvance(int worldId, long admittedMs, Long worldHash);
+
+    /**
+     * Appends one admitted command; must be called before the engine mutates
+     * state. Duplicate {@code cmdId}s are a host bug and rejected defensively.
+     *
+     * @return the assigned {@code walSeq}
+     */
+    long appendCommand(int worldId, long admittedMs, long seatId, UUID cmdId, WorldCommand cmd,
+            Long worldHash);
+
+    // ------------------------------------------------------------- event log
+
+    /**
+     * Persists events idempotently on {@code (worldId, cursor)}: cursors
+     * already present are skipped, so checkpoint-replay backfill is a no-op
+     * for stored rows.
+     */
+    void appendEvents(int worldId, List<StoredWorldEvent> events);
+
+    /**
+     * Reads events with {@code cursor > sinceCursor} ascending, up to
+     * {@code limit} rows.
+     *
+     * @param seatIdOrNullForPublic when non-null, that seat's private events;
+     *                              when null, only events carrying a
+     *                              {@code publicSummary}, projected to public
+     *                              fields only ({@code privateSummary} and the
+     *                              decoded payload are structurally absent)
+     */
+    List<StoredWorldEvent> readEventsSince(int worldId, Long seatIdOrNullForPublic,
+            long sinceCursor, int limit);
+
+    // ------------------------------------------------------------- checkpoints & recovery
+
+    /** Persists a checkpoint replacing any previous one for the world. */
+    void saveCheckpoint(int worldId, long upToWalSeq, long logicalMs, long worldHash,
+            String stateJson);
+
+    /** The latest checkpoint of the world, or empty (fresh world). */
+    Optional<StoredCheckpoint> loadLatestCheckpoint(int worldId);
+
+    /** Every WAL row with {@code walSeq > afterWalSeq}, ascending by {@code walSeq}. */
+    List<WalRecord> loadWalAfter(int worldId, long afterWalSeq);
+}

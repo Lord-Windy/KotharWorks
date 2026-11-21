@@ -1,7 +1,7 @@
 # Ticket 07 — Server Hexagonal Core: WorldHost, SeatAuthorizer, REST & SSE (In-Memory)
 
 - **`st` Key:** `9ba362ce` (`KOTHARWORKS` · `tech-wilds`)
-- **Status:** Backlog *(auto-promotes when `d8ed0e93` and `bbc37528` complete)*
+- **Status:** Done
 - **Depends on:** Tickets `04` (`d8ed0e93`) and `06` (`bbc37528`)
 - **Modules touched:** `apps/wilds-server`, `PROJECTS.md` *(mark `apps/wilds-server` `in-development`)*
 

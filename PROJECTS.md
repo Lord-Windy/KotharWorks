@@ -95,12 +95,33 @@ accept signed decimal or full 64-bit unsigned `0x`/`0X` hex. Run via
 
 ### wilds-server — Ironwood Wilds server host
 
-**Status:** scaffold · **Artifact:** `com.kotharworks:wilds-server` ·
-**Package:** `com.kotharworks.wilds.server` · **Depends on:** `wilds`
+**Status:** in-development · **Artifact:** `com.kotharworks:wilds-server` ·
+**Package:** `com.kotharworks.wilds.server` · **Depends on:** `wilds`, `auth`
 
-Hexagonal server entry point for Ironwood Wilds (planned: Virtual-Thread HTTP/WS
-adapters, PostgreSQL `auth`/`wilds_meta`/`wilds` adapters, server-rendered
-multi-tab HTML UI). Currently prints the `WildsEngine` scaffold greeting via
+Hexagonal runtime core of the Ironwood Wilds online server (Ticket 07), on Java 25
+Virtual Threads with fast in-memory adapters (Postgres/JDBI arrives in Ticket 08).
+`domain/WorldHost` is the single writer: a dedicated virtual thread drains a bounded
+`ArrayBlockingQueue` mailbox enforcing **strict Commit-Before-Mutate** WAL ordering
+(pure Phase-1 validation first, `WorldStorePort.appendCommand` before any state
+mutation, `503 STORAGE_UNAVAILABLE` with untouched RAM on store failure), `cmdId`
+UUID idempotency with receipt caching, pre-mutation `CLOCK_ADVANCE` anchors plus a
+quiet `ClockPump` adapter, and lock-free volatile `WorldView` MVCC reads with
+checkpoint + WAL-tail boot recovery. `domain/SeatAuthorizer` bridges `libs/auth`
+principals to permanent seats (`ports/SeatRecord`) and in-world `OwnerId`s, with
+role quota charter policy (`ControllerKind`), `wilds:seat` bot-token resource
+scoping, and per-seat token-bucket rate limiting (`429 RATE_LIMITED`). `ports/`
+defines `AuthStorePort` (JIT user upsert, web sessions, scoped API tokens,
+`suspendUser`) and `WorldStorePort` (seats, append-only WAL, idempotent events with
+public/private projection, checkpoints) implemented by `adapters/memory/`. HTTP:
+`/dev/login`, `/auth/*` (dev-local persona switcher or OIDC Authorization Code +
+PKCE), seat chartering `POST /api/v1/seats` (submits `RegisterOwner` through
+`WorldHost` — zero UI-private mutation backdoors), `iw_bot_` token minting for
+non-HUMAN seats, `GET /api/v1/meta|rules|observation|examine|events|public/events`,
+synchronous `POST /api/v1/commands` (server-injected `OwnerId`, raw
+`register_owner` rejected), `POST /api/v1/admin/users/{userId}/suspend`, and live
+`GET /api/v1/stream?since=` Server-Sent Events over chunked virtual-thread
+responses with replay, live fan-out, keepalives and clean shutdown — all registered
+exclusively through `libs/auth`'s deny-by-default `AuthenticatedRouter`. Run via
 `mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am`.
 
 ## External dependencies
@@ -108,12 +129,13 @@ multi-tab HTML UI). Currently prints the `WildsEngine` scaffold greeting via
 | Dependency    | Scope | Used by                          |
 | ------------- | ----- | -------------------------------- |
 | JUnit Jupiter | test  | `wilds`, `auth`, `wilds-headless`, `wilds-server` |
-| nimbus-jose-jwt | compile | `auth` |
+| nimbus-jose-jwt | compile | `auth` (transitively `wilds-server`) |
 
 ## Dependency graph
 
 ```text
-libs/auth           (nimbus-jose-jwt only; planned apps/wilds-server edge, Ticket 07)
+libs/auth           (nimbus-jose-jwt only)
+  └── apps/wilds-server
 libs/wilds           (zero runtime deps)
   ├── apps/wilds-headless
   └── apps/wilds-server
