@@ -1,0 +1,191 @@
+digraph SystemArchitecture {
+    graph [
+        rankdir=TB,
+        bgcolor="#0f1419",
+        fontname="Liberation Sans",
+        fontsize=15,
+        fontcolor="#e6edf3",
+        label=<<b>Ironwood Wilds — Modular Monorepo &amp; Hexagonal Server Architecture</b><br/><font point-size="11" color="#8b949e">Pure Java 25 LTS (kotharworks) · Headless Deterministic Core + Virtual-Thread Adapters</font>>,
+        labelloc=t,
+        pad="0.45",
+        nodesep="0.45",
+        ranksep="0.65",
+        splines=true
+    ];
+
+    node [
+        shape=box,
+        style="rounded,filled",
+        fontname="Liberation Sans",
+        fontsize=11,
+        fillcolor="#161b22",
+        color="#30363d",
+        fontcolor="#e6edf3",
+        margin="0.16,0.10"
+    ];
+
+    edge [
+        fontname="Liberation Sans",
+        fontsize=9,
+        color="#6e7681",
+        fontcolor="#8b949e",
+        penwidth=1.3,
+        arrowsize=0.75
+    ];
+
+    // ── CLUSTER 1: CLIENTS & CONTROLLERS ────────────────────────────────────
+    subgraph cluster_clients {
+        label=<<b>External Clients &amp; Agent Harnesses</b>>;
+        fontcolor="#d29922";
+        color="#3d3216";
+        bgcolor="#14181f";
+        style="rounded,dashed,filled";
+
+        human_browser [
+            fillcolor="#1f2937",
+            color="#d29922",
+            label=<<b>Human Web Browser</b><br/><font point-size="9" color="#9ca3af">Multi-Tab Character Deck<br/>SSR HTML + Local 60fps Timers</font>>
+        ];
+        rest_ws_bot [
+            fillcolor="#1f2937",
+            color="#58a6ff",
+            label=<<b>Scripted Bots (HTTP / WS)</b><br/><font point-size="9" color="#9ca3af">Python / JS / Go / CLI<br/>GET /api/v1/rules + Event Cursor</font>>
+        ];
+        tcp_bot [
+            fillcolor="#1f2937",
+            color="#58a6ff",
+            label=<<b>apps/wilds-bot &amp; C Bots</b><br/><font point-size="9" color="#9ca3af">Zero-Dep NDJSON Socket (:8124)<br/>One JSON Line In / Event Line Out</font>>
+        ];
+        ga_arena [
+            fillcolor="#281c33",
+            color="#bc8cff",
+            label=<<b>apps/wilds-arena (Phase 2 GA)</b><br/><font point-size="9" color="#d2a8ff">libs/samvm + libs/samgenai<br/>10,000x Headless Evolution</font>>
+        ];
+    }
+
+    // ── CLUSTER 2: APPS/WILDS-SERVER ────────────────────────────────────────
+    subgraph cluster_server {
+        label=<<b>apps/wilds-server</b>  <font point-size="10" color="#8b949e">(Hexagonal Host · Java 25 Virtual Threads)</font>>;
+        fontcolor="#58a6ff";
+        color="#1f3a5f";
+        bgcolor="#121923";
+        style="rounded,filled";
+
+        subgraph cluster_inbound {
+            label=<Inbound Network Adapters>;
+            fontcolor="#8b949e";
+            fontsize=10;
+            color="#263345";
+            bgcolor="#16202d";
+            style="rounded,filled";
+
+            http_ui [label=<<b>SSR HTML + HTMX/JS</b><br/><font point-size="9" color="#8b949e">Tabs, Hold, Observatory</font>>];
+            http_rest [label=<<b>REST Adapter</b><br/><font point-size="9" color="#8b949e">/api/v1/* (JDK HttpServer)</font>>];
+            ws_adapter [label=<<b>WebSocket Adapter</b><br/><font point-size="9" color="#8b949e">/ws/v1 Delta Push</font>>];
+            tcp_adapter [label=<<b>Raw TCP Adapter</b><br/><font point-size="9" color="#8b949e">:8124 NDJSON Stream</font>>];
+        }
+
+        auth_guard [
+            fillcolor="#1b2738",
+            color="#388bfd",
+            label=<<b>AuthPort &amp; Token-Bucket Guard</b><br/><font point-size="9" color="#9ca3af">Resolves Cookie / Bearer Key -&gt; (AccountId, HouseholdId, ControllerKind)</font>>
+        ];
+
+        mailbox [
+            fillcolor="#241e14",
+            color="#d29922",
+            penwidth=1.8,
+            label=<<b>WorldShardService (Single-Writer Mailbox)</b><br/><font point-size="9" color="#e3b341">Serializes Commands + 250ms Pulse · Publishes Lock-Free Read Snapshots</font>>
+        ];
+
+        persist_port [
+            fillcolor="#1b2738",
+            color="#388bfd",
+            label=<<b>WorldPersistencePort &amp; ChronicleMetaPort</b><br/><font point-size="9" color="#9ca3af">100ms Batched WAL Append + 60s Checkpoint Snapshot (or --storage=memory)</font>>
+        ];
+    }
+
+    // ── CLUSTER 3: LIBS/WILDS ───────────────────────────────────────────────
+    subgraph cluster_wilds {
+        label=<<b>libs/wilds</b>  <font point-size="10" color="#3fb950">(100% Pure Deterministic Simulation Core · Zero I/O · Zero Locks · Zero Wall-Clock)</font>>;
+        fontcolor="#3fb950";
+        color="#1f4729";
+        bgcolor="#101b14";
+        style="rounded,filled";
+
+        engine_facade [
+            fillcolor="#172b1e",
+            color="#3fb950",
+            penwidth=1.8,
+            label=<<b>WildsEngine Facade</b><br/><font point-size="9" color="#7ee787">apply(WorldCommand) · advanceTo(logicalMs) · advanceToNextEvent() · observe(HouseholdId)</font>>
+        ];
+
+        world_state [
+            fillcolor="#16241a",
+            color="#2ea043",
+            label=<<b>Flat Entity Tables (WorldState)</b><br/><font point-size="9" color="#9ca3af">Households · Characters · Holds<br/>Buildings · Parties · SiteDeltas</font>>
+        ];
+
+        due_heap [
+            fillcolor="#16241a",
+            color="#2ea043",
+            label=<<b>LazyGauge + DueEventHeap</b><br/><font point-size="9" color="#9ca3af">Min-Heap (dueAtMs, seq)<br/>O(1) Idle · Exact Causality</font>>
+        ];
+
+        strategies [
+            fillcolor="#16241a",
+            color="#2ea043",
+            label=<<b>Strategy Policies &amp; RuleRegistry</b><br/><font point-size="9" color="#9ca3af">ActionMechanic&lt;P&gt; · RaidResolver<br/>PvM CombatResolver · Tech/Skill Defs</font>>
+        ];
+    }
+
+    // ── CLUSTER 4: LIBS/PROCGEN & POSTGRES ──────────────────────────────────
+    subgraph cluster_bottom {
+        label="";
+        style=invis;
+
+        procgen [
+            fillcolor="#1c2128",
+            color="#f0883e",
+            penwidth=1.6,
+            label=<<b>libs/procgen (Zero Runtime Deps)</b><br/><font point-size="9" color="#ffa657">WorldSeed SplitMix64 · Biome &amp; Seam Ecology<br/>PvM Lair DAGs · Hierarchical Prose (glance/look/examine)</font>>
+        ];
+
+        postgres [
+            shape=cylinder,
+            fillcolor="#1a2230",
+            color="#58a6ff",
+            penwidth=1.6,
+            label=<<b>PostgreSQL 17 (JDBI / JDBC)</b><br/><font point-size="9" color="#79c0ff">Schema 1: auth (Accounts, Bot Keys)<br/>Schema 2: wilds_meta (Houses, Chronicles)<br/>Schema 3: wilds_world (WAL + Snapshots)</font>>
+        ];
+    }
+
+    // ── EDGES ───────────────────────────────────────────────────────────────
+    human_browser -> http_ui [color="#d29922"];
+    human_browser -> ws_adapter [color="#d29922"];
+    rest_ws_bot -> http_rest [color="#58a6ff"];
+    rest_ws_bot -> ws_adapter [color="#58a6ff"];
+    tcp_bot -> tcp_adapter [color="#58a6ff"];
+
+    http_ui -> auth_guard;
+    http_rest -> auth_guard;
+    ws_adapter -> auth_guard;
+    tcp_adapter -> auth_guard;
+
+    auth_guard -> mailbox [label=" AuthenticatedCmd", color="#d29922"];
+    auth_guard -> postgres [style=dashed, color="#388bfd"];
+
+    mailbox -> engine_facade [label=" apply() / advanceTo()", color="#3fb950", penwidth=1.8];
+    mailbox -> persist_port;
+    persist_port -> postgres [color="#58a6ff", penwidth=1.5];
+
+    ga_arena -> engine_facade [label=" Direct In-Process Loop", color="#bc8cff", penwidth=1.8, style=dashed];
+    ga_arena -> tcp_adapter [label=" Live Champion Bot", color="#bc8cff", style=dotted];
+
+    engine_facade -> world_state;
+    engine_facade -> due_heap;
+    engine_facade -> strategies;
+
+    world_state -> procgen [color="#f0883e"];
+    strategies -> procgen [color="#f0883e"];
+}

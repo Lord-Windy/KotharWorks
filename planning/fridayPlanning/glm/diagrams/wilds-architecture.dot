@@ -1,0 +1,86 @@
+// Ironwood Wilds — Server architecture (the big picture)
+// Follows IronwoodWildsArchitecture.md §2 and §6.
+digraph Architecture {
+    graph [rankdir=LR, bgcolor="#ffffff", pad=0.35, compound=true,
+           fontname="DejaVu Sans", fontsize=15, labelloc=t,
+           label=<<b>Ironwood Wilds — Server Architecture</b><br/>requests never touch the engine directly · the engine never knows I/O exists>];
+    node  [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=10,
+           margin="0.16,0.08"];
+    edge  [color="#6b6b6b", arrowsize=0.7, fontname="DejaVu Sans", fontsize=9,
+           fontcolor="#444444"];
+
+    subgraph cluster_clients {
+        label="clients"; labelloc=b;
+        style="rounded,filled"; fillcolor="#f6f4f8"; color="#8a7fa8";
+        browser [label="browser\nHTML pages", fillcolor="#ece7f1", color="#6d5f8a"];
+        botcl   [label="bots\nJSON", fillcolor="#ece7f1", color="#6d5f8a"];
+    }
+
+    subgraph cluster_server {
+        label=<<b>apps/wilds-server</b> — hexagonal host>;
+        style="rounded,filled"; fillcolor="#faf6ec"; color="#b08a3e";
+
+        subgraph cluster_adapters {
+            label="adapters/ (virtual threads)";
+            style="rounded,filled"; fillcolor="#f8f1de"; color="#cbb37a";
+            http   [label="REST routes\nPOST /v1/commands", fillcolor="#f5ecd9", color="#b08a3e"];
+            sse    [label="SSE fan-out\n/v1/stream", fillcolor="#f5ecd9", color="#b08a3e"];
+            web    [label="HTML pages\n/play · /atlas", fillcolor="#f5ecd9", color="#b08a3e"];
+            auth   [label="auth\ntokens · argon2", fillcolor="#f5ecd9", color="#b08a3e"];
+            db     [label="db · JDBI", fillcolor="#f5ecd9", color="#b08a3e"];
+            clock  [label="clock driver\n1 Hz pump", fillcolor="#f5ecd9", color="#b08a3e"];
+        }
+
+        subgraph cluster_domain {
+            label="domain/ (services)";
+            style="rounded,filled"; fillcolor="#f3ecdb"; color="#b08a3e";
+            adm    [label="Admissions\nvalidate · stamp tick\nappend log", fillcolor="#f5ecd9", color="#b08a3e"];
+            host   [label=<<b>WorldHost</b><br/>single writer · owns engine>, fillcolor="#f0dfb4", color="#8a6d1f"];
+            chron  [label="Chronicle\nprojector", fillcolor="#f5ecd9", color="#b08a3e"];
+            obs    [label="Observations\nfog projections", fillcolor="#f5ecd9", color="#b08a3e"];
+        }
+    }
+
+    subgraph cluster_engine {
+        label=<<b>libs/wilds</b> — deterministic engine (pure)>; labelloc=b;
+        style="rounded,filled"; fillcolor="#f2f7f0"; color="#4a7c59";
+        apply  [label="CommandApplier\nexhaustive switch", fillcolor="#e8f0e2", color="#4a7c59"];
+        heap   [label=<<b>DueEventHeap</b><br/>(dueMs, seq) · advanceTo()>, fillcolor="#dcead8", color="#38663f"];
+        state  [label="WorldState\nflat tables · typed ids\nregions cache", fillcolor="#e8f0e2", color="#4a7c59"];
+        runner [label="ActionRunner\ntwo-phase · fail-soft", fillcolor="#e8f0e2", color="#4a7c59"];
+        events [label="DomainEvent buffer\nsealed family", fillcolor="#e8f0e2", color="#4a7c59"];
+        apply -> heap; apply -> runner; runner -> heap; runner -> state;
+        heap -> state; heap -> events; runner -> events;
+    }
+
+    subgraph cluster_procgen {
+        label=<<b>libs/procgen</b> (pure)>; labelloc=b;
+        style="rounded,filled"; fillcolor="#f2f7f0"; color="#4a7c59";
+        wseed  [label="WorldSeed\nregionHash(x,y)", fillcolor="#e8f0e2", color="#4a7c59"];
+        rng    [label="RngDraws\nnamed streams", fillcolor="#e8f0e2", color="#4a7c59"];
+        noise  [label="Noise · PoissonDisc\nNameGrammar", fillcolor="#e8f0e2", color="#4a7c59"];
+        wseed -> rng -> noise;
+    }
+
+    pg [label="PostgreSQL\nauth · wilds_meta", shape=cylinder, style=filled,
+        fillcolor="#f7e6e2", color="#a05a4a"];
+
+    browser -> http;  botcl -> http;
+    browser -> sse [style=dashed]; botcl -> sse [style=dashed];
+    browser -> web;
+    http -> auth [style=dotted, label="check"];
+    http -> adm [label="envelope"];
+    adm -> db [label="command_log\ncommit", color="#a05a4a"];
+    adm -> host [label="mailbox", color="#8a6d1f"];
+    clock -> host [label="advanceTo(now)", color="#8a6d1f"];
+    host -> apply [label="apply · advanceTo", color="#4a7c59"];
+    state -> wseed [style=dashed, label="lazy region\ngen on first contact", color="#4a7c59", constraint=false];
+    host -> events [label="drain", color="#4a7c59", constraint=false];
+    events -> sse [color="#4a7c59", label="push"];
+    events -> chron [color="#4a7c59"];
+    chron -> db [color="#a05a4a", label="projections"];
+    host -> obs [label="WorldView\npublish", color="#8a6d1f"];
+    obs -> web [label="reads (never block)"];
+    obs -> http [label="GET views", style=dashed];
+    db -> pg [color="#a05a4a"];
+}

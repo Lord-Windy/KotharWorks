@@ -1,0 +1,53 @@
+// Ironwood Wilds — Action & queue state machine (two-phase validation)
+// Follows IronwoodWildsCommands.md §4 and the fail-soft rule (C3).
+digraph ActionLifecycle {
+    graph [rankdir=TB, bgcolor="#ffffff", pad=0.35,
+           fontname="DejaVu Sans", fontsize=15, labelloc=t,
+           label=<<b>Ironwood Wilds — Action Lifecycle (per character)</b><br/>1 running + 4 pending · phase 1 rejects at admission · phase 2 fails soft at start>];
+    node  [fontname="DejaVu Sans", fontsize=10, margin="0.16,0.09"];
+    edge  [fontname="DejaVu Sans", fontsize=9, fontcolor="#444444", arrowsize=0.7];
+
+    start [shape=circle, label="", style=filled, fillcolor="#38663f", width=0.22];
+
+    idle [shape=box, style="rounded,filled", fillcolor="#e8f0e2", color="#4a7c59",
+          label=<<b>Idle</b><br/>patient — stands still forever, no autonomous acts>];
+
+    enqueue_note [shape=note, style=filled, fillcolor="#fdf6dd", color="#cbb37a",
+                  label="enqueue admission (phase 1):\ncheap checks only →\nQUEUE_FULL · UNKNOWN_TARGET\nSKILL_TOO_LOW · NOT_RESEARCHED"];
+
+    pending [shape=box, style="rounded,filled", fillcolor="#e8f0e2", color="#4a7c59",
+             label=<<b>Pending</b><br/>position ≤ 4 in the plan queue>];
+
+    startck [shape=diamond, style=filled, fillcolor="#f5ecd9", color="#b08a3e",
+             label="phase 2: start-time checks\ninputs? target there? slot free?\nreachable? not incapacitated?"];
+
+    running [shape=box, style="rounded,filled", fillcolor="#dcead8", color="#38663f",
+             label=<<b>Running</b><br/>heap entry (dueMs, seq)\nnot cancellable in v1>];
+
+    completed [shape=box, style="rounded,filled", fillcolor="#dcead8", color="#38663f",
+               label=<<b>Completed</b><br/>atomic: consume inputs · grant outputs · award XP<br/>event action.completed>];
+
+    failed [shape=box, style="rounded,filled", fillcolor="#f8ecd4", color="#a3722a",
+            label=<<b>Failed (soft)</b><br/>event ActionFailed{reason}\nqueue advances — bot copes\nDEPLETED · NO_INPUTS · SLOT_BUSY · …>];
+
+    dropped [shape=box, style="rounded,filled", fillcolor="#f7ddda", color="#a0453a",
+             label=<<b>Dropped</b><br/>colonist death — only death\ninterrupts a running action>];
+
+    replace [shape=note, style=filled, fillcolor="#fdf6dd", color="#cbb37a",
+             label="player queue edits:\nreplaceQueue (pending only)\ncancelPending\nrunning is never touched"];
+
+    start -> idle;
+    idle -> pending [color="#4a7c59", label="enqueue admitted"];
+    enqueue_note -> pending [style=dotted, color="#cbb37a", arrowhead=none];
+    pending -> idle [color="#6b6b6b", style=dashed, label="cancel / replace removes"];
+    pending -> startck [color="#4a7c59", label="character free →\nheap pops next"];
+    startck -> running [color="#4a7c59", label="pass"];
+    startck -> failed [color="#a3722a", label="fail"];
+    running -> completed [color="#38663f", label="dueMs reached"];
+    running -> dropped [color="#a0453a", label="death"];
+    completed -> startck [color="#4a7c59", label="next pending"];
+    completed -> idle [color="#4a7c59", label="queue empty"];
+    failed -> startck [color="#a3722a", label="next pending"];
+    failed -> idle [color="#a3722a", label="queue empty"];
+    replace -> pending [style=dotted, color="#cbb37a", arrowhead=none];
+}
