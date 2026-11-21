@@ -90,6 +90,15 @@ public final class EventCodec {
                         : ApiJson.str(event.publicSummary()))));
     }
 
+    /**
+     * The wire payload object for one engine event. Persistence reuses exactly
+     * this shape inside {@code world_events.payload_json}, so a recovered row
+     * serializes byte-identically to the live SSE/REST frame.
+     */
+    public static JsonObj payloadJson(WorldEvent event) {
+        return payload(event);
+    }
+
     private static JsonObj payload(WorldEvent event) {
         return switch (event) {
             case WorldEvent.OwnerRegistered e -> new JsonObj(List.of(

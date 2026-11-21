@@ -41,6 +41,12 @@ public final class Main {
               --oidc-jwks-uri <url>
               --rate-per-sec <long>             per-seat sustained rate (default 10)
               --rate-burst <long>               per-seat burst (default 20)
+              --bind <addr>                     bind address (default 127.0.0.1)
+              --storage memory|postgres         persistence backend (default memory)
+              --jdbc-url <url>                  PostgreSQL JDBC URL (postgres storage)
+              --db-user <user>                  PostgreSQL user (postgres storage)
+              --db-password <pass>              PostgreSQL password (postgres storage)
+              --checkpoint-interval-ms <long>   uptime ms between checkpoints (default 300000)
             """;
 
     private Main() {
@@ -60,7 +66,9 @@ public final class Main {
             server.start();
             System.out.println("wilds-server listening on http://127.0.0.1:" + server.port()
                     + " (mode=" + config.authMode().name().toLowerCase(java.util.Locale.ROOT)
-                    + ", timeScale=" + config.timeScale() + ", world=" + config.worldSeed() + ")");
+                    + ", timeScale=" + config.timeScale() + ", world=" + config.worldSeed()
+                    + ", storage=" + config.storage().name().toLowerCase(java.util.Locale.ROOT)
+                    + ", bind=" + config.bindAddress() + ")");
             Runtime.getRuntime().addShutdownHook(
                     Thread.ofVirtual().name("wilds-server-shutdown").unstarted(server::close));
             TimeUnit.DAYS.sleep(365_000L); // park main; virtual-thread executors are daemons

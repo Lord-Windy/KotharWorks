@@ -45,6 +45,12 @@
         <!-- Pinned dependency versions -->
         <junit.version>5.11.4</junit.version>
         <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
+        <postgresql.version>42.7.14</postgresql.version>
+        <hikaricp.version>7.1.0</hikaricp.version>
+        <jdbi3.version>3.55.0</jdbi3.version>
+        <slf4j.version>2.0.20</slf4j.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
+        <errorprone-annotations.version>2.53.0</errorprone-annotations.version>
 
         <!-- Pinned plugin versions -->
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
@@ -77,6 +83,40 @@
                 <artifactId>nimbus-jose-jwt</artifactId>
                 <version>${nimbus-jose-jwt.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.zaxxer</groupId>
+                <artifactId>HikariCP</artifactId>
+                <version>${hikaricp.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jdbi</groupId>
+                <artifactId>jdbi3-core</artifactId>
+                <version>${jdbi3.version}</version>
+            </dependency>
+            <!-- Pinned so the slf4j-simple provider always matches the API version
+                 HikariCP/Testcontainers pull in transitively. -->
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-simple</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+            <!-- Resolves the @GuardedBy annotations referenced inside JDBI3/HikariCP
+                 class files; without it javac -Werror flags their absence. -->
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_annotations</artifactId>
+                <version>${errorprone-annotations.version}</version>
+            </dependency>
 
             <!-- Test dependencies -->
             <dependency>
@@ -85,6 +125,18 @@
                 <version>${junit.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-junit-jupiter</artifactId>
+                <version>${testcontainers.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-postgresql</artifactId>
+                <version>${testcontainers.version}</version>
+                <scope>test</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>

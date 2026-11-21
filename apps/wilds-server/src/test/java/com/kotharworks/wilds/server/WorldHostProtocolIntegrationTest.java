@@ -92,7 +92,8 @@ class WorldHostProtocolIntegrationTest {
         stopServer();
         ServerConfig config = new ServerConfig(0, 1L, timeScale, pumpIntervalMs,
                 AuthMode.DEV_LOCAL, "http://127.0.0.1:0", null, null, null, null, null, null,
-                100L, 200L);
+                100L, 200L, "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null,
+                300_000L);
         store = new InMemoryWorldStore();
         server = new WildsServer(config, Clock.systemUTC(), null, store, null,
                 new ApiTokenCodec(new SecureRandom()));

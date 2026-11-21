@@ -15,6 +15,8 @@
  */
 package com.kotharworks.wilds.server.ports;
 
+import java.io.IOException;
+import java.io.Writer;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -114,7 +116,11 @@ public interface WorldStorePort {
 
     // ------------------------------------------------------------- checkpoints & recovery
 
-    /** Persists a checkpoint replacing any previous one for the world. */
+    /**
+     * Persists a new checkpoint row. Durable stores append and retain the
+     * latest ten rows per world (older rows are pruned); the in-memory
+     * reference store keeps a single slot.
+     */
     void saveCheckpoint(int worldId, long upToWalSeq, long logicalMs, long worldHash,
             String stateJson);
 
@@ -123,4 +129,15 @@ public interface WorldStorePort {
 
     /** Every WAL row with {@code walSeq > afterWalSeq}, ascending by {@code walSeq}. */
     List<WalRecord> loadWalAfter(int worldId, long afterWalSeq);
+
+    /**
+     * Exports the world's full WAL as JSONL for {@code wilds-headless replay}:
+     * line 1 is the canonical {@code WAL_HEADER} (world seed + version
+     * triple), then one canonical {@link WalRecord} line per WAL row in
+     * ascending {@code walSeq} order.
+     *
+     * @throws IllegalStateException when the world has no active row (nothing
+     *                               to export)
+     */
+    void exportWalJsonl(int worldId, Writer out) throws IOException;
 }

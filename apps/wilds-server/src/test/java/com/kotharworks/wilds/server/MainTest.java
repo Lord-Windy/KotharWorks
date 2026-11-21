@@ -38,6 +38,12 @@ class MainTest {
         assertEquals(10L, config.ratePerSec());
         assertEquals(20L, config.rateBurst());
         assertNull(config.oidcIssuerUrl());
+        assertEquals("127.0.0.1", config.bindAddress());
+        assertEquals(ServerConfig.StorageMode.MEMORY, config.storage());
+        assertNull(config.jdbcUrl());
+        assertNull(config.dbUser());
+        assertNull(config.dbPassword());
+        assertEquals(300_000L, config.checkpointIntervalMs());
     }
 
     @Test
@@ -66,6 +72,38 @@ class MainTest {
                 "--oidc-authorization-endpoint", "https://id.example/auth",
                 "--oidc-token-endpoint", "https://id.example/token",
                 "--oidc-jwks-uri", "https://id.example/certs"}).authMode());
+    }
+
+    @Test
+    void parseReadsStorageFlags() {
+        ServerConfig config = ServerConfig.parse(new String[] {
+                "--bind", "127.0.0.1", "--storage", "postgres",
+                "--jdbc-url", "jdbc:postgresql://127.0.0.1:5432/wilds",
+                "--db-user", "wilds", "--db-password", "hunter2",
+                "--checkpoint-interval-ms", "60000"});
+        assertEquals("127.0.0.1", config.bindAddress());
+        assertEquals(ServerConfig.StorageMode.POSTGRES, config.storage());
+        assertEquals("jdbc:postgresql://127.0.0.1:5432/wilds", config.jdbcUrl());
+        assertEquals("wilds", config.dbUser());
+        assertEquals("hunter2", config.dbPassword());
+        assertEquals(60_000L, config.checkpointIntervalMs());
+        ServerConfig validated = config.validated();
+        assertEquals(config, validated);
+    }
+
+    @Test
+    void postgresStorageRequiresJdbcUrl() {
+        ServerConfig partial = ServerConfig.parse(new String[] {"--storage", "postgres"});
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                partial::validated);
+        assertTrue(e.getMessage().contains("--jdbc-url"));
+    }
+
+    @Test
+    void unknownStorageRejected() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> ServerConfig.parse(new String[] {"--storage", "oracle"}));
+        assertTrue(e.getMessage().contains("memory|postgres"));
     }
 
     @Test

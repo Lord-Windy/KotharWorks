@@ -15,6 +15,8 @@
  */
 package com.kotharworks.wilds.server.adapters.memory;
 
+import java.io.IOException;
+import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -31,6 +33,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import com.kotharworks.auth.principal.UserId;
 import com.kotharworks.wilds.command.WorldCommand;
+import com.kotharworks.wilds.replay.CommandCodec;
+import com.kotharworks.wilds.server.ports.WalJsonlCodec;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.ports.SeatRecord;
@@ -236,6 +240,20 @@ public final class InMemoryWorldStore implements WorldStorePort {
                 }
             }
             return List.copyOf(tail);
+        }
+    }
+
+    @Override
+    public void exportWalJsonl(int worldId, Writer out) throws IOException {
+        synchronized (lock) {
+            requireWorld(worldId);
+            out.write(WalJsonlCodec.headerLine(world.worldSeed(), world.rulesVersion(),
+                    world.engineVersion()));
+            out.write('\n');
+            for (WalRecord record : walByWorld.get(worldId)) {
+                out.write(CommandCodec.encodeWal(record));
+                out.write('\n');
+            }
         }
     }
 

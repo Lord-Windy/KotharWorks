@@ -20,9 +20,14 @@ import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.io.Writer;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.util.Objects;
+
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.jdbi.v3.core.Jdbi;
 
 import com.kotharworks.auth.AuthMode;
 import com.kotharworks.auth.dev.DevLocalJwtIssuer;
@@ -46,6 +51,9 @@ import com.kotharworks.wilds.server.adapters.http.QueryRoutes;
 import com.kotharworks.wilds.server.adapters.http.SeatRoutes;
 import com.kotharworks.wilds.server.adapters.http.SuspendedUserRejectingAuthenticator;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryAuthStore;
+import com.kotharworks.wilds.server.adapters.postgres.PostgresAuthStore;
+import com.kotharworks.wilds.server.adapters.postgres.PostgresWorldStore;
+import com.kotharworks.wilds.server.adapters.postgres.SqlMigrator;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryWorldStore;
 import com.kotharworks.wilds.server.adapters.sse.SseRoutes;
@@ -81,6 +89,7 @@ public final class WildsServer implements AutoCloseable {
     private final SeatAuthorizer seatAuthorizer;
     private final DevLocalJwtIssuer devIssuer;
     private final OidcConfig oidcConfig;
+    private final HikariDataSource ownedDataSource;
 
     /** Production-style constructor: real clock, fresh in-memory adapters. */
     public WildsServer(ServerConfig config) throws IOException {
@@ -98,13 +107,33 @@ public final class WildsServer implements AutoCloseable {
             throws IOException {
         this.config = Objects.requireNonNull(config, "config").validated();
         this.clock = Objects.requireNonNull(clock, "clock");
-        this.authStore = authStore != null ? authStore : new InMemoryAuthStore(clock);
-        this.worldStore = worldStore != null ? worldStore : new InMemoryWorldStore();
+        if (authStore == null && worldStore == null
+                && config.storage() == ServerConfig.StorageMode.POSTGRES) {
+            HikariConfig hikari = new HikariConfig();
+            hikari.setJdbcUrl(config.jdbcUrl());
+            if (config.dbUser() != null) {
+                hikari.setUsername(config.dbUser());
+            }
+            if (config.dbPassword() != null) {
+                hikari.setPassword(config.dbPassword());
+            }
+            hikari.setMaximumPoolSize(8);
+            hikari.setPoolName("wilds-server");
+            this.ownedDataSource = new HikariDataSource(hikari);
+            Jdbi jdbi = Jdbi.create(this.ownedDataSource);
+            new SqlMigrator(jdbi).migrate();
+            this.authStore = new PostgresAuthStore(jdbi, clock, new SecureRandom());
+            this.worldStore = new PostgresWorldStore(jdbi);
+        } else {
+            this.ownedDataSource = null;
+            this.authStore = authStore != null ? authStore : new InMemoryAuthStore(clock);
+            this.worldStore = worldStore != null ? worldStore : new InMemoryWorldStore();
+        }
         this.eventBus = eventBus != null ? eventBus : new InMemoryEventBus();
         Objects.requireNonNull(apiTokenCodec, "apiTokenCodec");
 
         this.server = HttpServer.create(new InetSocketAddress(
-                InetAddress.getByName("127.0.0.1"), config.port()), 0);
+                InetAddress.getByName(config.bindAddress()), config.port()), 0);
         LoopbackStartupFuse.verify(config.authMode(), server.getAddress());
         CookieCodec cookies = CookieCodec.devLoopback();
 
@@ -141,7 +170,8 @@ public final class WildsServer implements AutoCloseable {
         this.router = new AuthenticatedRouter(server, authenticator, csrfGuard);
 
         this.worldHost = new WorldHost(this.worldStore, this.eventBus, config.worldSeed(),
-                config.timeScale());
+                config.timeScale(), WorldHost.DEFAULT_QUIET_ADVANCE_MS,
+                config.checkpointIntervalMs());
         this.pump = new ClockPump(worldHost, config.pumpIntervalMs());
         SeatRateLimiter rateLimiter = new SeatRateLimiter(config.ratePerSec(), config.rateBurst());
         this.seatAuthorizer = new SeatAuthorizer(this.authStore, this.worldStore, rateLimiter);
@@ -196,12 +226,20 @@ public final class WildsServer implements AutoCloseable {
         return devIssuer;
     }
 
-    /** Stops pump, HTTP server, world host (checkpointing), and the event bus. */
+    /** Stops pump, HTTP server, world host (final anchor + checkpoint), and the event bus. */
     @Override
     public void close() {
         pump.close();
         router.stop(0);
         worldHost.close();
+        if (ownedDataSource != null) {
+            ownedDataSource.close();
+        }
+    }
+
+    /** Exports this world's WAL as JSONL for {@code wilds-headless replay}. */
+    public void exportWalJsonl(Writer out) throws IOException {
+        worldStore.exportWalJsonl(worldHost.worldId(), out);
     }
 
     /** Prevents accidental unchecked-IOException leakage in tests. */

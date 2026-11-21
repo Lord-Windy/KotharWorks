@@ -98,21 +98,42 @@ accept signed decimal or full 64-bit unsigned `0x`/`0X` hex. Run via
 **Status:** in-development · **Artifact:** `com.kotharworks:wilds-server` ·
 **Package:** `com.kotharworks.wilds.server` · **Depends on:** `wilds`, `auth`
 
-Hexagonal runtime core of the Ironwood Wilds online server (Ticket 07), on Java 25
-Virtual Threads with fast in-memory adapters (Postgres/JDBI arrives in Ticket 08).
+Hexagonal runtime core of the Ironwood Wilds online server (Tickets 07+08), on
+Java 25 Virtual Threads with in-memory reference adapters (`adapters/memory/`) or
+production PostgreSQL persistence (`--storage=postgres` via HikariCP + JDBI3).
 `domain/WorldHost` is the single writer: a dedicated virtual thread drains a bounded
 `ArrayBlockingQueue` mailbox enforcing **strict Commit-Before-Mutate** WAL ordering
 (pure Phase-1 validation first, `WorldStorePort.appendCommand` before any state
 mutation, `503 STORAGE_UNAVAILABLE` with untouched RAM on store failure), `cmdId`
 UUID idempotency with receipt caching, pre-mutation `CLOCK_ADVANCE` anchors plus a
 quiet `ClockPump` adapter, and lock-free volatile `WorldView` MVCC reads with
-checkpoint + WAL-tail boot recovery. `domain/SeatAuthorizer` bridges `libs/auth`
+checkpoint-hash-verified + WAL-tail boot recovery, `PAUSE_WHILE_DOWN` clock resume
+(logical time never advances offline), periodic + graceful-close checkpointing
+(retention: latest ten) and a best-effort final `CLOCK_ADVANCE` anchor so the
+exported WAL replays to the exact shutdown hash.
+`adapters/postgres/` ships the zero-framework `SqlMigrator` (plain versioned
+`V###__*.sql` under `db/`: `V001__auth.sql`, `V002__wilds_meta.sql`,
+`V003__wilds_world.sql` — gameplay-neutral `auth`/`wilds_meta` schemas and a
+100% append-only `wilds_world` (`command_wal`, `world_checkpoints`,
+`world_events`), `pg_advisory_lock` serialized, one transaction per script,
+refuses to boot on a newer database), `PostgresAuthStore` (JIT provisioning under
+`pg_advisory_xact_lock(hashtextextended(...))` — zero orphan users, zero 23505
+races; SHA-256-only session/token credentials), `PostgresWorldStore` (append-only
+WAL + `ON CONFLICT (world_id, event_cursor) DO NOTHING` event backfill, latest-ten
+checkpoint retention, `exportWalJsonl` byte-compatible with `wilds-headless`
+replay) and `WorldEventPayloadCodec` (payload_json round-trip, scopeOwner
+embedded). The Testcontainers 2.x suite (`postgres/`) boots a singleton
+`postgres:17-alpine` once per JVM and proves migration idempotency, 20-virtual-
+thread JIT identity races, split-brain store-fault immunity (RAM never ahead of
+WAL, HTTP 503) and full `kill -9` recovery with zero cursor rewind.
+`domain/SeatAuthorizer` bridges `libs/auth`
 principals to permanent seats (`ports/SeatRecord`) and in-world `OwnerId`s, with
 role quota charter policy (`ControllerKind`), `wilds:seat` bot-token resource
 scoping, and per-seat token-bucket rate limiting (`429 RATE_LIMITED`). `ports/`
 defines `AuthStorePort` (JIT user upsert, web sessions, scoped API tokens,
 `suspendUser`) and `WorldStorePort` (seats, append-only WAL, idempotent events with
-public/private projection, checkpoints) implemented by `adapters/memory/`. HTTP:
+public/private projection, checkpoints + WAL export) implemented by
+`adapters/memory/` and `adapters/postgres/`. HTTP:
 `/dev/login`, `/auth/*` (dev-local persona switcher or OIDC Authorization Code +
 PKCE), seat chartering `POST /api/v1/seats` (submits `RegisterOwner` through
 `WorldHost` — zero UI-private mutation backdoors), `iw_bot_` token minting for
@@ -121,7 +142,11 @@ synchronous `POST /api/v1/commands` (server-injected `OwnerId`, raw
 `register_owner` rejected), `POST /api/v1/admin/users/{userId}/suspend`, and live
 `GET /api/v1/stream?since=` Server-Sent Events over chunked virtual-thread
 responses with replay, live fan-out, keepalives and clean shutdown — all registered
-exclusively through `libs/auth`'s deny-by-default `AuthenticatedRouter`. Run via
+exclusively through `libs/auth`'s deny-by-default `AuthenticatedRouter`. CLI flags:
+`--port`, `--seed`, `--time-scale`, `--pump-interval-ms`, `--bind` (127.0.0.1),
+`--auth-mode dev-local|oidc`, `--storage memory|postgres`, `--jdbc-url`, `--db-user`,
+`--db-password`, `--checkpoint-interval-ms` (300000), OIDC endpoints, and per-seat
+rate limits. Run via
 `mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am`.
 
 ## External dependencies
@@ -130,6 +155,13 @@ exclusively through `libs/auth`'s deny-by-default `AuthenticatedRouter`. Run via
 | ------------- | ----- | -------------------------------- |
 | JUnit Jupiter | test  | `wilds`, `auth`, `wilds-headless`, `wilds-server` |
 | nimbus-jose-jwt | compile | `auth` (transitively `wilds-server`) |
+| PostgreSQL JDBC driver | compile | `wilds-server` |
+| HikariCP | compile | `wilds-server` |
+| JDBI3 core | compile | `wilds-server` |
+| error_prone_annotations | provided | `wilds-server` (resolves @GuardedBy inside JDBI3/HikariCP class files under `-Werror`) |
+| slf4j-simple | runtime | `wilds-server` (clean provider for HikariCP/Testcontainers logs) |
+| Testcontainers junit-jupiter + postgresql | test | `wilds-server` (singleton `postgres:17-alpine`) |
+| wilds-headless | test | `wilds-server` (WAL export byte-parity) |
 
 ## Dependency graph
 

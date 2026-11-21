@@ -39,21 +39,40 @@ import com.kotharworks.auth.AuthMode;
  * @param oidcJwksUri               explicit JWKS URI
  * @param ratePerSec                per-seat sustained request rate
  * @param rateBurst                 per-seat burst headroom
+ * @param bindAddress               bind address (loopback only in dev-local mode)
+ * @param storage                   {@code MEMORY} or {@code POSTGRES} persistence
+ * @param jdbcUrl                   PostgreSQL JDBC URL (required in POSTGRES mode)
+ * @param dbUser                    PostgreSQL user (optional)
+ * @param dbPassword                PostgreSQL password (optional)
+ * @param checkpointIntervalMs      wall-time uptime cadence between checkpoints
  */
 public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIntervalMs,
         AuthMode authMode, String publicOrigin, String oidcIssuerUrl, String oidcClientId,
         String oidcClientSecret, String oidcAuthorizationEndpoint, String oidcTokenEndpoint,
-        String oidcJwksUri, long ratePerSec, long rateBurst) {
+        String oidcJwksUri, long ratePerSec, long rateBurst, String bindAddress,
+        StorageMode storage, String jdbcUrl, String dbUser, String dbPassword,
+        long checkpointIntervalMs) {
+
+    /** Persistence backend selected by {@code --storage}. */
+    public enum StorageMode {
+        /** The in-memory reference adapters (Phase-0 default). */
+        MEMORY,
+        /** HikariCP + JDBI3 PostgreSQL adapters with forward SQL migrations. */
+        POSTGRES
+    }
 
     /** Builds the default configuration (port 8080, seed 1, dev-local auth). */
     public static ServerConfig defaults() {
         return new ServerConfig(8080, 1L, 1L, 1_000L, AuthMode.DEV_LOCAL,
-                "http://127.0.0.1:8080", null, null, null, null, null, null, 10L, 20L);
+                "http://127.0.0.1:8080", null, null, null, null, null, null, 10L, 20L,
+                "127.0.0.1", StorageMode.MEMORY, null, null, null, 300_000L);
     }
 
     public ServerConfig {
         Objects.requireNonNull(authMode, "authMode");
         Objects.requireNonNull(publicOrigin, "publicOrigin");
+        Objects.requireNonNull(bindAddress, "bindAddress");
+        Objects.requireNonNull(storage, "storage");
         if (port < 0 || port > 65_535) {
             throw new IllegalArgumentException("port out of range: " + port);
         }
@@ -93,6 +112,12 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         String oidcJwksUri = null;
         long ratePerSec = 10L;
         long rateBurst = 20L;
+        String bindAddress = "127.0.0.1";
+        StorageMode storage = StorageMode.MEMORY;
+        String jdbcUrl = null;
+        String dbUser = null;
+        String dbPassword = null;
+        long checkpointIntervalMs = 300_000L;
 
         for (int i = 0; i < args.length; i++) {
             String flag = args[i];
@@ -112,17 +137,30 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
                 case "--oidc-jwks-uri" -> oidcJwksUri = next(args, ++i, flag);
                 case "--rate-per-sec" -> ratePerSec = parseLong(next(args, ++i, flag), flag);
                 case "--rate-burst" -> rateBurst = parseLong(next(args, ++i, flag), flag);
+                case "--bind" -> bindAddress = next(args, ++i, flag);
+                case "--storage" -> storage = parseStorage(next(args, ++i, flag));
+                case "--jdbc-url" -> jdbcUrl = next(args, ++i, flag);
+                case "--db-user" -> dbUser = next(args, ++i, flag);
+                case "--db-password" -> dbPassword = next(args, ++i, flag);
+                case "--checkpoint-interval-ms" ->
+                        checkpointIntervalMs = parseLong(next(args, ++i, flag), flag);
                 default -> throw new IllegalArgumentException("unknown flag: " + flag);
             }
         }
         String origin = publicOrigin != null ? publicOrigin : "http://127.0.0.1:" + port;
         return new ServerConfig(port, worldSeed, timeScale, pumpIntervalMs, authMode, origin,
                 oidcIssuerUrl, oidcClientId, oidcClientSecret, oidcAuthorizationEndpoint,
-                oidcTokenEndpoint, oidcJwksUri, ratePerSec, rateBurst);
+                oidcTokenEndpoint, oidcJwksUri, ratePerSec, rateBurst, bindAddress, storage,
+                jdbcUrl, dbUser, dbPassword, checkpointIntervalMs);
     }
 
-    /** Validates the OIDC-mode required fields. */
+    /** Validates the OIDC-mode and POSTGRES-storage required fields. */
     public ServerConfig validated() {
+        if (storage == StorageMode.POSTGRES) {
+            if (jdbcUrl == null || jdbcUrl.isBlank()) {
+                throw new IllegalArgumentException("--storage=postgres requires --jdbc-url");
+            }
+        }
         if (authMode == AuthMode.OIDC) {
             requireOidc("oidcIssuerUrl", oidcIssuerUrl);
             requireOidc("oidcClientId", oidcClientId);
@@ -166,6 +204,15 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(flag + " expects an integer, got: " + value);
         }
+    }
+
+    private static StorageMode parseStorage(String value) {
+        return switch (value) {
+            case "memory" -> StorageMode.MEMORY;
+            case "postgres" -> StorageMode.POSTGRES;
+            default -> throw new IllegalArgumentException(
+                    "--storage expects memory|postgres, got: " + value);
+        };
     }
 
     private static AuthMode parseAuthMode(String value) {

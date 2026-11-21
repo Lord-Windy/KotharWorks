@@ -28,7 +28,7 @@
 
     <artifactId>wilds-server</artifactId>
     <name>KotharWorks :: apps/wilds-server</name>
-    <description>Ironwood Wilds online server host: hexagonal WorldHost, SeatAuthorizer, REST &amp; SSE over in-memory adapters</description>
+    <description>Ironwood Wilds online server host: hexagonal WorldHost, SeatAuthorizer, REST &amp; SSE with HikariCP/JDBI3 PostgreSQL persistence, forward SQL migrations and crash recovery</description>
 
     <dependencies>
         <dependency>
@@ -40,8 +40,49 @@
             <artifactId>auth</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jdbi</groupId>
+            <artifactId>jdbi3-core</artifactId>
+        </dependency>
+        <!-- Resolves the @GuardedBy annotations inside JDBI3/HikariCP class files
+             (javac -Werror flags their absence otherwise). Compile-time only. -->
+        <dependency>
+            <groupId>com.google.errorprone</groupId>
+            <artifactId>error_prone_annotations</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <!-- Clean log provider for HikariCP/Testcontainers (runtime only). -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Test-only: asserts exportWalJsonl byte-parity against WalHeader.encode(). -->
+        <dependency>
+            <groupId>com.kotharworks</groupId>
+            <artifactId>wilds-headless</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

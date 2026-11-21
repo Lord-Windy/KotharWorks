@@ -62,7 +62,10 @@ public final class WorldHost {
     public static final int WILDS_PROTOCOL_VERSION = 1;
 
     /** Quiet-advance threshold: a pump tick writes a CLOCK_ADVANCE at least this often. */
-    private static final long DEFAULT_QUIET_ADVANCE_MS = 60_000L;
+    public static final long DEFAULT_QUIET_ADVANCE_MS = 60_000L;
+
+    /** Default uptime checkpoint cadence (5 minutes), matching {@code --checkpoint-interval-ms}. */
+    public static final long DEFAULT_CHECKPOINT_INTERVAL_MS = 300_000L;
 
     private static final long OFFER_TIMEOUT_MS = 5_000L;
     private static final long REPLY_TIMEOUT_MS = 10_000L;
@@ -71,6 +74,7 @@ public final class WorldHost {
     private final EventBusPort eventBus;
     private final long timeScale;
     private final long quietAdvanceMs;
+    private final long checkpointIntervalMs;
     private final WorldRecord world;
     private final int worldId;
     private final WildsEngine engine;
@@ -83,6 +87,7 @@ public final class WorldHost {
     private long lastWalSeq;
     private long lastPersistedClockMs;
     private long lastTickWallNanos;
+    private long lastCheckpointWallNanos;
 
     private sealed interface HostMessage permits SubmitCommand, Tick, Shutdown {
     }
@@ -125,14 +130,19 @@ public final class WorldHost {
      * tail; otherwise a fresh seeded engine is created.
      */
     public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
-            long timeScale, long quietAdvanceMs) {
+            long timeScale, long quietAdvanceMs, long checkpointIntervalMs) {
         this.worldStore = Objects.requireNonNull(worldStore, "worldStore");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         if (timeScale < 1) {
             throw new IllegalArgumentException("timeScale must be >= 1: " + timeScale);
         }
+        if (checkpointIntervalMs < 1) {
+            throw new IllegalArgumentException("checkpointIntervalMs must be >= 1: "
+                    + checkpointIntervalMs);
+        }
         this.timeScale = timeScale;
         this.quietAdvanceMs = quietAdvanceMs;
+        this.checkpointIntervalMs = checkpointIntervalMs;
         this.world = worldStore.ensureActiveWorld(worldSeed, RuleRegistry.WILDS_RULES_VERSION,
                 WildsEngine.API_VERSION, WILDS_PROTOCOL_VERSION);
         this.worldId = world.worldId();
@@ -150,14 +160,26 @@ public final class WorldHost {
         this.lastWalSeq = 0;
         this.lastPersistedClockMs = engine.nowMs();
         this.lastTickWallNanos = System.nanoTime();
+        this.lastCheckpointWallNanos = lastTickWallNanos;
         this.view = engine.view();
         this.writerThread = Thread.ofVirtual().name("wilds-world-host").start(this::runWriter);
     }
 
-    /** Convenience constructor with the default 60 s quiet-advance anchor. */
+    /**
+     * Convenience constructor with the default 60 s quiet-advance anchor and
+     * the default 5 minute checkpoint cadence.
+     */
     public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
             long timeScale) {
-        this(worldStore, eventBus, worldSeed, timeScale, DEFAULT_QUIET_ADVANCE_MS);
+        this(worldStore, eventBus, worldSeed, timeScale, DEFAULT_QUIET_ADVANCE_MS,
+                DEFAULT_CHECKPOINT_INTERVAL_MS);
+    }
+
+    /** Convenience constructor with the default 5 minute checkpoint cadence. */
+    public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
+            long timeScale, long quietAdvanceMs) {
+        this(worldStore, eventBus, worldSeed, timeScale, quietAdvanceMs,
+                DEFAULT_CHECKPOINT_INTERVAL_MS);
     }
 
     // ------------------------------------------------------------------ caller side
@@ -304,7 +326,13 @@ public final class WorldHost {
         OptionalLong nextDue = engine.peekNextDueMs();
         boolean duePending = nextDue.isPresent() && nextDue.getAsLong() <= target;
         boolean quietDue = target - lastPersistedClockMs >= quietAdvanceMs;
+        // toNanos saturates at Long.MAX_VALUE, so Long.MAX_VALUE disables periodic writes
+        boolean checkpointDue = wallNow - lastCheckpointWallNanos
+                >= TimeUnit.MILLISECONDS.toNanos(checkpointIntervalMs);
         if (!duePending && !quietDue) {
+            if (checkpointDue) {
+                writeCheckpointNow();
+            }
             return; // zero idle WAL spam
         }
         try {
@@ -317,15 +345,38 @@ public final class WorldHost {
         lastPersistedClockMs = engine.nowMs();
         List<StoredWorldEvent> emitted = persistEmitted();
         eventBus.publish(worldId, emitted);
+        if (checkpointDue) {
+            writeCheckpointNow();
+        }
+    }
+
+    /**
+     * Writes a checkpoint of the live world best-effort: a store failure is
+     * swallowed (never propagates to the single writer thread), and the WAL
+     * tail recovers the difference on the next boot.
+     */
+    public void writeCheckpointNow() {
+        try {
+            worldStore.saveCheckpoint(worldId, lastWalSeq, engine.nowMs(), engine.worldHash(),
+                    engine.snapshotJson());
+            lastCheckpointWallNanos = System.nanoTime();
+        } catch (RuntimeException storeFailure) {
+            // Best effort; the WAL tail recovers the difference on the next boot.
+        }
     }
 
     private void handleClose() {
         try {
-            worldStore.saveCheckpoint(worldId, lastWalSeq, engine.nowMs(), engine.worldHash(),
-                    engine.snapshotJson());
+            // Final PAUSE_WHILE_DOWN anchor so the exported WAL ends exactly at
+            // the checkpointed logical ms and headless replay lands on the same
+            // world hash.
+            lastWalSeq = worldStore.appendClockAdvance(worldId, engine.nowMs(), null);
+            engine.advanceTo(engine.nowMs());
+            persistEmitted();
         } catch (RuntimeException storeFailure) {
             // Best effort on shutdown; the WAL tail recovers the difference.
         }
+        writeCheckpointNow();
     }
 
     private void replayWal(long afterWalSeq) {

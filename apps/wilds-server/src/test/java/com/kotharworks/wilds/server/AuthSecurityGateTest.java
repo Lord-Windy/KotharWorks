@@ -65,7 +65,8 @@ class AuthSecurityGateTest {
     private WildsServer rig() throws IOException {
         stopServer();
         ServerConfig config = new ServerConfig(0, 1L, 1L, 60_000L, AuthMode.DEV_LOCAL,
-                "http://127.0.0.1:0", null, null, null, null, null, null, 100L, 200L);
+                "http://127.0.0.1:0", null, null, null, null, null, null, 100L, 200L,
+                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, 300_000L);
         server = new WildsServer(config);
         server.start();
         base = "http://127.0.0.1:" + server.port();
