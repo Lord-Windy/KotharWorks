@@ -31,6 +31,7 @@
     <modules>
         <!-- Libraries -->
         <module>libs/wilds</module>
+        <module>libs/auth</module>
 
         <!-- Applications -->
         <module>apps/wilds-headless</module>
@@ -43,6 +44,7 @@
 
         <!-- Pinned dependency versions -->
         <junit.version>5.11.4</junit.version>
+        <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
 
         <!-- Pinned plugin versions -->
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
@@ -62,6 +64,18 @@
                 <groupId>com.kotharworks</groupId>
                 <artifactId>wilds-headless</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.kotharworks</groupId>
+                <artifactId>auth</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- External libraries -->
+            <dependency>
+                <groupId>com.nimbusds</groupId>
+                <artifactId>nimbus-jose-jwt</artifactId>
+                <version>${nimbus-jose-jwt.version}</version>
             </dependency>
 
             <!-- Test dependencies -->

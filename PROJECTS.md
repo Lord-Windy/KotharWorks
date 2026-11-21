@@ -46,6 +46,35 @@ fuzz harnesses. See
 [`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 
+### auth — reusable AuthN & HTTP security library
+
+**Status:** in-development · **Artifact:** `com.kotharworks:auth` · **Package:**
+`com.kotharworks.auth` · **Depends on:** `com.nimbusds:nimbus-jose-jwt` (only
+external dependency; zero transitive runtime deps)
+
+Game-agnostic AuthN & HTTP security library (Ticket 06). Sealed
+`Principal` family (`HumanPrincipal` with `GlobalRole`s, `GlobalRole`-free
+`ScopedTokenPrincipal`, `AnonymousPrincipal`) keeping automation keys out of
+human identity space; `JwtClaimsVerifier` over Nimbus `DefaultJWTProcessor`
+restricted to asymmetric `RS256`/`ES256` (hard-rejecting `alg:none`/`HS256`
+key confusion), strict `iss`/`aud`/`sub`/`exp`/`nbf` checks with 30 s skew and
+an injected `java.time.Clock` for deterministic expiry; Keycloak
+`realm_access`/`resource_access` role extraction with a `PLAYER` baseline;
+loopback-fused `dev-local` mode (`LoopbackStartupFuse`, ephemeral ES256
+`DevLocalJwtIssuer` with `/dev/login` persona switcher exercising the exact
+production verifier offline) plus drop-in OIDC Authorization Code + PKCE
+`S256` (`OidcJwksAuthenticator` cached JWKS, `OidcAuthorizationCodeClient`
+state/nonce/`code_verifier`); `iw_bot_` scoped token codec (32-byte secrets,
+SHA-256 digests, constant-time compare, revocation/suspension fail-closed);
+denied-by-default `AuthenticatedRouter` over `com.sun.net.httpserver` with
+Virtual Threads, `{param}` path patterns, 404/405 handling, mandatory
+`AccessPolicy` per route and a `registeredRoutes()` audit; `__Host-kw_session`/
+`kw_dev_session` BFF `CookieCodec`; and `CsrfGuard` (Sec-Fetch-Site/Origin
+allow-list, JSON or per-session CSRF token). Host SPIs (`IdentityProvisioner`,
+`SessionStore`, `ScopedTokenLookup`) are pure seams implemented by the host
+app; the `AuthSecurityGateTest` negative suite pins all nine security criteria
+over real loopback HTTP.
+
 ## Applications (`apps/`)
 
 ### wilds-headless — headless CLI & WAL replay rig
@@ -78,11 +107,13 @@ multi-tab HTML UI). Currently prints the `WildsEngine` scaffold greeting via
 
 | Dependency    | Scope | Used by                          |
 | ------------- | ----- | -------------------------------- |
-| JUnit Jupiter | test  | `wilds`, `wilds-headless`, `wilds-server` |
+| JUnit Jupiter | test  | `wilds`, `auth`, `wilds-headless`, `wilds-server` |
+| nimbus-jose-jwt | compile | `auth` |
 
 ## Dependency graph
 
 ```text
+libs/auth           (nimbus-jose-jwt only; planned apps/wilds-server edge, Ticket 07)
 libs/wilds           (zero runtime deps)
   ├── apps/wilds-headless
   └── apps/wilds-server
