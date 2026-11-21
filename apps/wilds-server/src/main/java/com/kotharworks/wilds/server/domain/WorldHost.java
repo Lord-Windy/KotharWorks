@@ -127,7 +127,12 @@ public final class WorldHost {
     /**
      * Boots (or recovers) the world and starts the writer virtual thread. A
      * stored checkpoint is verified by hash and replayed forward from the WAL
-     * tail; otherwise a fresh seeded engine is created.
+     * tail; with no checkpoint yet a fresh seeded engine replays the entire WAL
+     * from {@code walSeq 0} (a crash before the first checkpoint loses nothing).
+     * Either way {@code lastWalSeq} ends at the highest replayed {@code walSeq},
+     * so a periodic checkpoint written before any new append pins the WAL
+     * watermark instead of resetting it to 0 (which would poison the next boot
+     * with a full-WAL re-apply over an already-advanced snapshot).
      */
     public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
             long timeScale, long quietAdvanceMs, long checkpointIntervalMs) {
@@ -153,11 +158,14 @@ public final class WorldHost {
                 throw new IllegalStateException("checkpoint hash mismatch: stored "
                         + checkpoint.worldHash() + " restored " + engine.worldHash());
             }
-            replayWal(checkpoint.upToWalSeq());
+            this.lastWalSeq = replayWal(checkpoint.upToWalSeq());
         } else {
+            // Spec: with no checkpoint yet, the fresh seeded engine still replays
+            // the whole WAL tail from up_to_wal_seq = 0 — a kill -9 before the
+            // first checkpoint must lose no acknowledged command.
             this.engine = new WildsEngine(new WorldSeed(worldSeed));
+            this.lastWalSeq = replayWal(0L);
         }
-        this.lastWalSeq = 0;
         this.lastPersistedClockMs = engine.nowMs();
         this.lastTickWallNanos = System.nanoTime();
         this.lastCheckpointWallNanos = lastTickWallNanos;
@@ -379,8 +387,21 @@ public final class WorldHost {
         writeCheckpointNow();
     }
 
-    private void replayWal(long afterWalSeq) {
+    /**
+     * Replays every WAL row after {@code afterWalSeq} in ascending order,
+     * rebuilding the {@code cmdId} receipt cache and re-backfilling events.
+     *
+     * @return the highest replayed {@code walSeq} (or {@code afterWalSeq} when
+     *         nothing replays) — the watermark a subsequent checkpoint must
+     *         carry so the next boot never re-applies applied commands
+     */
+    private long replayWal(long afterWalSeq) {
+        long lastSeq = afterWalSeq;
         for (WalRecord record : worldStore.loadWalAfter(worldId, afterWalSeq)) {
+            lastSeq = Math.max(lastSeq, switch (record) {
+                case WalRecord.ClockAdvance advance -> advance.walSeq();
+                case WalRecord.CommandEntry entry -> entry.walSeq();
+            });
             switch (record) {
                 case WalRecord.ClockAdvance advance -> {
                     if (advance.admittedMs() > engine.nowMs()) {
@@ -407,6 +428,7 @@ public final class WorldHost {
                 }
             }
         }
+        return lastSeq;
     }
 
     /** Persists drained events idempotently and republishes the volatile view. */

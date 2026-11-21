@@ -316,6 +316,113 @@ class CrashRecoveryTest {
         }
     }
 
+    // ------------------------------------------------------------------ (4b) kill -9 before the first checkpoint
+
+    /**
+     * Review regression: a crash before the FIRST checkpoint must recover from
+     * the WAL tail alone (up_to_wal_seq = 0) — acknowledged commands survive,
+     * receipts answer identically, and a checkpoint written before any new
+     * append pins the WAL watermark (never 0, which would poison the next boot
+     * with a full-WAL re-apply).
+     */
+    @Test
+    void kill9BeforeFirstCheckpointRecoversAndCheckpointsPinTheWalWatermark() throws Exception {
+        Jdbi jdbi = freshJdbi();
+        PostgresAuthStore auth = new PostgresAuthStore(jdbi, Clock.systemUTC(),
+                new SecureRandom());
+        PostgresWorldStore pg = new PostgresWorldStore(jdbi);
+        UserRecord user = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "pre-checkpoint-kill"), "Sam");
+        SeatRecord seat = pg.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
+
+        WorldHost host1 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L,
+                Long.MAX_VALUE);
+        int worldId = host1.worldId();
+        UUID charter = UUID.randomUUID();
+        host1.submit(seat.seatId(), charter,
+                new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"));
+        OwnerId owner = host1.view().findOwnerBySeatKey(seat.seatId()).orElseThrow().id();
+        ActorId actor = host1.view().actorsOwnedBy(owner).get(0).id();
+        UUID enqueue = UUID.randomUUID();
+        host1.submit(seat.seatId(), enqueue,
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(2_000L, 1))));
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        boolean idle = false;
+        while (System.nanoTime() < deadline) {
+            host1.tick();
+            Thread.sleep(50);
+            ActorRow snapshot = host1.view().actor(actor).orElseThrow();
+            if (snapshot.activeTask() == null && snapshot.pendingQueue().isEmpty()) {
+                idle = true;
+                break;
+            }
+        }
+        assertTrue(idle, "wait completed within the drain deadline at timeScale 20");
+        long nowBefore = host1.nowMs();
+        long hashBefore = host1.worldHash();
+        assertEquals(0L, count(jdbi, "SELECT count(*) FROM wilds_world.world_checkpoints"
+                        + " WHERE world_id = " + worldId),
+                "kill -9 lands before the first checkpoint ever exists");
+        host1 = null;
+
+        // Recovery from the WAL tail alone: fresh seeded engine + full replay.
+        WorldHost host2 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L,
+                Long.MAX_VALUE);
+        assertEquals(nowBefore, host2.nowMs(),
+                "clock resumes exactly where the crashed host stopped");
+        assertEquals(hashBefore, host2.worldHash(),
+                "WAL-only replay reproduces the identical world hash");
+
+        // The replayed receipt cache answers the same cmdId without re-executing.
+        CommandOutcome duplicate = host2.submit(seat.seatId(), enqueue,
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(2_000L, 1))));
+        assertInstanceOf(CommandOutcome.Ok.class, duplicate);
+        assertEquals(enqueue, ((CommandOutcome.Ok) duplicate).receipt().cmdId());
+        assertTrue(((CommandOutcome.Ok) duplicate).receipt().walSeq() > 0,
+                "receipt rebuilt from the WAL row carries its wal_seq");
+        assertEquals(hashBefore, host2.worldHash(), "the duplicate never re-executes");
+
+        // A checkpoint written before any new append must pin the WAL watermark.
+        host2.writeCheckpointNow();
+        List<WalRecord> wal = pg.loadWalAfter(worldId, 0L);
+        long watermark = switch (wal.get(wal.size() - 1)) {
+            case WalRecord.ClockAdvance advance -> advance.walSeq();
+            case WalRecord.CommandEntry entry -> entry.walSeq();
+        };
+        assertEquals(watermark, pg.loadLatestCheckpoint(worldId).orElseThrow().upToWalSeq(),
+                "checkpoint carries the highest replayed wal_seq, never 0");
+
+        host2.close(); // the graceful close anchors one final CLOCK_ADVANCE row
+
+        // Boot 3: a short checkpoint interval must not poison the next boot even
+        // when the periodic write fires on an idle world before any new append.
+        WorldHost host3 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L, 50L);
+        assertEquals(hashBefore, host3.worldHash(),
+                "boot from the watermark-pinned checkpoint never re-applies the WAL");
+        // the expected watermark now includes close()'s final anchor row
+        List<WalRecord> afterClose = pg.loadWalAfter(worldId, 0L);
+        long watermarkAfterClose = switch (afterClose.get(afterClose.size() - 1)) {
+            case WalRecord.ClockAdvance advance -> advance.walSeq();
+            case WalRecord.CommandEntry entry -> entry.walSeq();
+        };
+        long deadline3 = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (count(jdbi, "SELECT count(*) FROM wilds_world.world_checkpoints"
+                + " WHERE world_id = " + worldId) < 2 && System.nanoTime() < deadline3) {
+            host3.tick(); // idle world: the periodic path fires on the early return
+            Thread.sleep(100);
+        }
+        assertTrue(count(jdbi, "SELECT count(*) FROM wilds_world.world_checkpoints"
+                        + " WHERE world_id = " + worldId) >= 2,
+                "the idle-world periodic checkpoint fired");
+        assertEquals(watermarkAfterClose,
+                pg.loadLatestCheckpoint(worldId).orElseThrow().upToWalSeq(),
+                "the periodic idle checkpoint keeps pinning the WAL watermark");
+        host3.close();
+    }
+
     // ------------------------------------------------------------------ rig
 
     private static Jdbi freshJdbi() {
