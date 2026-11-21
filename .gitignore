@@ -24,3 +24,9 @@ release.properties
 .env
 *.local.conf
 my_config.*
+
+# Git worktrees
+worktrees/
+
+# Queensland
+queensland.state.jso*
