@@ -1,0 +1,153 @@
+digraph AuthSecurityPipeline {
+    graph [
+        rankdir=TB,
+        bgcolor="#0f1419",
+        fontname="Liberation Sans",
+        fontsize=14,
+        fontcolor="#e6edf3",
+        label=<<b>Modular AuthN &amp; 3-Layer AuthZ Pipeline (libs/auth + apps/wilds-server)</b><br/><font point-size="11" color="#8b949e">Zero Passwords in Game DB · Nimbus JOSE+JWT · Loopback-Fused Dev Mode -&gt; Zero-Rewrite Keycloak OIDC</font>>,
+        labelloc=t,
+        pad="0.38",
+        nodesep="0.45",
+        ranksep="0.52",
+        splines=true
+    ];
+
+    node [
+        shape=box,
+        style="rounded,filled",
+        fontname="Liberation Sans",
+        fontsize=10,
+        fillcolor="#161b22",
+        color="#30363d",
+        fontcolor="#e6edf3",
+        margin="0.14,0.10"
+    ];
+
+    edge [
+        fontname="Liberation Sans",
+        fontsize=8.5,
+        color="#6e7681",
+        fontcolor="#9ca3af",
+        penwidth=1.3,
+        arrowsize=0.75
+    ];
+
+    subgraph cluster_callers {
+        label=<<b>Callers &amp; Credentials</b>>;
+        fontcolor="#d29922";
+        color="#3d3216";
+        bgcolor="#14181f";
+        style="rounded,dashed,filled";
+
+        browser_caller [
+            fillcolor="#1f2937",
+            color="#d29922",
+            label=<<b>Human Browser (/play + SSE)</b><br/><font point-size="8.5" color="#9ca3af">__Host-kw_session (HttpOnly; SameSite=Lax)<br/>+ CsrfGuard (Sec-Fetch-Site / Origin)</font>>
+        ];
+
+        bearer_human [
+            fillcolor="#1f2937",
+            color="#58a6ff",
+            label=<<b>Human CLI / API Client</b><br/><font point-size="8.5" color="#9ca3af">Authorization: Bearer &lt;OIDC JWT&gt;<br/>(Short-lived 5m Access Token)</font>>
+        ];
+
+        bot_caller [
+            fillcolor="#1f2937",
+            color="#bc8cff",
+            label=<<b>apps/wilds-bot &amp; GA Agents</b><br/><font point-size="8.5" color="#d2a8ff">Authorization: Bearer iw_bot_&lt;pfx&gt;_...<br/>(256-bit random · House-scoped)</font>>
+        ];
+    }
+
+    subgraph cluster_libs_auth {
+        label=<<b>Layer 1: Authentication — libs/auth</b>  <font point-size="9" color="#79c0ff">(Game-Agnostic · Nimbus JOSE+JWT)</font>>;
+        fontcolor="#58a6ff";
+        color="#1f3a5f";
+        bgcolor="#121924";
+        style="rounded,filled";
+
+        oidc_adapter [
+            fillcolor="#182638",
+            color="#58a6ff",
+            label=<<b>OidcJwksAuthenticator (Prod)</b><br/><font point-size="8.5" color="#79c0ff">Keycloak OIDC + PKCE (S256)<br/>JWKS Cache · RS256/ES256/EdDSA Only</font>>
+        ];
+
+        dev_adapter [
+            fillcolor="#291d14",
+            color="#f0883e",
+            label=<<b>DevLocalJwtIssuer (Dev/Test)</b><br/><font point-size="8.5" color="#ffa657">/dev/login Persona Picker -&gt; ES256 JWT<br/>HARD FUSE: Crashes if bind != 127.0.0.1!</font>>
+        ];
+
+        jwt_verifier [
+            fillcolor="#172b1e",
+            color="#3fb950",
+            penwidth=1.6,
+            label=<<b>JwtClaimsVerifier + JIT Linker</b><br/><font point-size="8.5" color="#7ee787">Checks sig, iss, aud, exp (rejects alg:none)<br/>Maps (iss, sub) -&gt; UserId(UUID) + Roles</font>>
+        ];
+
+        bot_adapter [
+            fillcolor="#211930",
+            color="#8957e5",
+            label=<<b>ScopedApiTokenAuthenticator</b><br/><font point-size="8.5" color="#d2a8ff">SHA-256 + MessageDigest.isEqual<br/>Checks revoked_at &amp; owner suspended_at</font>>
+        ];
+
+        principal_box [
+            fillcolor="#1f2937",
+            color="#e3b341",
+            penwidth=1.7,
+            label=<<b>sealed interface Principal</b><br/><font point-size="8.5" color="#f2cc60">• HumanPrincipal(UserId, Set&lt;GlobalRole&gt;)<br/>• ScopedTokenPrincipal(TokenId, houseId)<br/>• AnonymousPrincipal (Zero JWTs below!)</font>>
+        ];
+    }
+
+    subgraph cluster_server_authz {
+        label=<<b>Layer 2: Server AuthZ — apps/wilds-server</b>>;
+        fontcolor="#d29922";
+        color="#4d3817";
+        bgcolor="#1a1610";
+        style="rounded,filled";
+
+        route_gate [
+            fillcolor="#261f12",
+            color="#d29922",
+            label=<<b>Deny-by-Default Route Gate</b><br/><font point-size="8.5" color="#f2cc60">Mandatory AccessPolicy Enum on Every Route<br/>PLAYER | RESEARCHER | ADMIN | PUBLIC</font>>
+        ];
+
+        wilds_authz [
+            fillcolor="#261f12",
+            color="#d29922",
+            penwidth=1.6,
+            label=<<b>WildsAuthorizer (Pure Java)</b><br/><font point-size="8.5" color="#e3b341">Human: UserId == wilds_meta.houses.owner<br/>Bot: scopedResourceId == houseId<br/>Resolves active Chronicle HouseholdId</font>>
+        ];
+    }
+
+    subgraph cluster_sim_authz {
+        label=<<b>Layer 3: Sim Engine — libs/wilds</b>>;
+        fontcolor="#3fb950";
+        color="#1f4729";
+        bgcolor="#101b14";
+        style="rounded,filled";
+
+        sim_check [
+            fillcolor="#16241a",
+            color="#3fb950",
+            penwidth=1.6,
+            label=<<b>WorldHost &amp; Phase-1 Check</b><br/><font point-size="8.5" color="#7ee787">Zero Auth/JWT/User Imports!<br/>Checks HouseholdId owns Character/Hold<br/>-&gt; Commit to command_wal</font>>
+        ];
+    }
+
+    browser_caller -> oidc_adapter [label="OIDC / BFF Cookie", color="#d29922"];
+    browser_caller -> dev_adapter [label="--auth-mode=dev-local", style=dashed, color="#f0883e"];
+    bearer_human -> jwt_verifier [label="Bearer JWT", color="#58a6ff"];
+
+    oidc_adapter -> jwt_verifier [label="Same Verifier!", color="#3fb950"];
+    dev_adapter -> jwt_verifier [label="Same Verifier!", style=dashed, color="#ffa657"];
+
+    bot_caller -> bot_adapter [label="Bearer iw_bot_...", color="#bc8cff"];
+
+    jwt_verifier -> principal_box [color="#3fb950"];
+    bot_adapter -> principal_box [color="#bc8cff"];
+
+    principal_box -> route_gate [label="Principal", color="#e3b341", penwidth=1.6];
+    route_gate -> wilds_authz [label="Permit RBAC", color="#d29922"];
+    wilds_authz -> sim_check [label="HouseholdId + cmd", color="#3fb950", penwidth=1.7];
+}

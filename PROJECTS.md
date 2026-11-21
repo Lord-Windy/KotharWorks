@@ -17,9 +17,10 @@ commands, and the `st` agent workflow, see [AGENTS.md](AGENTS.md).
 **Status:** scaffold · **Artifact:** `com.kotharworks:procgen` · **Package:**
 `com.kotharworks.procgen` · **Depends on:** —
 
-Order-independent coordinate hashing (`WorldSeed`) and future hierarchical
-slot/template prose generation. Zero external runtime dependencies. See
-`planning/BigPlanningReview/carbon/03-ProceduralGeneration.md`.
+Order-independent coordinate hashing (`WorldSeed`), phonotactic low-fantasy
+names & character personas, and hierarchical slot/template prose generation.
+Zero external runtime dependencies. See
+[`planning/ironwood_wilds_planning/03-ProceduralGeneration.md`](planning/ironwood_wilds_planning/03-ProceduralGeneration.md).
 
 ### wilds — Ironwood Wilds simulation engine
 
@@ -27,10 +28,11 @@ slot/template prose generation. Zero external runtime dependencies. See
 `com.kotharworks.wilds` · **Depends on:** `procgen`
 
 Headless, deterministic Java 25 simulation core for **Ironwood Wilds**: pure
-logical-millisecond clock, zero I/O, zero wall-clock calls, command dispatch.
-Currently holds the `WildsEngine` hello-world scaffold (`API_VERSION = 1`)
-pinned by `WildsEngineTest`. See `planning/README.md` and
-`planning/BigPlanningReview/carbon/README.md`.
+logical-millisecond clock, integer-only state, zero I/O, zero wall-clock calls,
+command dispatch. Currently holds the `WildsEngine` hello-world scaffold
+(`API_VERSION = 1`) pinned by `WildsEngineTest`. See
+[`planning/README.md`](planning/README.md) and
+[`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 
 ## Applications (`apps/`)
 

@@ -1,0 +1,116 @@
+digraph CommandAndLazyHeap {
+    graph [
+        rankdir=TB,
+        bgcolor="#0f1419",
+        fontname="Liberation Sans",
+        fontsize=14,
+        fontcolor="#e6edf3",
+        label=<<b>Command Lifecycle (Synchronous WorldHost Admission) &amp; Hybrid Lazy Heap</b><br/><font point-size="11" color="#8b949e">Zero per-second entity loops · Zero floats · Exact causal ordering + cmdId idempotency</font>>,
+        labelloc=t,
+        pad="0.40",
+        nodesep="0.45",
+        ranksep="0.55"
+    ];
+
+    node [
+        shape=box,
+        style="rounded,filled",
+        fontname="Liberation Sans",
+        fontsize=10.5,
+        fillcolor="#161b22",
+        color="#30363d",
+        fontcolor="#e6edf3",
+        margin="0.16,0.10"
+    ];
+
+    edge [
+        fontname="Liberation Sans",
+        fontsize=9,
+        color="#8b949e",
+        fontcolor="#9ca3af",
+        penwidth=1.3,
+        arrowsize=0.75
+    ];
+
+    trigger [
+        shape=oval,
+        fillcolor="#1f2937",
+        color="#58a6ff",
+        penwidth=1.6,
+        label=<<b>WorldHost Trigger at targetNowMs</b><br/><font point-size="9" color="#9ca3af">POST /api/v1/commands (cmdId) · 1 Hz Live Pump · Headless advanceToNextEvent()</font>>
+    ];
+
+    drain_check [
+        shape=diamond,
+        fillcolor="#241e14",
+        color="#d29922",
+        label=<<b>DueEventHeap.peek().dueAtMs &lt;= targetNowMs ?</b>>
+    ];
+
+    pop_event [
+        fillcolor="#261f14",
+        color="#d29922",
+        label=<<b>1. Pop Earliest ScheduledEvent (dueAtMs, seq)</b><br/><font point-size="9" color="#e3b341">Step clock to exact ev.dueAtMs · Skip in O(1) if heapTicket cancelled</font>>
+    ];
+
+    complete_action [
+        fillcolor="#14261c",
+        color="#3fb950",
+        label=<<b>2. ActionMechanic.onComplete() / Raid / TitheShip</b><br/><font point-size="9" color="#7ee787">Re-anchor integer LazyGauges · Grant Items/XP · Append JournalSeed &amp; WorldEvent</font>>
+    ];
+
+    pop_next_queue [
+        fillcolor="#172332",
+        color="#58a6ff",
+        label=<<b>3. Pop Next Pending Action from Character Queue</b><br/><font point-size="9" color="#9ca3af">If queue empty -&gt; Character stands IDLE_PATIENT (0% autonomous wandering!)</font>>
+    ];
+
+    phase1_val [
+        fillcolor="#172332",
+        color="#58a6ff",
+        label=<<b>Phase 1: Synchronous WorldHost Validation + cmdId Dedup</b><br/><font point-size="9" color="#9ca3af">Check Ownership, Alive, Queue Cap (&lt;=5), Tech/Skill Gate -&gt; Commit to command_wal</font>>
+    ];
+
+    reject_409 [
+        fillcolor="#33171a",
+        color="#f85149",
+        label=<<b>Immediate 409 Conflict</b><br/><font point-size="9" color="#ffa198">QUEUE_FULL · TECH_LOCKED · SKILL_TOO_LOW<br/>Not written to command_wal!</font>>
+    ];
+
+    phase2_val [
+        shape=diamond,
+        fillcolor="#1c2536",
+        color="#58a6ff",
+        label=<<b>Phase 2: Start-Time Preconditions Met?</b><br/><font point-size="9" color="#9ca3af">(Location, Inputs/Fuel Reserved, Station Slot &amp; Carry Cap)</font>>
+    ];
+
+    fail_soft [
+        fillcolor="#301e17",
+        color="#f0883e",
+        label=<<b>Fail-Soft Queue Handling</b><br/><font point-size="9" color="#ffa657">Emit ActionFailed(DEPLETED / NO_INPUTS) + Journal Line<br/>ADVANCE to next item (or HALT_ON_FAIL)</font>>
+    ];
+
+    schedule_heap [
+        fillcolor="#14261c",
+        color="#3fb950",
+        penwidth=1.8,
+        label=<<b>Schedule Completion on DueEventHeap</b><br/><font point-size="9" color="#7ee787">dueAtMs = nowMs + permilleDuration(Skill, Tool, StaminaMilli)<br/>Client JS &amp; LazyGauge interpolate smoothly with ZERO ticks until dueAtMs!</font>>
+    ];
+
+    trigger -> drain_check;
+    drain_check -> pop_event [label=" YES (Exact causal order)", color="#d29922"];
+    pop_event -> complete_action [color="#d29922"];
+    complete_action -> pop_next_queue [color="#3fb950"];
+    pop_next_queue -> phase2_val [label=" Has queued action", color="#58a6ff"];
+    pop_next_queue -> drain_check [label=" Queue empty (IDLE_PATIENT)", style=dashed];
+
+    drain_check -> phase1_val [label=" NO (Clock caught up to targetNowMs)", color="#58a6ff"];
+    phase1_val -> reject_409 [label=" Invalid", color="#f85149"];
+    phase1_val -> phase2_val [label=" Valid &amp; Character Idle", color="#3fb950"];
+    phase1_val -> schedule_heap [label=" Valid &amp; Busy (Appended to Queue[1..5])", style=dashed, color="#3fb950"];
+
+    phase2_val -> schedule_heap [label=" YES (Reserve inputs)", color="#3fb950"];
+    phase2_val -> fail_soft [label=" NO", color="#f0883e"];
+    fail_soft -> pop_next_queue [color="#f0883e"];
+    schedule_heap -> drain_check [label=" Push (dueAtMs, seq)", style=dotted, color="#3fb950"];
+}
