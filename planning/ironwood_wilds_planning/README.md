@@ -10,8 +10,8 @@
 
 Every boundary in this suite is anchored directly to **three core project constraints**:
 
-1. **The "Friday Cadence" Constraint (Momentum & Reviewable Bricks):**  
-   Solo Friday build sessions demand small, high-leverage vertical bricks with **zero framework yak-shaving** (no Spring, no Hibernate, no React/npm toolchain, no custom YAML parser bugs, no hand-rolled WebSocket frame-masking boilerplate). Every ticket cut from this plan compiles cleanly under `-Werror` and ends in a deterministic, mechanically verifiable acceptance test.
+1. **Focused Momentum & Reviewable Vertical Bricks:**  
+   Iterative, agent-friendly development demands small, high-leverage vertical bricks with **zero framework yak-shaving** (no Spring, no Hibernate, no React/npm toolchain, no custom YAML parser bugs, no hand-rolled WebSocket frame-masking boilerplate). Every ticket cut from this plan compiles cleanly under `-Werror` and ends in a deterministic, mechanically verifiable acceptance test.
 2. **Emergence Needs Friction, Scarcity, Goals, and Human Texture:**  
    Pure sandboxes where agents wander around aimlessly look busy for five minutes and then flatten into noise. **Ironwood Wilds** pairs **OSRS-style mortal character skills**, a **Household Tech Tree**, **3-Ring Hold fortification against non-lethal raids**, **lethal PvM expeditions**, **True Ironwood scarcity**, and a **Homeland Tithe Ship economy**—while giving every patient settler a **procedurally generated persona, voice, scars, and first-person journal** so losing a veteran in a barrow delve actually stings.
 3. **Replay-Grade Determinism Now = Effortless Genetic Algorithms Later:**  
@@ -136,7 +136,7 @@ Open [`prototype/index.html`](prototype/index.html) in any browser to click thro
 6. **[05-AccountsAndPersistenceSchemas.md](05-AccountsAndPersistenceSchemas.md)**  
    Three-schema PostgreSQL DDL (`auth` zero-password OIDC links & scoped `iw_bot_...` keys, `wilds_meta` `UserId`-owned Houses & replay version-triple, 100% append-only `wilds_world` `command_wal` + `CLOCK_ADVANCE` + snapshots), forward SQL migrations, and zero-rewind `PAUSE_WHILE_DOWN` restart semantics.
 7. **[06-VerticalSliceAndRoadmap.md](06-VerticalSliceAndRoadmap.md)**  
-   Slice 0 (*"Hearth, Iron, and the Palisade"*), worked transcript ending in `wilds-headless replay --hash`, exact Java package skeleton, Milestones **M0–M5** mapped across Fridays, the **`st` ticket backlog**, **post-implementation code-review checklist**, and Phase 2 `SamVM` + `SamGenAI` integration.
+   Slice 0 (*"Hearth, Iron, and the Palisade"*), worked transcript ending in `wilds-headless replay --hash`, exact Java package skeleton, Milestones **M0–M5**, the **`st` ticket backlog**, **post-implementation code-review checklist**, and Phase 2 `SamVM` + `SamGenAI` integration.
 8. **[07-AuthAndSecurityArchitecture.md](07-AuthAndSecurityArchitecture.md)**  
    Standalone **`libs/auth`** (`com.kotharworks:auth`), 3-layer AuthN vs. AuthZ boundary, JWT roles + JIT `UserId` linking, loopback-fused `dev-local` -> drop-in **Keycloak** OIDC, BFF `__Host-kw_session` CSRF guards, House-scoped Bot keys, and the 12-point **`AuthSecurityGateTest`** verification suite.
 
@@ -148,7 +148,7 @@ Open [`prototype/index.html`](prototype/index.html) in any browser to click thro
   - `04-gameplay-loops-and-risk` ([`.dot`](diagrams/04-gameplay-loops-and-risk.dot) · [`.svg`](diagrams/04-gameplay-loops-and-risk.svg) · [`.png`](diagrams/04-gameplay-loops-and-risk.png))
   - `05-procgen-pipeline` ([`.dot`](diagrams/05-procgen-pipeline.dot) · [`.svg`](diagrams/05-procgen-pipeline.svg) · [`.png`](diagrams/05-procgen-pipeline.png))
   - `06-postgres-three-schemas` ([`.dot`](diagrams/06-postgres-three-schemas.dot) · [`.svg`](diagrams/06-postgres-three-schemas.svg) · [`.png`](diagrams/06-postgres-three-schemas.png))
-  - `07-friday-roadmap` ([`.dot`](diagrams/07-friday-roadmap.dot) · [`.svg`](diagrams/07-friday-roadmap.svg) · [`.png`](diagrams/07-friday-roadmap.png))
+  - `07-milestone-roadmap` ([`.dot`](diagrams/07-milestone-roadmap.dot) · [`.svg`](diagrams/07-milestone-roadmap.svg) · [`.png`](diagrams/07-milestone-roadmap.png))
   - `08-auth-and-security-pipeline` ([`.dot`](diagrams/08-auth-and-security-pipeline.dot) · [`.svg`](diagrams/08-auth-and-security-pipeline.svg) · [`.png`](diagrams/08-auth-and-security-pipeline.png))
 - **Interactive HTML Webpage Prototype & Views (`prototype/`):**
   - [`prototype/index.html`](prototype/index.html) *(Interactive prototype — press `1`, `2`, `3`, `H`, `E`, `O`)*

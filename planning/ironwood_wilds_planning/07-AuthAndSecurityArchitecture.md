@@ -139,14 +139,14 @@ Because signed JWTs are self-contained, revoking a role or banning a user in Key
 
 ## 4. Swappable Authentication Modes (`dev-local` Today $\rightarrow$ `oidc` Tomorrow)
 
-### Mode 1: `--auth-mode=dev-local` (Instant Local Fridays & CI Tests — Zero Docker)
+### Mode 1: `--auth-mode=dev-local` (Instant Local Dev & CI Tests — Zero Docker)
 When developing offline or running `mvnd test`:
 - On startup, **`LoopbackStartupFuse`** inspects the HTTP bind address. **If `--auth-mode=dev-local` is combined with any non-loopback bind address (anything other than `127.0.0.1` or `::1`), `wilds-server` throws `IllegalStateException` and refuses to boot.** Fake login can never accidentally run on a public VPS.
 - `DevLocalJwtIssuer` generates an ephemeral in-memory `ECKey` (`ES256`), wires its public JWK straight into the **exact same `JwtClaimsVerifier`** used for Keycloak, and mounts `GET /dev/login`—a crisp local Persona Switcher with one-click buttons:
   - **Sign in as Alice** (`sub = dev-alice`, `roles = [PLAYER]`)
   - **Sign in as Sam (Lab)** (`sub = dev-sam`, `roles = [PLAYER, RESEARCHER]`)
   - **Sign in as Steward** (`sub = dev-admin`, `roles = [PLAYER, RESEARCHER, ADMIN]`)
-- Because `dev-local` signs real `ES256` JWTs with Keycloak's exact JSON claim structure, **every single Friday and every CI run tests the real production JWT verification pipeline**.
+- Because `dev-local` signs real `ES256` JWTs with Keycloak's exact JSON claim structure, **every local dev session and every CI run tests the real production JWT verification pipeline**.
 
 ### Mode 2: `--auth-mode=oidc` (Keycloak in Local Docker or Production VPS)
 Switching to Keycloak requires **zero code changes**—only environment/CLI configuration:

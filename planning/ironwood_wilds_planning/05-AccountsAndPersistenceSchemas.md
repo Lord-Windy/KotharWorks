@@ -2,7 +2,7 @@
 
 Persistence in **Ironwood Wilds** solves three distinct problems simultaneously:
 1. **Replay-Grade World Truth:** `(world_seed, rules_version, command_wal)` is the mathematical definition of the timeline; snapshots and live SQL tables are fast-start caches and projections.
-2. **Seamless Maintenance Restarts (`PAUSE_WHILE_DOWN`):** Deploying a Friday patch or surviving `kill -9` recovers to the exact logical millisecond with zero lost timers and zero unmonitored offline raids.
+2. **Seamless Maintenance Restarts (`PAUSE_WHILE_DOWN`):** Deploying a patch or surviving `kill -9` recovers to the exact logical millisecond with zero lost timers and zero unmonitored offline raids.
 3. **Clean Chronicle Resets + Multi-Agent Research Accounts:** Wiping a finished 4-week world resets `wilds_world` while preserving accounts, scoped Bot/GA API keys (`auth`), permanent House charters, Doctrine Blueprints, and Hall of Chronicles standings/epitaphs (`wilds_meta`).
 
 ---
