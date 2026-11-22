@@ -15,11 +15,13 @@
  */
 package com.kotharworks.wilds.sim;
 
+import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.RuleId;
 import com.kotharworks.wilds.seed.SeededRng;
 import com.kotharworks.wilds.seed.WorldSeed;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -182,5 +184,80 @@ class DueEventHeapTest {
         assertEquals(1, resolved);
         assertEquals(1, discarded);
         assertEquals(activeTicket, resolvedToken);
+    }
+
+    @Test
+    void duePayloadValidatesNonNullComponents() {
+        assertThrows(NullPointerException.class, () -> new DuePayload.CompleteActorTask(null));
+        assertThrows(NullPointerException.class, () -> new DuePayload.SystemPulse(null));
+
+        ScheduledEvent actorTask = new ScheduledEvent(250L, 1L, 1L,
+                new DuePayload.CompleteActorTask(new ActorId(0, 1)));
+        DueEventHeap heap = new DueEventHeap();
+        heap.push(actorTask);
+        assertEquals(actorTask, heap.poll());
+    }
+
+    @Test
+    void restoreFromValidatesAtomicallyOnNullOrDuplicateSeq() {
+        DueEventHeap heap = new DueEventHeap();
+        heap.push(pulse(2_000L, 2L, 2L));
+        heap.push(pulse(1_000L, 1L, 1L));
+        List<ScheduledEvent> originalSnapshot = heap.snapshotOrderedList();
+
+        assertThrows(NullPointerException.class,
+                () -> heap.restoreFrom(Arrays.asList(pulse(500L, 10L, 10L), null)));
+        assertEquals(originalSnapshot, heap.snapshotOrderedList(),
+                "failed restore with null element must leave existing heap untouched");
+
+        assertThrows(IllegalArgumentException.class, () -> heap.restoreFrom(List.of(
+                new ScheduledEvent(1_000L, 7L, 7L, new DuePayload.CompleteActorTask(new ActorId(0, 1))),
+                new ScheduledEvent(1_000L, 7L, 8L, new DuePayload.SystemPulse(new RuleId("dup_same_due"))))));
+        assertEquals(originalSnapshot, heap.snapshotOrderedList());
+
+        assertThrows(IllegalArgumentException.class, () -> heap.restoreFrom(List.of(
+                pulse(1_000L, 9L, 9L),
+                pulse(3_000L, 9L, 9L))));
+        assertEquals(originalSnapshot, heap.snapshotOrderedList());
+    }
+
+    @Test
+    void interleavedPushPollAndMidStreamRestoreStayIdentical() {
+        SeededRng rng = new WorldSeed(0x5EED_9999L).stream("heap-interleaved", 1L, 2L);
+        DueEventHeap live = new DueEventHeap();
+        List<ScheduledEvent> reference = new ArrayList<>();
+        long nextSeq = 1L;
+
+        for (int step = 0; step < 500; step++) {
+            int batch = rng.nextRange(1, 6);
+            long baseDue = rng.nextRange(0, 200) * 10L;
+            for (int b = 0; b < batch; b++) {
+                long seq = nextSeq++;
+                ScheduledEvent ev = (seq % 2 == 0)
+                        ? new ScheduledEvent(baseDue, seq, seq,
+                                new DuePayload.CompleteActorTask(new ActorId((int) (seq % 4), 1)))
+                        : pulse(baseDue + rng.nextRange(0, 3) * 10L, seq, seq);
+                live.push(ev);
+                reference.add(ev);
+            }
+            reference.sort(Comparator.naturalOrder());
+
+            int pops = rng.nextRange(0, Math.min(4, live.size()));
+            for (int p = 0; p < pops; p++) {
+                assertEquals(reference.remove(0), live.poll());
+            }
+
+            if (step == 250) {
+                DueEventHeap twin = new DueEventHeap();
+                twin.restoreFrom(live.snapshotOrderedList());
+                assertEquals(live.snapshotOrderedList(), twin.snapshotOrderedList());
+                live = twin;
+            }
+        }
+
+        while (!live.isEmpty()) {
+            assertEquals(reference.remove(0), live.poll());
+        }
+        assertTrue(reference.isEmpty());
     }
 }

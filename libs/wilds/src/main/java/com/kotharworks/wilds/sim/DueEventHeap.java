@@ -16,29 +16,28 @@
 package com.kotharworks.wilds.sim;
 
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 
 /**
  * Deterministic binary min-heap of {@link ScheduledEvent}s ordered by
- * {@code (dueAtMs, seq)}. Zero {@code remove(Object)} heap scans: cancellation is O(1)
- * via {@code cancellationToken} comparison when the event is popped by the consumer.
+ * {@code (dueAtMs, seq)} ({@link ScheduledEvent#compareTo}). Zero {@code remove(Object)}
+ * heap scans: cancellation is O(1) via {@code cancellationToken} comparison when the
+ * event is popped by the consumer.
  */
 public final class DueEventHeap {
 
-    private static final Comparator<ScheduledEvent> ORDER =
-            Comparator.comparingLong(ScheduledEvent::dueAtMs).thenComparingLong(ScheduledEvent::seq);
+    private static final int INITIAL_CAPACITY = 16;
 
-    private ScheduledEvent[] heap = new ScheduledEvent[16];
+    private ScheduledEvent[] heap = new ScheduledEvent[INITIAL_CAPACITY];
     private int count;
 
     /** Pushes an event; ordering is fully determined by {@code (dueAtMs, seq)}. */
     public void push(ScheduledEvent event) {
         Objects.requireNonNull(event, "event");
         if (count == heap.length) {
-            heap = Arrays.copyOf(heap, count * 2);
+            heap = Arrays.copyOf(heap, Math.multiplyExact(count, 2));
         }
         heap[count++] = event;
         siftUp(count - 1);
@@ -78,24 +77,41 @@ public final class DueEventHeap {
      */
     public List<ScheduledEvent> snapshotOrderedList() {
         ScheduledEvent[] copy = Arrays.copyOf(heap, count);
-        Arrays.sort(copy, ORDER);
+        Arrays.sort(copy);
         return List.copyOf(Arrays.asList(copy));
     }
 
-    /** Resets the heap and pushes every event from a snapshot list. */
+    /**
+     * Resets the heap from a snapshot list. Validates that no element is null and that
+     * every {@code seq} is unique before mutating this heap.
+     */
     public void restoreFrom(List<ScheduledEvent> events) {
         Objects.requireNonNull(events, "events");
-        count = 0;
-        Arrays.fill(heap, null);
-        for (ScheduledEvent event : events) {
-            push(Objects.requireNonNull(event, "events contains a null element"));
+        int n = events.size();
+        ScheduledEvent[] sorted = new ScheduledEvent[n];
+        long[] seqs = new long[n];
+        for (int i = 0; i < n; i++) {
+            ScheduledEvent event = Objects.requireNonNull(events.get(i), "events contains a null element");
+            sorted[i] = event;
+            seqs[i] = event.seq();
         }
+        Arrays.sort(seqs);
+        for (int i = 1; i < n; i++) {
+            if (seqs[i - 1] == seqs[i]) {
+                throw new IllegalArgumentException("due events contain duplicate seq: " + seqs[i]);
+            }
+        }
+        Arrays.sort(sorted);
+        ScheduledEvent[] restored = new ScheduledEvent[Math.max(INITIAL_CAPACITY, n)];
+        System.arraycopy(sorted, 0, restored, 0, n);
+        this.heap = restored;
+        this.count = n;
     }
 
     private void siftUp(int i) {
         while (i > 0) {
             int parent = (i - 1) >>> 1;
-            if (ORDER.compare(heap[parent], heap[i]) <= 0) {
+            if (heap[parent].compareTo(heap[i]) <= 0) {
                 return;
             }
             swap(parent, i);
@@ -108,10 +124,10 @@ public final class DueEventHeap {
             int left = 2 * i + 1;
             int right = left + 1;
             int smallest = i;
-            if (left < count && ORDER.compare(heap[left], heap[smallest]) < 0) {
+            if (left < count && heap[left].compareTo(heap[smallest]) < 0) {
                 smallest = left;
             }
-            if (right < count && ORDER.compare(heap[right], heap[smallest]) < 0) {
+            if (right < count && heap[right].compareTo(heap[smallest]) < 0) {
                 smallest = right;
             }
             if (smallest == i) {

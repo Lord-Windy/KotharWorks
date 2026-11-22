@@ -1,7 +1,7 @@
 # Ticket 02 — Generational IDs, Dense EntityTable, Integer LazyGauge & DueEventHeap
 
 - **`st` Key:** `29b0e00a` (`KOTHARWORKS` · `tech-wilds`)
-- **Status:** Backlog *(auto-promotes when `4e263046` completes)*
+- **Status:** Done
 - **Depends on:** Ticket `01` (`4e263046`)
 - **Modules touched:** `libs/wilds`
 

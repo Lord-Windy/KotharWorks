@@ -125,10 +125,12 @@ public final class EntityTable<I extends EntityId, R> {
         }
     }
 
+    private static final int INITIAL_CAPACITY = 16;
+
     private final IdFactory<I> idFactory;
     private final Function<R, I> idExtractor;
-    private Object[] rows = new Object[16];
-    private int[] generations = new int[16];
+    private Object[] rows = new Object[INITIAL_CAPACITY];
+    private int[] generations = new int[INITIAL_CAPACITY];
     private int highWaterMark;
     private int liveCount;
     private final IntMinHeap freeSlots = new IntMinHeap();
@@ -153,24 +155,38 @@ public final class EntityTable<I extends EntityId, R> {
     /**
      * Allocates the lowest unoccupied slot (appending at the high-water mark on first use,
      * initializing its generation to 1), builds the row via {@code rowBuilder}, and stores it.
+     *
+     * <p>Atomic on failure: if {@code rowBuilder} throws, returns null, or produces a
+     * mismatched id, no slot, generation, free-list entry, or high-water mark is modified.
      */
     public R insertNew(Function<I, R> rowBuilder) {
         Objects.requireNonNull(rowBuilder, "rowBuilder");
-        int index;
-        if (!freeSlots.isEmpty()) {
-            index = freeSlots.pollMin();
+        final boolean reuseFreeSlot = !freeSlots.isEmpty();
+        final int index = reuseFreeSlot ? freeSlots.peekMin() : highWaterMark;
+        final int generation = reuseFreeSlot ? generations[index] : 1;
+        if (!reuseFreeSlot && index == Integer.MAX_VALUE) {
+            throw new IllegalStateException("entity table index space exhausted");
+        }
+        I id = idFactory.create(index, generation);
+        R row = Objects.requireNonNull(rowBuilder.apply(id), "rowBuilder produced a null row");
+        I rowId = Objects.requireNonNull(idExtractor.apply(row), "idExtractor produced a null id");
+        if (rowId.index() != index || rowId.generation() != generation) {
+            throw new IllegalStateException("row id " + rowId.toWire()
+                    + " does not match allocated slot " + id.toWire());
+        }
+        if (reuseFreeSlot) {
+            if (freeSlots.isEmpty() || freeSlots.peekMin() != index || generations[index] != generation) {
+                throw new IllegalStateException("re-entrant table mutation during insertNew for " + id.toWire());
+            }
+            ensureCapacity(index);
+            freeSlots.pollMin();
         } else {
-            index = highWaterMark;
+            if (!freeSlots.isEmpty() || highWaterMark != index) {
+                throw new IllegalStateException("re-entrant table mutation during insertNew for " + id.toWire());
+            }
             ensureCapacity(index);
             generations[index] = 1;
             highWaterMark = index + 1;
-        }
-        I id = idFactory.create(index, generations[index]);
-        R row = Objects.requireNonNull(rowBuilder.apply(id), "rowBuilder produced a null row");
-        I rowId = Objects.requireNonNull(idExtractor.apply(row), "idExtractor produced a null id");
-        if (rowId.index() != index || rowId.generation() != generations[index]) {
-            throw new IllegalStateException("row id " + rowId.toWire()
-                    + " does not match allocated slot " + id.toWire());
         }
         rows[index] = row;
         liveCount++;
@@ -208,10 +224,10 @@ public final class EntityTable<I extends EntityId, R> {
             return false;
         }
         int index = id.index();
-        rows[index] = null;
         if (generations[index] == Integer.MAX_VALUE) {
             throw new IllegalStateException("slot " + index + " generation exhausted");
         }
+        rows[index] = null;
         generations[index]++;
         freeSlots.push(index);
         liveCount--;
@@ -254,15 +270,17 @@ public final class EntityTable<I extends EntityId, R> {
     /**
      * Restores a {@link #dumpSlots()} dump: indices must be exactly {@code 0..n-1} ascending,
      * generations {@code >= 1}, and every non-null row's extracted id must match its slot.
-     * Rebuilds the backing arrays at exactly the dump size (dropping spare capacity) and the
-     * min-order free list from the null slots.
+     * Rebuilds the backing arrays (at {@code max(INITIAL_CAPACITY, n)}, trimming excess
+     * capacity) and the min-order free list from the null slots {@code < n}.
      */
     public void restoreSlots(List<SlotDump<I, R>> slots) {
         Objects.requireNonNull(slots, "slots");
-        Object[] restoredRows = new Object[slots.size()];
-        int[] restoredGenerations = new int[slots.size()];
+        int slotCount = slots.size();
+        int backingCapacity = Math.max(INITIAL_CAPACITY, slotCount);
+        Object[] restoredRows = new Object[backingCapacity];
+        int[] restoredGenerations = new int[backingCapacity];
         int restoredLive = 0;
-        for (int i = 0; i < slots.size(); i++) {
+        for (int i = 0; i < slotCount; i++) {
             SlotDump<I, R> dump = Objects.requireNonNull(slots.get(i), "slots contains a null entry");
             if (dump.index() != i) {
                 throw new IllegalArgumentException("slot dumps must be ascending 0..n-1: expected index "
@@ -285,10 +303,10 @@ public final class EntityTable<I extends EntityId, R> {
         }
         rows = restoredRows;
         generations = restoredGenerations;
-        highWaterMark = slots.size();
+        highWaterMark = slotCount;
         liveCount = restoredLive;
         freeSlots.clear();
-        for (int i = 0; i < restoredRows.length; i++) {
+        for (int i = 0; i < slotCount; i++) {
             if (restoredRows[i] == null) {
                 freeSlots.push(i);
             }
@@ -316,9 +334,9 @@ public final class EntityTable<I extends EntityId, R> {
         if (requiredIndex < rows.length) {
             return;
         }
-        int capacity = rows.length;
+        int capacity = Math.max(INITIAL_CAPACITY, rows.length);
         while (capacity <= requiredIndex) {
-            capacity *= 2;
+            capacity = Math.multiplyExact(capacity, 2);
         }
         rows = Arrays.copyOf(rows, capacity);
         generations = Arrays.copyOf(generations, capacity);

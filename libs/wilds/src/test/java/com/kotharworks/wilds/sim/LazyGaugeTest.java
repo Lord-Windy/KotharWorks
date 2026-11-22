@@ -107,4 +107,30 @@ class LazyGaugeTest {
         assertEquals(7L, anchored.rateMilliPerSec());
         assertEquals(48_000L, anchored.valueMilliAt(500L));
     }
+
+    @Test
+    void intermediateMultiplyOverflowStillComputesExactUnsaturatedValue() {
+        LazyGauge hugePos = new LazyGauge(0L, 0L, 500L, 0L, Long.MAX_VALUE);
+        assertEquals(Long.MAX_VALUE / 2L, hugePos.valueMilliAt(Long.MAX_VALUE),
+                "Long.MAX_VALUE * 500 overflows long, but / 1000 fits strictly below maxMilli");
+
+        LazyGauge hugeNeg = new LazyGauge(0L, 0L, -500L, Long.MIN_VALUE, 0L);
+        assertEquals(-(Long.MAX_VALUE / 2L), hugeNeg.valueMilliAt(Long.MAX_VALUE),
+                "negative multiply overflow whose / 1000 fits strictly above minMilli");
+    }
+
+    @Test
+    void subtractExactAndReanchorLumpAdditionOverflowsClampCleanly() {
+        LazyGauge wideSpanPos = new LazyGauge(0L, Long.MIN_VALUE, 1_000L, -100_000L, 100_000L);
+        assertEquals(100_000L, wideSpanPos.valueMilliAt(Long.MAX_VALUE));
+
+        LazyGauge wideSpanNeg = new LazyGauge(0L, Long.MIN_VALUE, -1_000L, -100_000L, 100_000L);
+        assertEquals(-100_000L, wideSpanNeg.valueMilliAt(Long.MAX_VALUE));
+
+        LazyGauge posBase = new LazyGauge(50_000L, 0L, 0L, -100_000L, 100_000L);
+        assertEquals(100_000L, posBase.reanchor(0L, Long.MAX_VALUE, 0L).anchorMilli());
+
+        LazyGauge negBase = new LazyGauge(-50_000L, 0L, 0L, -100_000L, 100_000L);
+        assertEquals(-100_000L, negBase.reanchor(0L, Long.MIN_VALUE, 0L).anchorMilli());
+    }
 }

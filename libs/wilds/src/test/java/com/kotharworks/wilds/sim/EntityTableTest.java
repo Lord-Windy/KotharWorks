@@ -182,4 +182,108 @@ class EntityTableTest {
         assertThrows(IllegalArgumentException.class, () -> table
                 .restoreSlots(List.of(dump(0, 1, new OwnerRow(new OwnerId(2, 1), "mismatch")))));
     }
+
+    @Test
+    void restoreEmptySlotsThenInsertNewAllocatesCleanlyAndGrows() {
+        EntityTable<OwnerId, OwnerRow> table = tableWithHoles();
+        table.restoreSlots(List.of());
+        assertEquals(0, table.liveCount());
+        assertEquals(0, table.highWaterMark());
+        assertEquals(List.of(), table.dumpSlots());
+        assertEquals(new OwnerId(0, 1), table.nextId());
+
+        for (int i = 0; i < 20; i++) {
+            final int index = i;
+            OwnerRow row = table.insertNew(id -> new OwnerRow(id, "after-empty-" + index));
+            assertEquals(new OwnerId(index, 1), row.id());
+        }
+        assertEquals(20, table.liveCount());
+        assertEquals(20, table.highWaterMark());
+    }
+
+    @Test
+    void removeAtMaxGenerationThrowsAtomicallyWithoutMutatingTable() {
+        EntityTable<OwnerId, OwnerRow> table = newTable();
+        OwnerId maxId = new OwnerId(0, Integer.MAX_VALUE);
+        OwnerRow maxRow = new OwnerRow(maxId, "exhausted");
+        List<EntityTable.SlotDump<OwnerId, OwnerRow>> initialDump = List.of(
+                dump(0, Integer.MAX_VALUE, maxRow));
+        table.restoreSlots(initialDump);
+
+        assertThrows(IllegalStateException.class, () -> table.remove(maxId));
+        assertEquals(Optional.of(maxRow), table.get(maxId), "row must remain live on failed remove");
+        assertEquals(1, table.liveCount(), "liveCount must remain untouched");
+        assertEquals(1, table.highWaterMark());
+        assertEquals(initialDump, table.dumpSlots());
+    }
+
+    @Test
+    void insertNewRollbackWhenRowBuilderFailsLeavesFreeListAndHighWaterMarkIntact() {
+        // Free-slot reuse path (holes at 1 and 3)
+        EntityTable<OwnerId, OwnerRow> withHoles = tableWithHoles();
+        List<EntityTable.SlotDump<OwnerId, OwnerRow>> beforeHoles = withHoles.dumpSlots();
+
+        assertThrows(IllegalArgumentException.class, () -> withHoles.insertNew(id -> {
+            throw new IllegalArgumentException("bad row args");
+        }));
+        assertThrows(NullPointerException.class, () -> withHoles.insertNew(id -> null));
+        assertThrows(IllegalStateException.class,
+                () -> withHoles.insertNew(id -> new OwnerRow(new OwnerId(99, 1), "wrong-id")));
+
+        assertEquals(beforeHoles, withHoles.dumpSlots());
+        assertEquals(3, withHoles.liveCount());
+        assertEquals(5, withHoles.highWaterMark());
+        assertEquals(new OwnerId(1, 2), withHoles.nextId());
+
+        EntityTable<OwnerId, OwnerRow> restoredClone = newTable();
+        restoredClone.restoreSlots(withHoles.dumpSlots());
+        assertEquals(
+                restoredClone.insertNew(id -> new OwnerRow(id, "ok")),
+                withHoles.insertNew(id -> new OwnerRow(id, "ok")),
+                "allocation must stay identical to a freshly restored snapshot");
+
+        // Append path (no free slots, highWaterMark == 2)
+        EntityTable<OwnerId, OwnerRow> dense = newTable();
+        dense.insertNew(id -> new OwnerRow(id, "r0"));
+        dense.insertNew(id -> new OwnerRow(id, "r1"));
+        List<EntityTable.SlotDump<OwnerId, OwnerRow>> beforeDense = dense.dumpSlots();
+
+        assertThrows(IllegalArgumentException.class, () -> dense.insertNew(id -> {
+            throw new IllegalArgumentException("bad append row");
+        }));
+        assertThrows(IllegalStateException.class, () -> dense.insertNew(id -> {
+            dense.insertNew(innerId -> new OwnerRow(innerId, "sneaky-reentrant"));
+            return new OwnerRow(id, "outer");
+        }));
+        // Outer failed after inner committed slot 2: highWaterMark is 3 (from inner) and slot 2 holds inner, never overwritten
+        assertEquals("sneaky-reentrant", dense.getOrNull(new OwnerId(2, 1)).label());
+        assertEquals(3, dense.liveCount());
+        assertEquals(3, dense.highWaterMark());
+
+        EntityTable<OwnerId, OwnerRow> cleanAppend = newTable();
+        cleanAppend.restoreSlots(beforeDense);
+        assertThrows(IllegalStateException.class,
+                () -> cleanAppend.insertNew(id -> new OwnerRow(new OwnerId(0, 1), "mismatch")));
+        assertEquals(beforeDense, cleanAppend.dumpSlots());
+        assertEquals(2, cleanAppend.highWaterMark());
+        assertEquals(new OwnerId(2, 1), cleanAppend.insertNew(id -> new OwnerRow(id, "r2")).id());
+    }
+
+    @Test
+    void removingTrailingSlotPreservesHighWaterMarkAndGenerationAcrossRestore() {
+        EntityTable<OwnerId, OwnerRow> table = tableWithHoles();
+        assertTrue(table.remove(new OwnerId(4, 1)));
+        assertEquals(2, table.liveCount());
+        assertEquals(5, table.highWaterMark(), "removing highest slot must not shrink highWaterMark");
+        assertEquals(dump(4, 2, null), table.dumpSlots().get(4));
+
+        EntityTable<OwnerId, OwnerRow> restored = newTable();
+        restored.restoreSlots(table.dumpSlots());
+        assertEquals(5, restored.highWaterMark());
+        assertTrue(restored.get(new OwnerId(4, 1)).isEmpty());
+
+        assertEquals(new OwnerId(1, 2), restored.insertNew(id -> new OwnerRow(id, "fill1")).id());
+        assertEquals(new OwnerId(3, 2), restored.insertNew(id -> new OwnerRow(id, "fill3")).id());
+        assertEquals(new OwnerId(4, 2), restored.insertNew(id -> new OwnerRow(id, "fill4")).id());
+    }
 }

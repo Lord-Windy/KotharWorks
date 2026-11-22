@@ -104,6 +104,17 @@ class EntityIdWireTest {
     @Test
     void rejectsIndexOverflow() {
         assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:2147483648:1"));
+        assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:0:2147483648"));
+    }
+
+    @Test
+    void rejectsSignedZeroPlusSignAndNonAsciiDigits() {
+        assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:+0:1"));
+        assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:-0:1"));
+        assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:0:+1"));
+        assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:0:-1"));
+        assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:0:00"));
+        assertThrows(IllegalArgumentException.class, () -> ActorId.parse("act:\u0660:\u0661"));
     }
 
     @Test

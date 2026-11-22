@@ -19,7 +19,7 @@ package com.kotharworks.wilds.id;
  * Gameplay-neutral generational entity handle addressed by a dense slot index.
  *
  * <p>A wire id is the canonical compact string {@code "<prefix>:<index>:<generation>"} (for
- * example {@code "act:0:1"}); the generation byte rejects stale handles after slot reuse.
+ * example {@code "act:0:1"}); the slot generation rejects stale handles after slot reuse.
  * Deliberately does <em>not</em> extend {@code Comparable<EntityId>} — each concrete id type
  * implements {@code Comparable} against itself so sorted collections stay deterministic.
  */

@@ -18,6 +18,8 @@ package com.kotharworks.wilds.sim;
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.RuleId;
 
+import java.util.Objects;
+
 /**
  * Closed family of payloads carried by a {@link ScheduledEvent}; exhaustively switchable.
  * Deliberately gameplay-neutral — world-level periodic events hook in via {@code SystemPulse}.
@@ -26,9 +28,15 @@ public sealed interface DuePayload {
 
     /** Fires when an actor's current task completes. */
     record CompleteActorTask(ActorId actorId) implements DuePayload {
+        public CompleteActorTask {
+            Objects.requireNonNull(actorId, "actorId");
+        }
     }
 
     /** Extensible hook for future world-level periodic events. */
     record SystemPulse(RuleId pulseId) implements DuePayload {
+        public SystemPulse {
+            Objects.requireNonNull(pulseId, "pulseId");
+        }
     }
 }

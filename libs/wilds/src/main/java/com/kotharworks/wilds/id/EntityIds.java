@@ -48,16 +48,13 @@ final class EntityIds {
         }
         int index = parseSegment(wire, segments[0]);
         int generation = parseSegment(wire, segments[1]);
-        if (index < 0) {
-            throw new IllegalArgumentException("index must be >= 0 in \"" + wire + "\"");
-        }
         if (generation < 1) {
             throw new IllegalArgumentException("generation must be >= 1 in \"" + wire + "\"");
         }
         return new int[] {index, generation};
     }
 
-    /** Digits only, no leading zero unless the single digit {@code "0"}, must fit an int. */
+    /** ASCII digits only, no leading zero unless {@code "0"}, guaranteed {@code >= 0} and {@code <= Integer.MAX_VALUE}. */
     private static int parseSegment(String wire, String segment) {
         if (segment.isEmpty() || (segment.length() > 1 && segment.charAt(0) == '0')) {
             throw malformed(wire);
