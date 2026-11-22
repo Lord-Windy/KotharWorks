@@ -143,7 +143,8 @@ public final class WildsServer implements AutoCloseable {
                     InetAddress.getByName(this.config.bindAddress()), this.config.port()), 0);
             this.server = openedServer;
             LoopbackStartupFuse.verify(this.config.authMode(), server.getAddress());
-            CookieCodec cookies = CookieCodec.devLoopback();
+            CookieCodec cookies = CookieCodec.forOrigin(this.config.publicOrigin(),
+                    this.config.authMode());
 
             JwtClaimsVerifier verifier;
             OidcAuthorizationCodeClient oidcClient;
@@ -156,7 +157,7 @@ public final class WildsServer implements AutoCloseable {
                         URI.create(this.config.oidcAuthorizationEndpoint()),
                         URI.create(this.config.oidcTokenEndpoint()),
                         URI.create(this.config.oidcJwksUri()));
-                oidcClient = new OidcAuthorizationCodeClient();
+                oidcClient = new OidcAuthorizationCodeClient(clock);
                 oidcAuthenticator = new OidcJwksAuthenticator(oidcConfig, clock);
                 verifier = oidcAuthenticator.jwtVerifier();
             } else {

@@ -20,8 +20,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+
+import com.kotharworks.auth.AuthMode;
 
 /**
  * Codec for the BFF session cookie pair: {@code __Host-kw_session} for HTTPS
@@ -41,6 +45,7 @@ public final class CookieCodec {
     private static final String HOST_SESSION_ATTRIBUTES = SESSION_ATTRIBUTES + "; Secure";
 
     private static final Base64.Encoder BASE64URL = Base64.getUrlEncoder().withoutPadding();
+    private static final SecureRandom RANDOM = new SecureRandom();
     private static final int TOKEN_BYTES = 32;
 
     private final String cookieName;
@@ -61,6 +66,20 @@ public final class CookieCodec {
         return new CookieCodec(DEV_SESSION_COOKIE, SESSION_ATTRIBUTES);
     }
 
+    /**
+     * Selects {@link #production()} for HTTPS {@link AuthMode#OIDC} origins and
+     * {@link #devLoopback()} for plain-HTTP loopback development/test origins.
+     */
+    public static CookieCodec forOrigin(String publicOrigin, AuthMode authMode) {
+        Objects.requireNonNull(publicOrigin, "publicOrigin");
+        Objects.requireNonNull(authMode, "authMode");
+        if (authMode == AuthMode.OIDC
+                && publicOrigin.trim().toLowerCase(Locale.ROOT).startsWith("https://")) {
+            return production();
+        }
+        return devLoopback();
+    }
+
     /** The cookie name this codec manages. */
     public String sessionCookieName() {
         return cookieName;
@@ -72,7 +91,19 @@ public final class CookieCodec {
      */
     public String setCookieHeaderValue(String rawToken) {
         Objects.requireNonNull(rawToken, "rawToken");
+        if (rawToken.isBlank()) {
+            throw new IllegalArgumentException("rawToken must not be blank");
+        }
         return cookieName + "=" + rawToken + "; " + setCookieAttributes;
+    }
+
+    /**
+     * The {@code Set-Cookie} header value that clears this codec's cookie in
+     * the browser, preserving {@code Secure; Path=/} on {@code __Host-} cookies
+     * as required by RFC 6265bis.
+     */
+    public String clearCookieHeaderValue() {
+        return cookieName + "=; " + setCookieAttributes + "; Max-Age=0";
     }
 
     /** Extracts this codec's cookie value from a raw {@code Cookie} header. */
@@ -85,7 +116,26 @@ public final class CookieCodec {
             String candidate = part.trim();
             if (candidate.startsWith(prefix)) {
                 String value = candidate.substring(prefix.length()).trim();
-                return value.isEmpty() ? Optional.empty() : Optional.of(value);
+                if (!value.isEmpty()) {
+                    return Optional.of(value);
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Extracts this codec's cookie value across all {@code Cookie} header lines
+     * (supporting multi-header HTTP/2 forwarding per RFC 9113 §8.2.3).
+     */
+    public Optional<String> extractSessionCookie(List<String> cookieHeaders) {
+        if (cookieHeaders == null || cookieHeaders.isEmpty()) {
+            return Optional.empty();
+        }
+        for (String header : cookieHeaders) {
+            Optional<String> found = extractSessionCookie(header);
+            if (found.isPresent()) {
+                return found;
             }
         }
         return Optional.empty();
@@ -105,7 +155,7 @@ public final class CookieCodec {
     /** Mints a fresh 43-char base64url random token from 32 SecureRandom bytes. */
     public static String newRandomToken() {
         byte[] bytes = new byte[TOKEN_BYTES];
-        new SecureRandom().nextBytes(bytes);
+        RANDOM.nextBytes(bytes);
         return BASE64URL.encodeToString(bytes);
     }
 }

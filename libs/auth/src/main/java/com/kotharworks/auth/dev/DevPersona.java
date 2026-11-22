@@ -15,6 +15,9 @@
  */
 package com.kotharworks.auth.dev;
 
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -35,7 +38,8 @@ public record DevPersona(String subject, String displayName, Set<GlobalRole> rol
             new DevPersona("dev-admin", "Admin (dev)",
                     Set.of(GlobalRole.PLAYER, GlobalRole.RESEARCHER, GlobalRole.ADMIN));
 
-    private static final Set<DevPersona> ALL = Set.of(ALICE, SAM, ADMIN);
+    private static final Set<DevPersona> ALL =
+            Collections.unmodifiableSet(new LinkedHashSet<>(List.of(ALICE, SAM, ADMIN)));
 
     public DevPersona {
         Objects.requireNonNull(subject, "subject");

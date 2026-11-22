@@ -51,6 +51,10 @@ public final class ScopedApiTokenAuthenticator {
      */
     public Principal.ScopedTokenPrincipal authenticate(String bearerToken) {
         Objects.requireNonNull(bearerToken, "bearerToken");
+        if (!ApiTokenCodec.isApiToken(bearerToken)
+                || bearerToken.length() != ApiTokenCodec.expectedTokenLength()) {
+            throw new AuthRejectException(AuthErrorCode.INVALID_TOKEN, "malformed api token");
+        }
         byte[] digest = ApiTokenCodec.sha256(bearerToken);
         ScopedTokenRecord record = lookup.findByDigest(digest)
                 .orElseThrow(() -> new AuthRejectException(AuthErrorCode.INVALID_TOKEN, "unknown api token"));

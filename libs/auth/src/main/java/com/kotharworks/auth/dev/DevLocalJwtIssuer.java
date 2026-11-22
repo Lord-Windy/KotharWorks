@@ -125,6 +125,10 @@ public final class DevLocalJwtIssuer {
         Objects.requireNonNull(persona, "persona");
         Instant now = clock.instant();
         Instant expiry = now.plus(ttl != null ? ttl : JWT_TTL);
+        List<String> roleNames = persona.roles().stream()
+                .map(Enum::name)
+                .sorted()
+                .toList();
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(issuerOverride)
                 .subject(persona.subject())
@@ -133,7 +137,7 @@ public final class DevLocalJwtIssuer {
                 .expirationTime(Date.from(expiry))
                 .notBeforeTime(Date.from(now))
                 .claim("preferred_username", persona.displayName())
-                .claim("realm_access", Map.of("roles", List.copyOf(persona.roles())))
+                .claim("realm_access", Map.of("roles", roleNames))
                 .build();
         JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.ES256)
                 .keyID(signingKey.getKeyID())
@@ -195,7 +199,10 @@ public final class DevLocalJwtIssuer {
                     .append("<button type=\"submit\">")
                     .append(escapeHtml(persona.displayName()))
                     .append(" (")
-                    .append(escapeHtml(String.join(", ", persona.roles().stream().map(Enum::name).toList())))
+                    .append(escapeHtml(String.join(", ", persona.roles().stream()
+                            .map(Enum::name)
+                            .sorted()
+                            .toList())))
                     .append(")</button></form>\n");
         }
         html.append("</body>\n</html>\n");
@@ -209,14 +216,20 @@ public final class DevLocalJwtIssuer {
 
     private static String formField(byte[] body, String field) {
         String form = new String(body, StandardCharsets.UTF_8);
-        for (String pair : form.split("&")) {
-            int eq = pair.indexOf('=');
-            if (eq < 0) {
-                continue;
+        try {
+            for (String pair : form.split("&")) {
+                int eq = pair.indexOf('=');
+                if (eq < 0) {
+                    continue;
+                }
+                String name = java.net.URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8);
+                String value = java.net.URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
+                if (name.equals(field)) {
+                    return value;
+                }
             }
-            if (java.net.URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8).equals(field)) {
-                return java.net.URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
-            }
+        } catch (IllegalArgumentException malformedPercentEncoding) {
+            return null;
         }
         return null;
     }

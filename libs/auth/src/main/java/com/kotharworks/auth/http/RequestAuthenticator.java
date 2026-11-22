@@ -17,6 +17,7 @@ package com.kotharworks.auth.http;
 
 import java.util.Objects;
 
+import com.kotharworks.auth.AuthErrorCode;
 import com.kotharworks.auth.AuthRejectException;
 import com.kotharworks.auth.jwt.JwtHumanAuthenticator;
 import com.kotharworks.auth.principal.Principal;
@@ -77,17 +78,22 @@ public interface RequestAuthenticator {
         return exchange -> {
             String authorization = exchange.getRequestHeaders().getFirst("Authorization");
             if (authorization != null && !authorization.isBlank()) {
-                if (!authorization.startsWith("Bearer ")) {
-                    throw new AuthRejectException(com.kotharworks.auth.AuthErrorCode.INVALID_TOKEN,
+                String trimmed = authorization.trim();
+                if (!trimmed.regionMatches(true, 0, "Bearer ", 0, "Bearer ".length())) {
+                    throw new AuthRejectException(AuthErrorCode.INVALID_TOKEN,
                             "malformed Authorization header");
                 }
-                String credential = authorization.substring("Bearer ".length()).trim();
+                String credential = trimmed.substring("Bearer ".length()).trim();
+                if (credential.isEmpty()) {
+                    throw new AuthRejectException(AuthErrorCode.INVALID_TOKEN,
+                            "empty Bearer credential");
+                }
                 if (ApiTokenCodec.isApiToken(credential)) {
                     return Authentication.bearer(apiTokens.authenticate(credential));
                 }
                 return Authentication.bearer(humans.authenticate(credential));
             }
-            return sessions.authenticate(exchange.getRequestHeaders().getFirst("Cookie"))
+            return sessions.authenticate(exchange.getRequestHeaders().get("Cookie"))
                     .orElseGet(Authentication::anonymous);
         };
     }

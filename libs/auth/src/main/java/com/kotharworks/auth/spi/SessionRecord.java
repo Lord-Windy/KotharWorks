@@ -33,12 +33,17 @@ public record SessionRecord(byte[] sessionSha256, UserId userId, ExternalIdentit
         String displayName, Set<GlobalRole> grantedRoles, String csrfToken, Instant expiresAt) {
 
     public SessionRecord {
-        Objects.requireNonNull(sessionSha256, "sessionSha256");
+        sessionSha256 = Objects.requireNonNull(sessionSha256, "sessionSha256").clone();
         Objects.requireNonNull(userId, "userId");
         Objects.requireNonNull(externalId, "externalId");
         Objects.requireNonNull(displayName, "displayName");
         grantedRoles = Set.copyOf(grantedRoles);
         Objects.requireNonNull(csrfToken, "csrfToken");
         Objects.requireNonNull(expiresAt, "expiresAt");
+    }
+
+    @Override
+    public byte[] sessionSha256() {
+        return sessionSha256.clone();
     }
 }

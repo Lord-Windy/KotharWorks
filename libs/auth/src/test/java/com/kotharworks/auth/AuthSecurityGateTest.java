@@ -38,6 +38,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
@@ -76,28 +79,42 @@ import com.kotharworks.auth.spi.SessionRecord;
 import com.kotharworks.auth.spi.SessionStore;
 import com.kotharworks.auth.token.ApiTokenCodec;
 import com.kotharworks.auth.token.ScopedApiTokenAuthenticator;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jose.crypto.MACSigner;
+import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.jwk.Curve;
 import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.KeyUse;
+import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator;
+import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
+import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Library-level negative security gate for {@code libs/auth}. Covers all nine
- * acceptance criteria of Ticket 06: route audit & default 401, non-loopback
- * dev-local fuse, JWT tamper/alg-none/HS256-confusion rejection, deterministic
- * clock expiry, wrong iss/aud, OIDC PKCE S256 + state/nonce, cookie CSRF
- * rejection, and the {@code iw_bot_} token codec with revocation/suspension.
+ * acceptance criteria of Ticket 06 plus Pass 06 hardening checks: route audit
+ * &amp; default 401, full {@link AccessPolicy} matrix, non-loopback/unresolved
+ * dev-local fuse, JWT tamper/alg-none/HS256-confusion/wrong-curve/EdDSA/RS256,
+ * multi-audience &amp; omitted {@code preferred_username}, deterministic clock
+ * expiry &amp; skew, wrong iss/aud, OIDC PKCE S256 + single-use state/nonce +
+ * TTL + HTTP timeout, cookie CSRF (cross-site, same-site, null Origin, forged
+ * forms, plain-Map headers, malformed percent escapes), {@code __Host-} cookie
+ * codec, router path-traversal/encoded-slash/body-size caps, and {@code iw_bot_}
+ * token revocation/suspension.
  */
+@Timeout(30)
 class AuthSecurityGateTest {
 
     private static final String ISSUER = "https://dev.kotharworks.local";
@@ -129,6 +146,10 @@ class AuthSecurityGateTest {
 
     /** Starts a real loopback server with the standard route table. */
     private Rig rig() throws IOException {
+        return rig(AuthenticatedRouter.DEFAULT_MAX_BODY_BYTES);
+    }
+
+    private Rig rig(int maxBodyBytes) throws IOException {
         stopServer();
         AtomicBoolean adminInvoked = new AtomicBoolean(false);
         AtomicBoolean metaInvoked = new AtomicBoolean(false);
@@ -142,7 +163,7 @@ class AuthSecurityGateTest {
         var authenticator = RequestAuthenticator.bearerThenCookie(apiTokens, humans, cookieAuth);
         var csrfGuard = new CsrfGuard("http://127.0.0.1", AuthMode.DEV_LOCAL, () -> server.getAddress().getPort());
 
-        router = new AuthenticatedRouter(server, authenticator, csrfGuard);
+        router = new AuthenticatedRouter(server, authenticator, csrfGuard, maxBodyBytes);
         LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL, server.getAddress());
 
         router.register("GET", "/chronicle", AccessPolicy.PUBLIC,
@@ -153,6 +174,10 @@ class AuthSecurityGateTest {
         });
         router.register("GET", "/api/v1/houses/{houseId}", AccessPolicy.AUTHENTICATED_ANY,
                 ctx -> ctx.respondJson(200, "{\"houseId\":\"" + ctx.pathParams().get("houseId") + "\"}"));
+        router.register("GET", "/api/v1/houses/special", AccessPolicy.AUTHENTICATED_ANY,
+                ctx -> ctx.respondJson(200, "{\"special\":true}"));
+        router.register("GET", "/api/v1/research/lab", AccessPolicy.ROLE_RESEARCHER,
+                ctx -> ctx.respondJson(200, "{\"lab\":true}"));
         router.register("GET", "/play", AccessPolicy.HUMAN_ONLY,
                 ctx -> ctx.respondText(200, "text/html; charset=utf-8", "<html>play</html>"));
         router.register("POST", "/api/v1/admin/pause", AccessPolicy.ROLE_ADMIN, ctx -> {
@@ -189,9 +214,9 @@ class AuthSecurityGateTest {
         }
     }
 
-    private Reply request(int port, String method, String path, Map<String, String> headers, String body)
+    private Reply request(int port, String method, String rawPath, Map<String, String> headers, String body)
             throws IOException, InterruptedException {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path));
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + rawPath));
         headers.forEach(builder::header);
         builder.method(method, body == null
                 ? HttpRequest.BodyPublishers.noBody()
@@ -209,20 +234,40 @@ class AuthSecurityGateTest {
     // --------------------------------------------------- criterion 0 (happy path)
 
     @Test
-    void devLocalLoginEstablishesCookieSessionThroughProductionVerifier() throws Exception {
+    void devLocalLoginEstablishesCookieSession_escapesHtml_handlesBadInput_andExpiresWithClock() throws Exception {
         Rig rig = rig();
+
+        // GET /dev/login renders personas in deterministic Alice -> Sam -> Admin order.
+        Reply page = request(rig.port(), "GET", "/dev/login?xss=%3Cscript%3Ealert(1)%3C/script%3E", Map.of(), null);
+        assertEquals(200, page.status());
+        assertFalse(page.bodyContains("<script>"), page.body());
+        int aliceIdx = page.body().indexOf("dev-alice");
+        int samIdx = page.body().indexOf("dev-sam");
+        int adminIdx = page.body().indexOf("dev-admin");
+        assertTrue(aliceIdx > 0 && samIdx > aliceIdx && adminIdx > samIdx, page.body());
+
+        // Unknown persona and malformed percent-encoding return 400 (never 500 or reflected XSS).
+        Reply unknown = request(rig.port(), "POST", "/dev/login",
+                Map.of("Content-Type", "application/x-www-form-urlencoded"),
+                "persona=%3Cscript%3Eevil%3C/script%3E");
+        assertEquals(400, unknown.status());
+        assertFalse(unknown.bodyContains("<script>"), unknown.body());
+
+        Reply badUrlEncoding = request(rig.port(), "POST", "/dev/login",
+                Map.of("Content-Type", "application/x-www-form-urlencoded"), "persona=%ZZ");
+        assertEquals(400, badUrlEncoding.status(), badUrlEncoding.body());
 
         Reply login = request(rig.port(), "POST", "/dev/login",
                 Map.of("Content-Type", "application/x-www-form-urlencoded"), "persona=dev-admin");
         assertEquals(303, login.status(), login.body());
-        assertEquals("/play", login.headers().get("Location").get(0));
+        assertEquals("/play", login.headers().get("Location").getFirst());
         List<String> setCookie = login.headers().get("Set-Cookie");
-        assertTrue(setCookie.get(0).startsWith(CookieCodec.DEV_SESSION_COOKIE + "="),
-                "cookie name: " + setCookie.get(0));
-        assertTrue(setCookie.get(0).contains("HttpOnly") && setCookie.get(0).contains("SameSite=Lax"),
-                setCookie.get(0));
+        assertTrue(setCookie.getFirst().startsWith(CookieCodec.DEV_SESSION_COOKIE + "="),
+                "cookie name: " + setCookie.getFirst());
+        assertTrue(setCookie.getFirst().contains("HttpOnly") && setCookie.getFirst().contains("SameSite=Lax"),
+                setCookie.getFirst());
 
-        String cookieHeader = setCookie.get(0).split(";")[0];
+        String cookieHeader = setCookie.getFirst().split(";")[0];
         Reply meta = request(rig.port(), "GET", "/api/v1/meta", Map.of("Cookie", cookieHeader), null);
         assertEquals(200, meta.status(), meta.body());
         assertTrue(meta.bodyContains("\"principal\":\"HUMAN\""), meta.body());
@@ -230,13 +275,19 @@ class AuthSecurityGateTest {
 
         Reply play = request(rig.port(), "GET", "/play", Map.of("Cookie", cookieHeader), null);
         assertEquals(200, play.status(), play.body());
+
+        // Advancing clock past the 12h session TTL expires the cookie session cleanly to anonymous (401).
+        clock.advance(Duration.ofHours(12));
+        Reply expiredSession = request(rig.port(), "GET", "/play", Map.of("Cookie", cookieHeader), null);
+        assertEquals(401, expiredSession.status(), expiredSession.body());
     }
 
     @Test
     void keycloakRoleClaimExtraction_unionsRealmAndClientRoles_grantsPlayerBaseline_ignoresHousekeeping() {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(ISSUER).subject("u1").audience(AUDIENCE)
-                .claim("realm_access", Map.of("roles", List.of("offline_access", "uma_authorization", "RESEARCHER")))
+                .claim("realm_access", Map.of("roles",
+                        List.of("offline_access", "uma_authorization", "default-roles-kotharworks", "RESEARCHER")))
                 .claim("resource_access", Map.of("kotharworks-server",
                         Map.of("roles", List.of("ADMIN", "uma_authorization"))))
                 .build();
@@ -263,7 +314,7 @@ class AuthSecurityGateTest {
         Rig rig = rig();
 
         List<AuthenticatedRouter.RegisteredRoute> routes = router.registeredRoutes();
-        assertEquals(7, routes.size(), "expected route table: " + routes);
+        assertEquals(9, routes.size(), "expected route table: " + routes);
         routes.forEach(route -> assertTrue(route.policy() != null, "unannotated route: " + route));
         assertTrue(routes.contains(new AuthenticatedRouter.RegisteredRoute("POST", "/dev/login",
                 AccessPolicy.PUBLIC)));
@@ -274,6 +325,8 @@ class AuthSecurityGateTest {
         // Every non-PUBLIC route rejects unauthenticated callers with 401.
         assertEquals(401, request(rig.port(), "GET", "/api/v1/meta", Map.of(), null).status());
         assertEquals(401, request(rig.port(), "GET", "/api/v1/houses/42", Map.of(), null).status());
+        assertEquals(401, request(rig.port(), "GET", "/api/v1/houses/special", Map.of(), null).status());
+        assertEquals(401, request(rig.port(), "GET", "/api/v1/research/lab", Map.of(), null).status());
         assertEquals(401, request(rig.port(), "GET", "/play", Map.of(), null).status());
         Reply pause = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Content-Type", "application/json"), "{}");
@@ -292,16 +345,74 @@ class AuthSecurityGateTest {
         assertEquals(List.of("GET"), methodNotAllowed.headers().get("Allow"));
     }
 
+    @Test
+    void accessPolicyMatrix_enforcesHumanOnlyResearcherAndAdminBoundaries() throws Exception {
+        Rig rig = rig();
+
+        var botToken = new ApiTokenCodec(new SecureRandom()).generate();
+        tokenLookup.register(botToken.sha256(), new ScopedTokenRecord(
+                new TokenId(10), new UserId(UUID.randomUUID()), "wilds:seat", 7L, false, false));
+        Map<String, String> botAuth = Map.of("Authorization", "Bearer " + botToken.token());
+
+        // ScopedTokenPrincipal: allowed on PUBLIC & AUTHENTICATED_ANY; 403 FORBIDDEN on HUMAN_ONLY / ROLE_*.
+        assertEquals(200, request(rig.port(), "GET", "/chronicle", botAuth, null).status());
+        assertEquals(200, request(rig.port(), "GET", "/api/v1/meta", botAuth, null).status());
+        Reply botPlay = request(rig.port(), "GET", "/play", botAuth, null);
+        assertEquals(403, botPlay.status());
+        assertTrue(botPlay.bodyContains("FORBIDDEN"), botPlay.body());
+        Reply botLab = request(rig.port(), "GET", "/api/v1/research/lab", botAuth, null);
+        assertEquals(403, botLab.status());
+        assertTrue(botLab.bodyContains("FORBIDDEN"), botLab.body());
+        Reply botAdmin = request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Authorization", "Bearer " + botToken.token(), "Content-Type", "application/json"), "{}");
+        assertEquals(403, botAdmin.status());
+        assertTrue(botAdmin.bodyContains("FORBIDDEN"), botAdmin.body());
+
+        // PLAYER human: allowed on HUMAN_ONLY; 403 ROLE_REQUIRED on ROLE_RESEARCHER & ROLE_ADMIN.
+        String aliceJwt = devIssuer.mintSignedJwt(DevPersona.ALICE);
+        assertEquals(200, request(rig.port(), "GET", "/play",
+                Map.of("Authorization", "Bearer " + aliceJwt), null).status());
+        Reply aliceLab = request(rig.port(), "GET", "/api/v1/research/lab",
+                Map.of("Authorization", "Bearer " + aliceJwt), null);
+        assertEquals(403, aliceLab.status());
+        assertTrue(aliceLab.bodyContains("ROLE_REQUIRED"), aliceLab.body());
+        Reply aliceAdmin = request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Authorization", "Bearer " + aliceJwt, "Content-Type", "application/json"), "{}");
+        assertEquals(403, aliceAdmin.status());
+        assertTrue(aliceAdmin.bodyContains("ROLE_REQUIRED"), aliceAdmin.body());
+
+        // RESEARCHER human: allowed on ROLE_RESEARCHER; 403 ROLE_REQUIRED on ROLE_ADMIN.
+        String samJwt = devIssuer.mintSignedJwt(DevPersona.SAM);
+        assertEquals(200, request(rig.port(), "GET", "/api/v1/research/lab",
+                Map.of("Authorization", "Bearer " + samJwt), null).status());
+        assertEquals(403, request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Authorization", "Bearer " + samJwt, "Content-Type", "application/json"), "{}").status());
+
+        // ADMIN human (and lowercase RFC 9110 "bearer " scheme): allowed on ROLE_RESEARCHER & ROLE_ADMIN.
+        String adminJwt = devIssuer.mintSignedJwt(DevPersona.ADMIN);
+        assertEquals(200, request(rig.port(), "GET", "/api/v1/research/lab",
+                Map.of("Authorization", "bearer " + adminJwt), null).status());
+        assertEquals(200, request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Authorization", "bearer " + adminJwt, "Content-Type", "application/json"), "{}").status());
+    }
+
     // ------------------------------------------------- criterion 2 (loopback fuse)
 
     @Test
-    void loopbackFuse_refusesWildcardAndLanBinds_allowsLoopback() {
+    void loopbackFuse_refusesWildcardLanUnresolvedAndNullBinds_allowsLoopback() {
+        assertThrows(IllegalStateException.class,
+                () -> LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL, null));
+        assertThrows(IllegalStateException.class,
+                () -> LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL, new InetSocketAddress(8080)));
         assertThrows(IllegalStateException.class,
                 () -> LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL, new InetSocketAddress("0.0.0.0", 8080)));
         assertThrows(IllegalStateException.class,
                 () -> LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL, new InetSocketAddress("::", 8080)));
         assertThrows(IllegalStateException.class,
                 () -> LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL, new InetSocketAddress("192.168.1.50", 8080)));
+        assertThrows(IllegalStateException.class,
+                () -> LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL,
+                        InetSocketAddress.createUnresolved("127.0.0.1", 8080)));
         assertDoesNotThrow(() ->
                 LoopbackStartupFuse.verify(AuthMode.DEV_LOCAL, new InetSocketAddress("127.0.0.1", 8080)));
         assertDoesNotThrow(() ->
@@ -334,7 +445,7 @@ class AuthSecurityGateTest {
         assertFalse(rig.metaInvoked().get());
     }
 
-    // ------------------------------------- criterion 4 (alg:none & HS256 confusion)
+    // ------------------- criterion 4 (alg:none, HS256 confusion, RS256, wrong curve, EdDSA)
 
     @Test
     void algNoneJwt_isHardRejected() throws Exception {
@@ -351,25 +462,129 @@ class AuthSecurityGateTest {
     }
 
     @Test
-    void hs256SignedWithPublicKeyBytes_keyConfusion_isHardRejected() throws Exception {
+    void hs256SignedWithPublicKeyBytes_wrongCurve_edDsa_andRs256Verification() throws Exception {
         Rig rig = rig();
         ECKey publicEcKey = devIssuer.publicKey();
         byte[] confusionKey = publicEcKey.getX().decode(); // 32 bytes of public EC point X
         assertEquals(32, confusionKey.length);
 
-        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+        JWTClaimsSet validClaims = new JWTClaimsSet.Builder()
                 .issuer(ISSUER).subject("dev-alice").audience(AUDIENCE)
                 .issueTime(Date.from(clock.instant()))
                 .expirationTime(Date.from(clock.instant().plus(Duration.ofMinutes(5))))
                 .build();
-        SignedJWT attack = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.HS256).build(), claims);
-        attack.sign(new MACSigner(confusionKey));
+        SignedJWT hs256Attack = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.HS256).build(), validClaims);
+        hs256Attack.sign(new MACSigner(confusionKey));
 
         Reply reply = request(rig.port(), "GET", "/api/v1/meta",
-                Map.of("Authorization", "Bearer " + attack.serialize()), null);
+                Map.of("Authorization", "Bearer " + hs256Attack.serialize()), null);
         assertEquals(401, reply.status());
         assertTrue(reply.bodyContains("INVALID_TOKEN"), reply.body());
         assertFalse(rig.metaInvoked().get());
+
+        // EdDSA header is hard-rejected (outside allowed RS256/ES256 set).
+        String edDsaHeader = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"alg\":\"EdDSA\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8));
+        String fakeEdDsa = edDsaHeader + "." + hs256Attack.serialize().split("\\.")[1] + ".c2ln";
+        assertEquals(401, request(rig.port(), "GET", "/api/v1/meta",
+                Map.of("Authorization", "Bearer " + fakeEdDsa), null).status());
+
+        // ES384 / P-384 curve is rejected even if present in JWKS.
+        ECKey p384 = new ECKeyGenerator(Curve.P_384).keyID("p384").keyUse(KeyUse.SIGNATURE).generate();
+        RSAKey rsaKey = new RSAKeyGenerator(2048).keyID("rsa-main").keyUse(KeyUse.SIGNATURE).generate();
+        JwtClaimsVerifier rsaAndEcVerifier = new JwtClaimsVerifier(ISSUER, AUDIENCE,
+                new ImmutableJWKSet<SecurityContext>(new JWKSet(List.of(p384.toPublicJWK(), rsaKey.toPublicJWK()))),
+                clock);
+
+        SignedJWT es384Jwt = new SignedJWT(
+                new JWSHeader.Builder(JWSAlgorithm.ES384).keyID("p384").build(), validClaims);
+        es384Jwt.sign(new ECDSASigner(p384));
+        var es384Reject = assertThrows(AuthRejectException.class,
+                () -> rsaAndEcVerifier.verify(es384Jwt.serialize()));
+        assertEquals(AuthErrorCode.INVALID_TOKEN, es384Reject.code());
+
+        // Valid RS256 signature verifies cleanly; wrong RSA key rejects.
+        SignedJWT rs256Jwt = new SignedJWT(
+                new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("rsa-main").type(JOSEObjectType.JWT).build(),
+                validClaims);
+        rs256Jwt.sign(new RSASSASigner(rsaKey));
+        assertEquals("dev-alice", rsaAndEcVerifier.verify(rs256Jwt.serialize()).getSubject());
+
+        RSAKey otherRsa = new RSAKeyGenerator(2048).keyID("rsa-main").keyUse(KeyUse.SIGNATURE).generate();
+        SignedJWT forgedRs256 = new SignedJWT(
+                new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("rsa-main").build(), validClaims);
+        forgedRs256.sign(new RSASSASigner(otherRsa));
+        assertThrows(AuthRejectException.class, () -> rsaAndEcVerifier.verify(forgedRs256.serialize()));
+    }
+
+    @Test
+    void jwtClaims_acceptMultiAudienceAndMissingPreferredUsername_rejectMissingOrBlankClaimsAndFutureNbf()
+            throws Exception {
+        Rig rig = rig();
+        ECKey ecKey = new ECKeyGenerator(Curve.P_256).keyID("k1").keyUse(KeyUse.SIGNATURE).generate();
+        JwtClaimsVerifier verifier = new JwtClaimsVerifier(ISSUER, AUDIENCE,
+                new ImmutableJWKSet<SecurityContext>(new JWKSet(List.of(ecKey.toPublicJWK()))), clock);
+        JwtHumanAuthenticator humanAuth = new JwtHumanAuthenticator(verifier, AUDIENCE, provisioner);
+
+        // (a) Multi-audience Keycloak JWT ["account", AUDIENCE] + omitted preferred_username succeeds!
+        JWTClaimsSet multiAudClaims = new JWTClaimsSet.Builder()
+                .issuer(ISSUER)
+                .subject("kc-user-42")
+                .audience(List.of("account", AUDIENCE))
+                .issueTime(Date.from(clock.instant()))
+                .expirationTime(Date.from(clock.instant().plus(Duration.ofMinutes(5))))
+                .build();
+        String multiAudToken = signEs256(ecKey, multiAudClaims);
+        Principal.HumanPrincipal principal = humanAuth.authenticate(multiAudToken);
+        assertEquals("kc-user-42", principal.displayName(), "falls back to sub when preferred_username is absent");
+        assertEquals(Set.of(GlobalRole.PLAYER), principal.roles());
+
+        // (b) Missing sub, blank sub, and missing exp all reject with INVALID_TOKEN.
+        JWTClaimsSet noSub = new JWTClaimsSet.Builder()
+                .issuer(ISSUER).audience(AUDIENCE)
+                .expirationTime(Date.from(clock.instant().plus(Duration.ofMinutes(5))))
+                .build();
+        assertEquals(AuthErrorCode.INVALID_TOKEN,
+                assertThrows(AuthRejectException.class, () -> verifier.verify(signEs256(ecKey, noSub))).code());
+
+        JWTClaimsSet blankSub = new JWTClaimsSet.Builder()
+                .issuer(ISSUER).subject("   ").audience(AUDIENCE)
+                .expirationTime(Date.from(clock.instant().plus(Duration.ofMinutes(5))))
+                .build();
+        assertEquals(AuthErrorCode.INVALID_TOKEN,
+                assertThrows(AuthRejectException.class, () -> verifier.verify(signEs256(ecKey, blankSub))).code());
+
+        JWTClaimsSet noExp = new JWTClaimsSet.Builder()
+                .issuer(ISSUER).subject("u1").audience(AUDIENCE)
+                .build();
+        assertEquals(AuthErrorCode.INVALID_TOKEN,
+                assertThrows(AuthRejectException.class, () -> verifier.verify(signEs256(ecKey, noExp))).code());
+
+        // (c) nbf within 30s clock skew passes; nbf 60s in the future rejects with INVALID_TOKEN.
+        JWTClaimsSet skewOk = new JWTClaimsSet.Builder()
+                .issuer(ISSUER).subject("u1").audience(AUDIENCE)
+                .notBeforeTime(Date.from(clock.instant().plusSeconds(25)))
+                .expirationTime(Date.from(clock.instant().plus(Duration.ofMinutes(5))))
+                .build();
+        assertDoesNotThrow(() -> verifier.verify(signEs256(ecKey, skewOk)));
+
+        JWTClaimsSet futureNbf = new JWTClaimsSet.Builder()
+                .issuer(ISSUER).subject("u1").audience(AUDIENCE)
+                .notBeforeTime(Date.from(clock.instant().plusSeconds(60)))
+                .expirationTime(Date.from(clock.instant().plus(Duration.ofMinutes(5))))
+                .build();
+        assertEquals(AuthErrorCode.INVALID_TOKEN,
+                assertThrows(AuthRejectException.class, () -> verifier.verify(signEs256(ecKey, futureNbf))).code());
+
+        assertFalse(rig.metaInvoked().get());
+    }
+
+    private static String signEs256(ECKey key, JWTClaimsSet claims) throws com.nimbusds.jose.JOSEException {
+        SignedJWT jwt = new SignedJWT(
+                new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(key.getKeyID()).type(JOSEObjectType.JWT).build(),
+                claims);
+        jwt.sign(new ECDSASigner(key));
+        return jwt.serialize();
     }
 
     // --------------------------------------- criterion 5 (deterministic expiry)
@@ -414,17 +629,29 @@ class AuthSecurityGateTest {
     // --------------------------------------------- criterion 7 (OIDC PKCE S256)
 
     @Test
-    void oidcPkceRoundTrip_verifiesChallengeVerifierStateAndNonce() throws Exception {
-        Rig rig = rig(); // ensure the shared clock drives every verifier
+    void oidcPkceRoundTrip_verifiesChallengeStateNonceSingleUseExpiryAndTimeout() throws Exception {
+        rig(); // ensure the shared clock drives every verifier
+        // Non-HTTP(S) OIDC URIs (e.g. file://) are rejected at config construction.
+        assertThrows(IllegalArgumentException.class, () -> new OidcConfig(
+                "https://mock-idc.example", "kotharworks-server", "secret", "http://127.0.0.1",
+                URI.create("https://mock-idc.example/authorize"),
+                URI.create("https://mock-idc.example/token"),
+                URI.create("file:///etc/passwd")));
+
         try (MockOidcServer mock = new MockOidcServer(clock)) {
-            OidcConfig config = mock.config("https://mock-idc.example", "kotharworks-server", "dev-secret");
-            var client = new OidcAuthorizationCodeClient();
+            OidcConfig config = mock.config("https://mock-idc.example", "kotharworks-server", "dev-secret",
+                    "http://127.0.0.1/");
+            var client = new OidcAuthorizationCodeClient(clock);
             var authenticator = new OidcJwksAuthenticator(config, clock);
 
             var pending = client.begin(config);
             URI authorizationUri = pending.request().authorizationUri();
             Map<String, String> authorizeParams = queryParams(authorizationUri);
             assertEquals("S256", authorizeParams.get("code_challenge_method"));
+            assertEquals("http://127.0.0.1/auth/callback", authorizeParams.get("redirect_uri"),
+                    "trailing slash on publicOrigin must not double-slash /auth/callback");
+            assertTrue(authorizationUri.getRawQuery().contains(
+                    "redirect_uri=http%3A%2F%2F127.0.0.1%2Fauth%2Fcallback"));
             assertEquals(pending.request().state(), authorizeParams.get("state"));
             assertEquals(pending.request().nonce(), authorizeParams.get("nonce"));
             assertEquals(43, pending.request().codeVerifier().length());
@@ -436,33 +663,61 @@ class AuthSecurityGateTest {
             assertEquals(Base64.getUrlEncoder().withoutPadding().encodeToString(expectedDigest),
                     pending.request().codeChallenge());
 
-            // State validation: mismatch rejects, exact value passes.
+            // State validation: mismatch rejects without burning pending; exact value passes once only.
             var reject = assertThrows(AuthRejectException.class,
                     () -> client.validateCallbackState(pending, "wrong-state"));
             assertEquals(AuthErrorCode.INVALID_TOKEN, reject.code());
             assertDoesNotThrow(() -> client.validateCallbackState(pending, pending.request().state()));
+            var replayStateReject = assertThrows(AuthRejectException.class,
+                    () -> client.validateCallbackState(pending, pending.request().state()));
+            assertEquals(AuthErrorCode.INVALID_TOKEN, replayStateReject.code());
 
-            // Token exchange: PKCE verifier travels to the token endpoint.
-            mock.nextNonce(pending.request().nonce());
-            var tokens = client.exchangeAuthorizationCode(config, pending, "test-code-123");
+            // Fresh login completed end-to-end via completeAuthorizationCode.
+            var pendingLogin = client.begin(config);
+            mock.nextNonce(pendingLogin.request().nonce());
+            var completed = client.completeAuthorizationCode(config, authenticator,
+                    pendingLogin.request().state(), "test-code-123");
             assertEquals("authorization_code", mock.capturedForm().get("grant_type"));
             assertEquals("test-code-123", mock.capturedForm().get("code"));
-            assertEquals(pending.request().codeVerifier(), mock.capturedForm().get("code_verifier"));
+            assertEquals(pendingLogin.request().codeVerifier(), mock.capturedForm().get("code_verifier"));
             assertEquals("kotharworks-server", mock.capturedForm().get("client_id"));
             assertEquals("dev-secret", mock.capturedForm().get("client_secret"));
-
-            // id_token validation against JWKS served by the mock + nonce check.
-            JWTClaimsSet idClaims = client.validateIdToken(authenticator, tokens.idToken(), pending);
-            assertEquals("oidc-user", idClaims.getSubject());
+            assertEquals("oidc-user", completed.idTokenClaims().getSubject());
             assertTrue(mock.jwksFetches().get() >= 1,
                     "verifier keys must come from the mock /jwks endpoint");
 
-            // A second id_token minted with a different nonce must be rejected.
+            // Replaying the same callback state a second time is rejected (single-use).
+            var replayCallback = assertThrows(AuthRejectException.class,
+                    () -> client.completeAuthorizationCode(config, authenticator,
+                            pendingLogin.request().state(), "test-code-123"));
+            assertEquals(AuthErrorCode.INVALID_TOKEN, replayCallback.code());
+
+            // Wrong nonce in id_token is rejected.
+            var pendingBadNonce = client.begin(config);
             mock.nextNonce("attacker-chosen-nonce");
-            var tokens2 = client.exchangeAuthorizationCode(config, pending, "test-code-123");
             var nonceReject = assertThrows(AuthRejectException.class,
-                    () -> client.validateIdToken(authenticator, tokens2.idToken(), pending));
+                    () -> client.completeAuthorizationCode(config, authenticator,
+                            pendingBadNonce.request().state(), "test-code-456"));
             assertEquals(AuthErrorCode.INVALID_TOKEN, nonceReject.code());
+
+            // PendingLogin TTL expiry on injected clock (0ms sleep): +11 minutes expires state.
+            var pendingExpiring = client.begin(config);
+            clock.advance(Duration.ofMinutes(11));
+            var expiredState = assertThrows(AuthRejectException.class,
+                    () -> client.completeAuthorizationCode(config, authenticator,
+                            pendingExpiring.request().state(), "test-code-789"));
+            assertEquals(AuthErrorCode.INVALID_TOKEN, expiredState.code());
+
+            // Stalled token endpoint times out cleanly with INVALID_TOKEN instead of hanging.
+            var shortTimeoutClient = new OidcAuthorizationCodeClient(
+                    HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(),
+                    new SecureRandom(), clock, Duration.ofMillis(150), Duration.ofMinutes(5));
+            var pendingTimeout = shortTimeoutClient.begin(config);
+            mock.stallTokenResponses(true);
+            var timeoutReject = assertThrows(AuthRejectException.class,
+                    () -> shortTimeoutClient.completeAuthorizationCode(config, authenticator,
+                            pendingTimeout.request().state(), "stalled-code"));
+            assertEquals(AuthErrorCode.INVALID_TOKEN, timeoutReject.code());
         }
     }
 
@@ -484,7 +739,7 @@ class AuthSecurityGateTest {
     // ------------------------------------------------ criterion 8 (cookie CSRF)
 
     @Test
-    void cookieCsrfGuard_rejectsCrossSiteAndForeignOrigins_bearerRequestsBypass() throws Exception {
+    void cookieCsrfGuard_rejectsCrossSiteSameSiteNullOriginAndForgedForms_bearerBypasses() throws Exception {
         Rig rig = rig();
         var created = sessions.create(new UserId(UUID.randomUUID()),
                 new ExternalIdentity(ISSUER, "dev-admin"), "Admin (dev)",
@@ -492,7 +747,7 @@ class AuthSecurityGateTest {
                 clock.instant().plus(Duration.ofHours(1)));
         String cookie = cookies.sessionCookieName() + "=" + created.rawSessionToken();
 
-        // (a) Foreign Origin → 403 CSRF_REJECTED before the handler runs.
+        // (a) Foreign Origin and sandboxed "Origin: null" → 403 CSRF_REJECTED before the handler runs.
         Reply evilOrigin = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Cookie", cookie, "Origin", "https://evil.example",
                         "Content-Type", "application/json"),
@@ -501,7 +756,12 @@ class AuthSecurityGateTest {
         assertTrue(evilOrigin.bodyContains("CSRF_REJECTED"), evilOrigin.body());
         assertFalse(rig.adminInvoked().get());
 
-        // (b) Sec-Fetch-Site: cross-site → 403.
+        Reply nullOrigin = request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Cookie", cookie, "Origin", "null", "Content-Type", "application/json"), "{}");
+        assertEquals(403, nullOrigin.status());
+        assertTrue(nullOrigin.bodyContains("CSRF_REJECTED"), nullOrigin.body());
+
+        // (b) Sec-Fetch-Site: cross-site AND Sec-Fetch-Site: same-site → 403.
         Reply crossSite = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Cookie", cookie, "Sec-Fetch-Site", "cross-site",
                         "Content-Type", "application/json"),
@@ -509,7 +769,53 @@ class AuthSecurityGateTest {
         assertEquals(403, crossSite.status());
         assertTrue(crossSite.bodyContains("CSRF_REJECTED"), crossSite.body());
 
-        // (c) Authorization: Bearer bypasses cookie CSRF even with a stale cookie.
+        Reply sameSite = request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Cookie", cookie, "Sec-Fetch-Site", "same-site",
+                        "Content-Type", "application/json"),
+                "{}");
+        assertEquals(403, sameSite.status());
+        assertTrue(sameSite.bodyContains("CSRF_REJECTED"), sameSite.body());
+
+        // (c) Direct plain-Map check with mixed-case keys ("Sec-fetch-site" / "ORIGIN") rejects properly.
+        CsrfGuard directGuard = new CsrfGuard("https://wilds.example", AuthMode.OIDC, () -> 443);
+        Map<String, List<String>> mixedCaseHeaders = new HashMap<>();
+        mixedCaseHeaders.put("Sec-fetch-site", List.of("cross-site"));
+        mixedCaseHeaders.put("Content-type", List.of("application/json"));
+        assertThrows(AuthRejectException.class,
+                () -> directGuard.check("POST", mixedCaseHeaders, new byte[0], "tok"));
+        Map<String, List<String>> upperOrigin = Map.of(
+                "ORIGIN", List.of("https://evil.example"),
+                "CONTENT-TYPE", List.of("application/json"));
+        assertThrows(AuthRejectException.class,
+                () -> directGuard.check("POST", upperOrigin, new byte[0], "tok"));
+
+        // (d) Forged form POSTs with BOTH Origin and Sec-Fetch-Site omitted → 403.
+        for (String formContentType : List.of(
+                "application/x-www-form-urlencoded",
+                "text/plain",
+                "multipart/form-data; boundary=---xyz",
+                "application/json-evil")) {
+            Reply forgedForm = request(rig.port(), "POST", "/api/v1/admin/pause",
+                    Map.of("Cookie", cookie, "Content-Type", formContentType),
+                    "paused=true");
+            assertEquals(403, forgedForm.status(), "must reject Content-Type: " + formContentType);
+            assertTrue(forgedForm.bodyContains("CSRF_REJECTED"), forgedForm.body());
+        }
+        assertFalse(rig.adminInvoked().get());
+
+        // (e) Malformed percent-encoding in form body returns 403 CSRF_REJECTED (never 500).
+        for (String malformedBody : List.of(
+                "csrf_token=%ZZ",
+                "bad=%ZZ&csrf_token=" + created.record().csrfToken())) {
+            Reply malformedForm = request(rig.port(), "POST", "/api/v1/admin/pause",
+                    Map.of("Cookie", cookie, "Origin", rig.baseUrl(),
+                            "Content-Type", "application/x-www-form-urlencoded"),
+                    malformedBody);
+            assertEquals(403, malformedForm.status(), malformedForm.body());
+            assertTrue(malformedForm.bodyContains("CSRF_REJECTED"), malformedForm.body());
+        }
+
+        // (f) Authorization: Bearer bypasses cookie CSRF even with a stale cookie and evil Origin.
         String adminJwt = devIssuer.mintSignedJwt(DevPersona.ADMIN);
         Reply bearer = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Authorization", "Bearer " + adminJwt, "Cookie", cookie,
@@ -518,26 +824,34 @@ class AuthSecurityGateTest {
         assertEquals(200, bearer.status(), bearer.body());
         assertTrue(rig.adminInvoked().get());
 
-        // (d) Same-bound-origin JSON request passes.
+        // (g) Same-bound-origin JSON request with Sec-Fetch-Site: same-origin passes.
         rig.adminInvoked().set(false);
         Reply sameOrigin = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Cookie", cookie, "Origin", rig.baseUrl(),
-                        "Content-Type", "application/json"),
+                        "Sec-Fetch-Site", "same-origin",
+                        "Content-Type", "application/json; charset=utf-8"),
                 "{}");
         assertEquals(200, sameOrigin.status(), sameOrigin.body());
         assertTrue(rig.adminInvoked().get());
 
-        // (e) Form post without CSRF token → 403.
+        // (h) X-CSRF-Token header: wrong value → 403, matching value → 200.
+        rig.adminInvoked().set(false);
+        assertEquals(403, request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Cookie", cookie, "Origin", rig.baseUrl(), "X-CSRF-Token", "wrong"), "").status());
+        assertEquals(200, request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Cookie", cookie, "Origin", rig.baseUrl(),
+                        "X-CSRF-Token", created.record().csrfToken()), "").status());
+        assertTrue(rig.adminInvoked().get());
+
+        // (i) Form post: missing token → 403, matching csrf_token → 200, wrong csrf_token → 403.
         rig.adminInvoked().set(false);
         Reply formNoToken = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Cookie", cookie, "Origin", rig.baseUrl(),
                         "Content-Type", "application/x-www-form-urlencoded"),
                 "paused=true");
         assertEquals(403, formNoToken.status());
-        assertTrue(formNoToken.bodyContains("CSRF_REJECTED"), formNoToken.body());
         assertFalse(rig.adminInvoked().get());
 
-        // (f) Form post with matching csrf_token field passes.
         Reply formWithToken = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Cookie", cookie, "Origin", rig.baseUrl(),
                         "Content-Type", "application/x-www-form-urlencoded"),
@@ -545,13 +859,95 @@ class AuthSecurityGateTest {
         assertEquals(200, formWithToken.status(), formWithToken.body());
         assertTrue(rig.adminInvoked().get());
 
-        // (g) Form post with a wrong CSRF token → 403.
         Reply formWrongToken = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Cookie", cookie, "Origin", rig.baseUrl(),
                         "Content-Type", "application/x-www-form-urlencoded"),
                 "paused=true&csrf_token=nope");
         assertEquals(403, formWrongToken.status());
         assertTrue(formWrongToken.bodyContains("CSRF_REJECTED"), formWrongToken.body());
+    }
+
+    @Test
+    void cookieCodec_productionHostPrefix_clearHeader_andMultiHeaderExtraction() throws Exception {
+        Rig rig = rig();
+
+        CookieCodec prod = CookieCodec.forOrigin("https://wilds.kotharworks.com", AuthMode.OIDC);
+        assertEquals(CookieCodec.HOST_SESSION_COOKIE, prod.sessionCookieName());
+        String setHeader = prod.setCookieHeaderValue("tok123");
+        assertEquals("__Host-kw_session=tok123; Path=/; HttpOnly; SameSite=Lax; Secure", setHeader);
+        assertFalse(setHeader.toLowerCase().contains("domain="));
+        assertEquals("__Host-kw_session=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0",
+                prod.clearCookieHeaderValue());
+
+        CookieCodec dev = CookieCodec.forOrigin("http://127.0.0.1:8080", AuthMode.DEV_LOCAL);
+        assertEquals(CookieCodec.DEV_SESSION_COOKIE, dev.sessionCookieName());
+        assertEquals("kw_dev_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0", dev.clearCookieHeaderValue());
+
+        // Multi-line HTTP/2 Cookie headers: session cookie in second Cookie header still authenticates.
+        var created = sessions.create(new UserId(UUID.randomUUID()),
+                new ExternalIdentity(ISSUER, "dev-alice"), "Alice (dev)",
+                Set.of(GlobalRole.PLAYER), clock.instant().plus(Duration.ofHours(1)));
+        HttpRequest multiCookieReq = HttpRequest.newBuilder(URI.create(rig.baseUrl() + "/play"))
+                .header("Cookie", "theme=dark")
+                .header("Cookie", cookies.sessionCookieName() + "=" + created.rawSessionToken())
+                .GET()
+                .build();
+        HttpResponse<String> response = neverFollowRedirects()
+                .send(multiCookieReq, HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, response.statusCode(), response.body());
+
+        // SessionRecord defensively clones byte[] digest on construction and access.
+        byte[] digest = created.record().sessionSha256();
+        digest[0] ^= (byte) 0xFF;
+        assertNotEquals(digest[0], created.record().sessionSha256()[0]);
+    }
+
+    @Test
+    void routerHardening_rejectsPathTraversalEncodedSlashes_prioritizesLiterals_andCapsBodySize() throws Exception {
+        Rig rig = rig(1024); // 1 KiB body cap for deterministic 413 testing
+        String aliceJwt = devIssuer.mintSignedJwt(DevPersona.ALICE);
+        String adminJwt = devIssuer.mintSignedJwt(DevPersona.ADMIN);
+        Map<String, String> authHeader = Map.of("Authorization", "Bearer " + aliceJwt);
+
+        // Path traversal, dot-segments, encoded slashes, double slashes, and trailing slashes → 404.
+        for (String maliciousPath : List.of(
+                "/api/v1/../chronicle",
+                "/api/v1/%2e%2e/chronicle",
+                "/api/v1/houses/..",
+                "/api/v1/houses/.",
+                "/api/v1/houses/%2e%2e",
+                "/api/v1/houses/42%2F99",
+                "/api/v1/houses/42%5C99",
+                "/api/v1/houses/42%00",
+                "//chronicle",
+                "/chronicle/")) {
+            Reply r = request(rig.port(), "GET", maliciousPath, authHeader, null);
+            assertEquals(404, r.status(), "must reject path: " + maliciousPath);
+        }
+
+        // Literal segment (/api/v1/houses/special, registered AFTER {houseId}) beats {houseId} wildcard;
+        // '+' in a path segment remains literal '+' (RFC 3986, not form-decoded space).
+        Reply special = request(rig.port(), "GET", "/api/v1/houses/special", authHeader, null);
+        assertEquals(200, special.status());
+        assertTrue(special.bodyContains("\"special\":true"), special.body());
+
+        Reply plusId = request(rig.port(), "GET", "/api/v1/houses/a+b", authHeader, null);
+        assertEquals(200, plusId.status());
+        assertTrue(plusId.bodyContains("\"houseId\":\"a+b\""), plusId.body());
+
+        // Oversized body (> 1024 bytes) on authenticated route returns 413 PAYLOAD_TOO_LARGE.
+        String oversizedJson = "{\"pad\":\"" + "x".repeat(2048) + "\"}";
+        Reply tooLarge = request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Authorization", "Bearer " + adminJwt, "Content-Type", "application/json"),
+                oversizedJson);
+        assertEquals(413, tooLarge.status(), tooLarge.body());
+        assertTrue(tooLarge.bodyContains("PAYLOAD_TOO_LARGE"), tooLarge.body());
+        assertFalse(rig.adminInvoked().get());
+
+        // Unauthenticated caller sending an oversized body to a protected route still gets 401 before body read.
+        Reply unauthOversized = request(rig.port(), "POST", "/api/v1/admin/pause",
+                Map.of("Content-Type", "application/json"), oversizedJson);
+        assertEquals(401, unauthOversized.status(), unauthOversized.body());
     }
 
     // --------------------------- criterion 9 (iw_bot_ codec, revocation, suspension)
@@ -562,14 +958,28 @@ class AuthSecurityGateTest {
         var codec = new ApiTokenCodec(new SecureRandom());
 
         var generated = codec.generate();
+        assertEquals(ApiTokenCodec.expectedTokenLength(), generated.token().length());
         assertTrue(IW_BOT_PATTERN.matcher(generated.token()).matches(), generated.token());
         assertTrue(ApiTokenCodec.matchesDigest(generated.token(), generated.sha256()));
         assertFalse(ApiTokenCodec.matchesDigest(generated.token(), ApiTokenCodec.sha256("iw_bot_aaaaaaaa_"
                 + "wrongwrongwrongwrongwrongwrongwrongwrongwr")));
 
+        // GeneratedToken defensively clones its digest byte[].
+        byte[] copy = generated.sha256();
+        copy[0] ^= (byte) 0xFF;
+        assertTrue(ApiTokenCodec.matchesDigest(generated.token(), generated.sha256()));
+
         UserId owner = new UserId(UUID.randomUUID());
         tokenLookup.register(generated.sha256(), new ScopedTokenRecord(
                 new TokenId(1), owner, "place", 42, false, false));
+
+        // Malformed-length iw_bot_ token rejects immediately without querying the store.
+        int lookupsBefore = tokenLookup.lookups().get();
+        Reply wrongLength = request(rig.port(), "GET", "/api/v1/meta",
+                Map.of("Authorization", "Bearer iw_bot_too_short"), null);
+        assertEquals(401, wrongLength.status());
+        assertEquals(lookupsBefore, tokenLookup.lookups().get(),
+                "malformed-length iw_bot_ token must not hit ScopedTokenLookup");
 
         Reply active = request(rig.port(), "GET", "/api/v1/meta",
                 Map.of("Authorization", "Bearer " + generated.token()), null);
@@ -641,7 +1051,7 @@ class AuthSecurityGateTest {
 
         @Override
         public UserId provision(ExternalIdentity externalId, String displayName) {
-            return users.computeIfAbsent(externalId, id -> new UserId(UUID.randomUUID()));
+            return users.computeIfAbsent(externalId, _ -> new UserId(UUID.randomUUID()));
         }
     }
 
@@ -676,13 +1086,19 @@ class AuthSecurityGateTest {
     static final class InMemoryScopedTokenLookup implements ScopedTokenLookup {
 
         private final Map<String, ScopedTokenRecord> byDigest = new ConcurrentHashMap<>();
+        private final AtomicInteger lookups = new AtomicInteger();
 
         void register(byte[] sha256Digest, ScopedTokenRecord record) {
             byDigest.put(Base64.getEncoder().encodeToString(sha256Digest), record);
         }
 
+        AtomicInteger lookups() {
+            return lookups;
+        }
+
         @Override
         public Optional<ScopedTokenRecord> findByDigest(byte[] sha256Digest) {
+            lookups.incrementAndGet();
             return Optional.ofNullable(byDigest.get(Base64.getEncoder().encodeToString(sha256Digest)));
         }
     }
@@ -699,13 +1115,15 @@ class AuthSecurityGateTest {
         private final MutableClock clock;
         private final Map<String, String> capturedForm = new ConcurrentHashMap<>();
         private final AtomicInteger jwksFetches = new AtomicInteger();
+        private final CountDownLatch closedLatch = new CountDownLatch(1);
         private volatile String nonceForNextIdToken = "";
+        private volatile boolean stallToken = false;
 
         MockOidcServer(MutableClock clock) throws IOException, com.nimbusds.jose.JOSEException {
             this.clock = clock;
             this.signingKey = new ECKeyGenerator(Curve.P_256)
                     .keyID("mock-oidc-es256")
-                    .keyUse(com.nimbusds.jose.jwk.KeyUse.SIGNATURE)
+                    .keyUse(KeyUse.SIGNATURE)
                     .generate();
             this.httpServer = HttpServer.create(
                     new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 0);
@@ -725,7 +1143,17 @@ class AuthSecurityGateTest {
         }
 
         private void handleToken(HttpExchange exchange) throws IOException {
+            if (stallToken) {
+                try {
+                    closedLatch.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                exchange.close();
+                return;
+            }
             String form = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            capturedForm.clear();
             for (String pair : form.split("&")) {
                 int eq = pair.indexOf('=');
                 if (eq > 0) {
@@ -736,7 +1164,8 @@ class AuthSecurityGateTest {
             String nonce = capturedForm.getOrDefault("nonce", nonceForNextIdToken);
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .issuer("https://mock-idc.example").subject("oidc-user")
-                    .audience("kotharworks-server")
+                    .audience(List.of("kotharworks-server", "account"))
+                    .claim("azp", "kotharworks-server")
                     .issueTime(Date.from(clock.instant()))
                     .expirationTime(Date.from(clock.instant().plus(Duration.ofMinutes(5))))
                     .claim("nonce", nonce)
@@ -758,17 +1187,20 @@ class AuthSecurityGateTest {
             }
         }
 
-        OidcConfig config(String issuerUrl, String clientId, String clientSecret) {
+        OidcConfig config(String issuerUrl, String clientId, String clientSecret, String publicOrigin) {
             int port = httpServer.getAddress().getPort();
-            return new OidcConfig(issuerUrl, clientId, clientSecret, "http://127.0.0.1",
+            return new OidcConfig(issuerUrl, clientId, clientSecret, publicOrigin,
                     URI.create("http://127.0.0.1:" + port + "/authorize"),
                     URI.create("http://127.0.0.1:" + port + "/token"),
                     URI.create("http://127.0.0.1:" + port + "/jwks"));
         }
 
-        /** Presets the nonce claim of the next minted id_token. */
         void nextNonce(String nonce) {
             this.nonceForNextIdToken = nonce;
+        }
+
+        void stallTokenResponses(boolean stall) {
+            this.stallToken = stall;
         }
 
         Map<String, String> capturedForm() {
@@ -781,6 +1213,7 @@ class AuthSecurityGateTest {
 
         @Override
         public void close() {
+            closedLatch.countDown();
             httpServer.stop(0);
         }
     }

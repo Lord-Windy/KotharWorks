@@ -127,8 +127,7 @@ public final class PlayRoutes {
 
     /** Resolves this browser session's CSRF token for form fields and the meta tag. */
     private String csrfTokenFor(RouteContext ctx) {
-        String cookieHeader = ctx.exchange().getRequestHeaders().getFirst("Cookie");
-        return cookies.extractSessionCookie(cookieHeader)
+        return cookies.extractSessionCookie(ctx.exchange().getRequestHeaders().get("Cookie"))
                 .map(CookieCodec::sha256Digest)
                 .flatMap(authStore::findActiveSessionBySha256)
                 .map(SessionRecord::csrfToken)

@@ -50,6 +50,17 @@ public final class ApiTokenCodec {
 
     /** One generated token: the full wire form plus its digest (persist this, not the token). */
     public record GeneratedToken(String token, String prefix, byte[] sha256) {
+
+        public GeneratedToken {
+            Objects.requireNonNull(token, "token");
+            Objects.requireNonNull(prefix, "prefix");
+            sha256 = Objects.requireNonNull(sha256, "sha256").clone();
+        }
+
+        @Override
+        public byte[] sha256() {
+            return sha256.clone();
+        }
     }
 
     /** Generates a fresh token with a random 8-char prefix and 32-byte secret. */

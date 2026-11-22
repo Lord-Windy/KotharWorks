@@ -16,6 +16,7 @@
 package com.kotharworks.auth.http;
 
 import java.time.Clock;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -49,12 +50,24 @@ public final class SessionCookieAuthenticator {
      * @return the cookie authentication, or empty when absent/unknown/expired
      */
     public Optional<Authentication> authenticate(String cookieHeader) {
-        String rawToken = cookies.extractSessionCookie(cookieHeader).orElse(null);
+        return resolveRawToken(cookies.extractSessionCookie(cookieHeader).orElse(null));
+    }
+
+    /**
+     * Authenticates the session cookie across all {@code Cookie} header lines.
+     *
+     * @return the cookie authentication, or empty when absent/unknown/expired
+     */
+    public Optional<Authentication> authenticate(List<String> cookieHeaders) {
+        return resolveRawToken(cookies.extractSessionCookie(cookieHeaders).orElse(null));
+    }
+
+    private Optional<Authentication> resolveRawToken(String rawToken) {
         if (rawToken == null) {
             return Optional.empty();
         }
         SessionRecord record = sessions.findByDigest(CookieCodec.sha256Digest(rawToken)).orElse(null);
-        if (record == null || record.expiresAt().isBefore(clock.instant())) {
+        if (record == null || !record.expiresAt().isAfter(clock.instant())) {
             return Optional.empty();
         }
         Principal.HumanPrincipal principal = new Principal.HumanPrincipal(

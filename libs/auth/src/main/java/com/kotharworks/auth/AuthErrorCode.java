@@ -38,7 +38,9 @@ public enum AuthErrorCode {
     /** No route is registered for the request path. */
     NOT_FOUND(404),
     /** A route exists for the path but not for the request method. */
-    METHOD_NOT_ALLOWED(405);
+    METHOD_NOT_ALLOWED(405),
+    /** The request body exceeds the router's configured byte cap. */
+    PAYLOAD_TOO_LARGE(413);
 
     private final int httpStatus;
 

@@ -16,12 +16,14 @@
 package com.kotharworks.auth.oidc;
 
 import java.net.URI;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
  * Immutable OIDC provider configuration for {@code --auth-mode=oidc}
  * (e.g. Keycloak). Endpoint URIs usually come from the provider's
- * {@code /.well-known/openid-configuration} discovery document.
+ * {@code /.well-known/openid-configuration} discovery document and must use
+ * {@code http} or {@code https}.
  */
 public record OidcConfig(String issuerUrl, String clientId, String clientSecret, String publicOrigin,
         URI authorizationEndpoint, URI tokenEndpoint, URI jwksUri) {
@@ -34,5 +36,22 @@ public record OidcConfig(String issuerUrl, String clientId, String clientSecret,
         Objects.requireNonNull(authorizationEndpoint, "authorizationEndpoint");
         Objects.requireNonNull(tokenEndpoint, "tokenEndpoint");
         Objects.requireNonNull(jwksUri, "jwksUri");
+        if (issuerUrl.isBlank() || clientId.isBlank() || publicOrigin.isBlank()) {
+            throw new IllegalArgumentException("issuerUrl, clientId, and publicOrigin must not be blank");
+        }
+        requireHttpUri(authorizationEndpoint, "authorizationEndpoint");
+        requireHttpUri(tokenEndpoint, "tokenEndpoint");
+        requireHttpUri(jwksUri, "jwksUri");
+    }
+
+    private static void requireHttpUri(URI uri, String name) {
+        String scheme = uri.getScheme();
+        if (scheme == null) {
+            throw new IllegalArgumentException(name + " must have an http/https scheme: " + uri);
+        }
+        String lower = scheme.toLowerCase(Locale.ROOT);
+        if (!lower.equals("http") && !lower.equals("https")) {
+            throw new IllegalArgumentException(name + " scheme must be http or https, got: " + uri);
+        }
     }
 }

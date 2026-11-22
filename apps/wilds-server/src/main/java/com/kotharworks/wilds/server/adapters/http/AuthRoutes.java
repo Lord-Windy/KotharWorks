@@ -18,7 +18,6 @@ package com.kotharworks.wilds.server.adapters.http;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -26,8 +25,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import com.kotharworks.auth.AuthMode;
-import com.kotharworks.auth.AuthRejectException;
-import com.kotharworks.auth.AuthErrorCode;
 import com.kotharworks.auth.dev.DevLocalJwtIssuer;
 import com.kotharworks.auth.http.AccessPolicy;
 import com.kotharworks.auth.http.AuthenticatedRouter;
@@ -51,12 +48,11 @@ import com.kotharworks.wilds.server.ports.WorldStorePort;
 /**
  * Auth routes: {@code /auth/login}, {@code /auth/callback}, the dev-local
  * persona switcher ({@code /dev/login}, only in {@code DEV_LOCAL}), logout,
- * {@code /api/v1/auth/me}, and the admin suspension endpoint. Login state for
- * the OIDC dance is parked in a bounded in-memory map keyed by PKCE {@code state}.
+ * {@code /api/v1/auth/me}, and the admin suspension endpoint. Single-use OIDC
+ * PKCE login state and TTL are enforced inside {@link OidcAuthorizationCodeClient}.
  */
 public final class AuthRoutes {
 
-    private static final int MAX_PENDING_LOGINS = 4_096;
     private static final Duration SESSION_TTL = Duration.ofHours(12);
 
     private final ServerConfig config;
@@ -69,14 +65,6 @@ public final class AuthRoutes {
     private final OidcAuthorizationCodeClient oidcClient;
     private final OidcConfig oidcConfig;
     private final OidcJwksAuthenticator oidcAuthenticator;
-    private final Map<String, OidcAuthorizationCodeClient.PendingLogin> pendingLogins =
-            new LinkedHashMap<>() {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String,
-                        OidcAuthorizationCodeClient.PendingLogin> eldest) {
-                    return size() > MAX_PENDING_LOGINS;
-                }
-            };
 
     public AuthRoutes(ServerConfig config, AuthStorePort authStore, WorldStorePort worldStore,
             WorldHost worldHost, CookieCodec cookies, Clock clock, DevLocalJwtIssuer devIssuer,
@@ -129,9 +117,6 @@ public final class AuthRoutes {
             return;
         }
         OidcAuthorizationCodeClient.PendingLogin pending = oidcClient.begin(oidcConfig);
-        synchronized (pendingLogins) {
-            pendingLogins.put(pending.request().state(), pending);
-        }
         ctx.respondRedirect(pending.request().authorizationUri().toString());
     }
 
@@ -144,18 +129,9 @@ public final class AuthRoutes {
         Map<String, String> query = ApiJson.query(ctx);
         String state = query.get("state");
         String code = query.get("code");
-        OidcAuthorizationCodeClient.PendingLogin pending;
-        synchronized (pendingLogins) {
-            pending = state == null ? null : pendingLogins.remove(state);
-        }
-        if (pending == null || code == null) {
-            throw new AuthRejectException(AuthErrorCode.INVALID_TOKEN,
-                    "unknown or expired login state");
-        }
-        oidcClient.validateCallbackState(pending, state);
-        OidcAuthorizationCodeClient.TokenResponse tokens =
-                oidcClient.exchangeAuthorizationCode(oidcConfig, pending, code);
-        var claims = oidcAuthenticator.jwtVerifier().verify(tokens.idToken());
+        OidcAuthorizationCodeClient.CompletedLogin completed =
+                oidcClient.completeAuthorizationCode(oidcConfig, oidcAuthenticator, state, code);
+        var claims = completed.idTokenClaims();
         Set<com.kotharworks.auth.principal.GlobalRole> roles =
                 KeycloakRoleClaimExtractor.extract(claims, config.oidcClientId());
         var externalId = new com.kotharworks.auth.principal.ExternalIdentity(
@@ -170,13 +146,13 @@ public final class AuthRoutes {
     }
 
     private void logout(RouteContext ctx) throws java.io.IOException {
-        String cookieHeader = ctx.exchange().getRequestHeaders().getFirst("Cookie");
-        String rawToken = cookies.extractSessionCookie(cookieHeader).orElse(null);
+        String rawToken = cookies.extractSessionCookie(ctx.exchange().getRequestHeaders().get("Cookie"))
+                .orElse(null);
         if (rawToken != null) {
             authStore.revokeSession(CookieCodec.sha256Digest(rawToken));
         }
         ctx.exchange().getResponseHeaders().set("Set-Cookie",
-                cookies.sessionCookieName() + "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+                cookies.clearCookieHeaderValue());
         ctx.respondJson(200, "{\"loggedOut\":true}");
     }
 

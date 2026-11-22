@@ -15,6 +15,7 @@
  */
 package com.kotharworks.auth.http;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -25,10 +26,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 import com.kotharworks.auth.AuthErrorCode;
 import com.kotharworks.auth.AuthRejectException;
@@ -40,26 +43,33 @@ import com.sun.net.httpserver.HttpServer;
  * Deny-by-default HTTP router over {@link HttpServer} with a virtual-thread
  * executor. A single root {@code HttpContext("/")} dispatcher matches
  * {@code (method, pathPattern)} pairs with {@code {param}} extraction —
- * unknown paths return {@code 404 NOT_FOUND}, known paths with the wrong
- * method return {@code 405 METHOD_NOT_ALLOWED} (with an {@code Allow} header).
+ * unknown or non-canonical paths return {@code 404 NOT_FOUND}, known paths with
+ * the wrong method return {@code 405 METHOD_NOT_ALLOWED} (with an {@code Allow}
+ * header), and oversized request bodies return {@code 413 PAYLOAD_TOO_LARGE}.
  *
  * <p>Every registered route declares an explicit {@link AccessPolicy} (there
- * is no route without one); the pipeline per request is: route match →
- * authentication → CSRF (cookie-authenticated mutating requests on non-public
- * routes) → policy → handler. {@link #registeredRoutes()} exposes the live
- * route table for automated security audits.
- *
- * <p>Request bodies are buffered fully in memory (the CSRF form-token check
- * needs them); sized for Phase-0 API/JSON traffic, not uploads.
+ * is no route without one); the pipeline per request is: route &amp; method
+ * match → authentication → anonymous gate → header-level CSRF → bounded body
+ * read → body/token CSRF → policy → handler. {@link #registeredRoutes()}
+ * exposes the live route table for automated security audits.
  */
 public final class AuthenticatedRouter {
 
+    /** Default maximum buffered request body size (256 KiB). */
+    public static final int DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+
     private static final Set<String> MUTATING_METHODS = Set.of("POST", "PUT", "DELETE", "PATCH");
+
+    private static final Consumer<Throwable> DEFAULT_ERROR_REPORTER = cause ->
+            System.err.println("[AuthenticatedRouter] unhandled request exception: " + cause);
 
     private final HttpServer server;
     private final RequestAuthenticator authenticator;
     private final CsrfGuard csrfGuard;
+    private final int maxBodyBytes;
+    private final Consumer<Throwable> errorReporter;
     private final List<Route> routes = new ArrayList<>();
+    private volatile List<Route> routeSnapshot = List.of();
 
     private volatile Executor executor;
 
@@ -107,17 +117,29 @@ public final class AuthenticatedRouter {
         void handle(RouteContext ctx) throws IOException;
     }
 
-    private record Route(String method, String pattern, AccessPolicy policy, RouteHandler handler) {
-
-        List<String> segments() {
-            return splitSegments(pattern);
-        }
+    private record Route(String method, String pattern, List<String> segments, int literalCount,
+            AccessPolicy policy, RouteHandler handler) {
     }
 
     public AuthenticatedRouter(HttpServer server, RequestAuthenticator authenticator, CsrfGuard csrfGuard) {
+        this(server, authenticator, csrfGuard, DEFAULT_MAX_BODY_BYTES, DEFAULT_ERROR_REPORTER);
+    }
+
+    public AuthenticatedRouter(HttpServer server, RequestAuthenticator authenticator, CsrfGuard csrfGuard,
+            int maxBodyBytes) {
+        this(server, authenticator, csrfGuard, maxBodyBytes, DEFAULT_ERROR_REPORTER);
+    }
+
+    public AuthenticatedRouter(HttpServer server, RequestAuthenticator authenticator, CsrfGuard csrfGuard,
+            int maxBodyBytes, Consumer<Throwable> errorReporter) {
         this.server = Objects.requireNonNull(server, "server");
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
         this.csrfGuard = Objects.requireNonNull(csrfGuard, "csrfGuard");
+        if (maxBodyBytes <= 0) {
+            throw new IllegalArgumentException("maxBodyBytes must be positive: " + maxBodyBytes);
+        }
+        this.maxBodyBytes = maxBodyBytes;
+        this.errorReporter = Objects.requireNonNull(errorReporter, "errorReporter");
     }
 
     /**
@@ -129,7 +151,7 @@ public final class AuthenticatedRouter {
      *                {@code {name}} captures ({@code /api/v1/houses/{houseId}})
      * @param policy  required access policy
      * @param handler the handler to run when all checks pass
-     * @throws IllegalArgumentException on duplicate {@code (method, pattern)}
+     * @throws IllegalArgumentException on invalid pattern or duplicate {@code (method, pattern)}
      */
     public synchronized void register(String method, String pattern, AccessPolicy policy, RouteHandler handler) {
         Objects.requireNonNull(method, "method");
@@ -137,15 +159,23 @@ public final class AuthenticatedRouter {
         Objects.requireNonNull(policy, "policy");
         Objects.requireNonNull(handler, "handler");
         String normalizedMethod = method.toUpperCase(Locale.ROOT);
+        List<String> segments = parsePatternSegments(pattern);
         if (routes.stream().anyMatch(r -> r.method().equals(normalizedMethod) && r.pattern().equals(pattern))) {
             throw new IllegalArgumentException("duplicate route: " + normalizedMethod + " " + pattern);
         }
-        routes.add(new Route(normalizedMethod, pattern, policy, handler));
+        int literalCount = 0;
+        for (String segment : segments) {
+            if (!isParamSegment(segment)) {
+                literalCount++;
+            }
+        }
+        routes.add(new Route(normalizedMethod, pattern, segments, literalCount, policy, handler));
+        routeSnapshot = List.copyOf(routes);
     }
 
     /** Snapshot of the registered route table for security audits. */
-    public synchronized List<RegisteredRoute> registeredRoutes() {
-        return routes.stream()
+    public List<RegisteredRoute> registeredRoutes() {
+        return routeSnapshot.stream()
                 .map(r -> new RegisteredRoute(r.method(), r.pattern(), r.policy()))
                 .sorted(Comparator.comparing(RegisteredRoute::pattern).thenComparing(RegisteredRoute::method))
                 .toList();
@@ -177,24 +207,29 @@ public final class AuthenticatedRouter {
         } catch (AuthRejectException reject) {
             writeError(exchange, reject.code());
         } catch (IOException | RuntimeException e) {
-            writeInternalServerError(exchange, e);
+            errorReporter.accept(e);
+            writeInternalServerError(exchange);
         } finally {
             exchange.close();
         }
     }
 
     private void doDispatch(HttpExchange exchange) throws IOException {
-        byte[] requestBody = exchange.getRequestBody().readAllBytes();
         String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
-        List<String> pathSegments = splitSegments(exchange.getRequestURI().getPath());
+        List<String> pathSegments = parseRequestSegments(exchange.getRequestURI().getRawPath())
+                .orElseThrow(() -> new AuthRejectException(AuthErrorCode.NOT_FOUND, "no route for path"));
 
-        List<Route> pathMatches;
-        synchronized (this) {
-            pathMatches = routes.stream().filter(r -> matches(r.segments(), pathSegments)).toList();
-        }
-        if (pathMatches.isEmpty()) {
+        List<Route> allMatches = routeSnapshot.stream()
+                .filter(r -> matches(r.segments(), pathSegments))
+                .toList();
+        if (allMatches.isEmpty()) {
             throw new AuthRejectException(AuthErrorCode.NOT_FOUND, "no route for path");
         }
+        int bestLiteralCount = allMatches.stream().mapToInt(Route::literalCount).max().orElse(0);
+        List<Route> pathMatches = allMatches.stream()
+                .filter(r -> r.literalCount() == bestLiteralCount)
+                .toList();
+
         Route route = pathMatches.stream().filter(r -> r.method().equals(method)).findFirst().orElse(null);
         if (route == null) {
             String allow = pathMatches.stream().map(Route::method).distinct()
@@ -204,15 +239,47 @@ public final class AuthenticatedRouter {
         }
 
         RequestAuthenticator.Authentication auth = authenticator.authenticate(exchange);
-        if (route.policy() != AccessPolicy.PUBLIC && auth.viaSessionCookie() && MUTATING_METHODS.contains(method)) {
+        if (route.policy() != AccessPolicy.PUBLIC && auth.principal() instanceof Principal.AnonymousPrincipal) {
+            throw new AuthRejectException(AuthErrorCode.AUTHENTICATION_REQUIRED);
+        }
+        boolean checkCsrf = route.policy() != AccessPolicy.PUBLIC
+                && auth.viaSessionCookie()
+                && MUTATING_METHODS.contains(method);
+        if (checkCsrf) {
+            csrfGuard.checkHeaders(method, exchange.getRequestHeaders());
+        }
+
+        byte[] requestBody = readBoundedBody(exchange, maxBodyBytes);
+        if (checkCsrf) {
             csrfGuard.check(method, exchange.getRequestHeaders(), requestBody, auth.sessionCsrfToken());
         }
         if (!route.policy().admits(auth.principal())) {
-            throw new AuthRejectException(rejectionCode(route.policy(), auth.principal()));
+            throw new AuthRejectException(rejectionCode(auth.principal()));
         }
 
         Map<String, String> pathParams = extractParams(route.segments(), pathSegments);
         route.handler().handle(new RouteContext(exchange, auth.principal(), pathParams, requestBody));
+    }
+
+    private static byte[] readBoundedBody(HttpExchange exchange, int maxBytes) throws IOException {
+        String contentLengthHeader = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (contentLengthHeader != null && !contentLengthHeader.isBlank()) {
+            try {
+                long declared = Long.parseLong(contentLengthHeader.trim());
+                if (declared > maxBytes) {
+                    throw new AuthRejectException(AuthErrorCode.PAYLOAD_TOO_LARGE,
+                            "Content-Length exceeds " + maxBytes);
+                }
+            } catch (NumberFormatException ignored) {
+                // Fall through to bounded stream read.
+            }
+        }
+        byte[] buf = exchange.getRequestBody().readNBytes(maxBytes + 1);
+        if (buf.length > maxBytes) {
+            throw new AuthRejectException(AuthErrorCode.PAYLOAD_TOO_LARGE,
+                    "request body exceeds " + maxBytes + " bytes");
+        }
+        return buf;
     }
 
     /**
@@ -221,7 +288,7 @@ public final class AuthenticatedRouter {
      * only fail human-restricted policies → 403; authenticated humans can only
      * fail role policies → 403 ROLE_REQUIRED.
      */
-    private static AuthErrorCode rejectionCode(AccessPolicy policy, Principal principal) {
+    private static AuthErrorCode rejectionCode(Principal principal) {
         return switch (principal) {
             case Principal.AnonymousPrincipal _ -> AuthErrorCode.AUTHENTICATION_REQUIRED;
             case Principal.ScopedTokenPrincipal _ -> AuthErrorCode.FORBIDDEN;
@@ -231,15 +298,94 @@ public final class AuthenticatedRouter {
 
     // ------------------------------------------------------------ path matching
 
-    private static List<String> splitSegments(String path) {
-        String[] raw = path.split("/");
+    private static boolean isParamSegment(String segment) {
+        return segment.length() > 2 && segment.startsWith("{") && segment.endsWith("}");
+    }
+
+    private static List<String> parsePatternSegments(String pattern) {
+        if (!pattern.startsWith("/")) {
+            throw new IllegalArgumentException("route pattern must start with '/': " + pattern);
+        }
+        if (pattern.equals("/")) {
+            return List.of();
+        }
+        if (pattern.endsWith("/")) {
+            throw new IllegalArgumentException("route pattern must not end with '/': " + pattern);
+        }
+        String[] raw = pattern.substring(1).split("/", -1);
         List<String> segments = new ArrayList<>(raw.length);
         for (String segment : raw) {
-            if (!segment.isEmpty()) {
-                segments.add(segment);
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
+                throw new IllegalArgumentException("invalid segment in route pattern: " + pattern);
+            }
+            if ((segment.startsWith("{") || segment.endsWith("}")) && !isParamSegment(segment)) {
+                throw new IllegalArgumentException("malformed {param} segment in route pattern: " + pattern);
+            }
+            segments.add(segment);
+        }
+        return List.copyOf(segments);
+    }
+
+    private static Optional<List<String>> parseRequestSegments(String rawPath) {
+        if (rawPath == null || !rawPath.startsWith("/")) {
+            return Optional.empty();
+        }
+        if (rawPath.equals("/")) {
+            return Optional.of(List.of());
+        }
+        if (rawPath.endsWith("/")) {
+            return Optional.empty();
+        }
+        String[] rawSegments = rawPath.substring(1).split("/", -1);
+        List<String> decodedSegments = new ArrayList<>(rawSegments.length);
+        for (String rawSegment : rawSegments) {
+            if (rawSegment.isEmpty()) {
+                return Optional.empty();
+            }
+            String decoded = decodePathSegment(rawSegment);
+            if (decoded == null
+                    || decoded.isEmpty()
+                    || decoded.equals(".")
+                    || decoded.equals("..")
+                    || decoded.indexOf('/') >= 0
+                    || decoded.indexOf('\\') >= 0
+                    || decoded.indexOf('\0') >= 0) {
+                return Optional.empty();
+            }
+            decodedSegments.add(decoded);
+        }
+        return Optional.of(decodedSegments);
+    }
+
+    /**
+     * RFC 3986 percent-decoder for a single path segment: keeps {@code +}
+     * literal (unlike form decoding) and returns {@code null} on malformed
+     * {@code %XX} escapes.
+     */
+    private static String decodePathSegment(String raw) {
+        if (raw.indexOf('%') < 0) {
+            return raw;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '%') {
+                if (i + 2 >= raw.length()) {
+                    return null;
+                }
+                int hi = Character.digit(raw.charAt(i + 1), 16);
+                int lo = Character.digit(raw.charAt(i + 2), 16);
+                if (hi < 0 || lo < 0) {
+                    return null;
+                }
+                out.write((hi << 4) | lo);
+                i += 2;
+            } else {
+                byte[] utf8 = String.valueOf(c).getBytes(StandardCharsets.UTF_8);
+                out.writeBytes(utf8);
             }
         }
-        return segments;
+        return out.toString(StandardCharsets.UTF_8);
     }
 
     private static boolean matches(List<String> patternSegments, List<String> pathSegments) {
@@ -248,7 +394,7 @@ public final class AuthenticatedRouter {
         }
         for (int i = 0; i < patternSegments.size(); i++) {
             String patternSegment = patternSegments.get(i);
-            if (patternSegment.startsWith("{") && patternSegment.endsWith("}")) {
+            if (isParamSegment(patternSegment)) {
                 continue;
             }
             if (!patternSegment.equals(pathSegments.get(i))) {
@@ -262,11 +408,11 @@ public final class AuthenticatedRouter {
         Map<String, String> params = new LinkedHashMap<>();
         for (int i = 0; i < patternSegments.size(); i++) {
             String patternSegment = patternSegments.get(i);
-            if (patternSegment.startsWith("{") && patternSegment.endsWith("}")) {
+            if (isParamSegment(patternSegment)) {
                 params.put(patternSegment.substring(1, patternSegment.length() - 1), pathSegments.get(i));
             }
         }
-        return params;
+        return Map.copyOf(params);
     }
 
     // -------------------------------------------------------------- error body
@@ -274,17 +420,37 @@ public final class AuthenticatedRouter {
     private static void writeError(HttpExchange exchange, AuthErrorCode code) {
         byte[] body = ("{\"error\":\"" + code.name() + "\"}").getBytes(StandardCharsets.UTF_8);
         try {
+            if (code == AuthErrorCode.PAYLOAD_TOO_LARGE) {
+                exchange.getResponseHeaders().set("Connection", "close");
+            }
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(code.httpStatus(), body.length);
             try (var out = exchange.getResponseBody()) {
                 out.write(body);
+            }
+            if (code == AuthErrorCode.PAYLOAD_TOO_LARGE) {
+                drainQuietly(exchange);
             }
         } catch (IOException | RuntimeException ignored) {
             // Response channel already broken; nothing further to do.
         }
     }
 
-    private static void writeInternalServerError(HttpExchange exchange, Exception cause) {
+    private static void drainQuietly(HttpExchange exchange) {
+        // Best-effort small drain so loopback test clients read the 413 status cleanly before socket close.
+        byte[] scratch = new byte[4096];
+        try {
+            for (int i = 0; i < 4; i++) {
+                if (exchange.getRequestBody().read(scratch) < 0) {
+                    break;
+                }
+            }
+        } catch (IOException ignored) {
+            // Ignored.
+        }
+    }
+
+    private static void writeInternalServerError(HttpExchange exchange) {
         byte[] body = "{\"error\":\"INTERNAL_ERROR\"}".getBytes(StandardCharsets.UTF_8);
         try {
             exchange.getResponseHeaders().set("Content-Type", "application/json");

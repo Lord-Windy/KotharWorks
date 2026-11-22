@@ -63,7 +63,11 @@ public final class JwtHumanAuthenticator {
 
     private static String preferredUsername(JWTClaimsSet claims) {
         try {
-            return claims.getStringClaim("preferred_username");
+            String preferred = claims.getStringClaim("preferred_username");
+            if (preferred != null && !preferred.isBlank()) {
+                return preferred;
+            }
+            return claims.getSubject();
         } catch (ParseException e) {
             throw new AuthRejectException(AuthErrorCode.INVALID_TOKEN,
                     "invalid preferred_username claim: " + e.getMessage());

@@ -18,7 +18,6 @@ package com.kotharworks.auth.jwt;
 import java.text.ParseException;
 import java.time.Clock;
 import java.util.Date;
-import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -31,6 +30,7 @@ import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.proc.BadJWTException;
 import com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
 import com.nimbusds.jwt.proc.ExpiredJWTException;
@@ -110,11 +110,23 @@ public final class JwtClaimsVerifier {
             super(expectedAudience,
                     new JWTClaimsSet.Builder()
                             .issuer(expectedIssuer)
-                            .audience(List.of(expectedAudience))
                             .build(),
                     Set.of("iss", "sub", "aud", "exp"));
             this.clock = clock;
             setMaxClockSkew(MAX_CLOCK_SKEW_SECONDS);
+        }
+
+        @Override
+        public void verify(JWTClaimsSet claimsSet, SecurityContext context) throws BadJWTException {
+            super.verify(claimsSet, context);
+            String issuer = claimsSet.getIssuer();
+            if (issuer == null || issuer.isBlank()) {
+                throw new BadJWTException("JWT iss claim is blank");
+            }
+            String subject = claimsSet.getSubject();
+            if (subject == null || subject.isBlank()) {
+                throw new BadJWTException("JWT sub claim is blank");
+            }
         }
 
         @Override
