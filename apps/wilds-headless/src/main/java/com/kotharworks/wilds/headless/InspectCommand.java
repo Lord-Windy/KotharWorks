@@ -41,19 +41,21 @@ final class InspectCommand {
     private InspectCommand() {
     }
 
-    static int execute(String[] args, PrintWriter out, PrintWriter err) {
+    static int execute(String[] rawArgs, PrintWriter out, PrintWriter err) {
         String seedRaw = null;
         try {
-            for (int i = 0; i < args.length; i++) {
-                switch (args[i]) {
-                    case "--seed" -> {
-                        if (i + 1 >= args.length) {
-                            throw new IllegalArgumentException("missing value for --seed");
-                        }
-                        seedRaw = args[++i];
+            List<String> args = HeadlessMain.expandEqualsFlags(rawArgs);
+            for (int i = 0; i < args.size(); i++) {
+                String token = args.get(i);
+                switch (token) {
+                    case "--seed" ->
+                            seedRaw = HeadlessMain.takeFlagValue(args, ++i, "--seed", seedRaw);
+                    case "--help", "-h" -> {
+                        HeadlessMain.printUsage(out);
+                        return HeadlessMain.EXIT_OK;
                     }
                     default -> throw new IllegalArgumentException(
-                            "unknown inspect flag \"" + args[i] + "\"");
+                            "unknown inspect flag \"" + token + "\"");
                 }
             }
             if (seedRaw == null) {
@@ -70,14 +72,14 @@ final class InspectCommand {
     private static int inspect(long seed, PrintWriter out) {
         WildsEngine engine = new WildsEngine(new WorldSeed(seed));
         WorldView view = engine.view();
-        StubDescriptionComposer composer = StubDescriptionComposer.INSTANCE;
+        DescriptionComposer composer = StubDescriptionComposer.INSTANCE;
 
         out.println("inspect: seed=" + HeadlessMain.hex16(view.seed().value())
                 + " rulesVersion=" + view.rulesVersion()
                 + " engineVersion=" + WildsEngine.API_VERSION);
 
         List<PlaceRow> places = new ArrayList<>(view.places());
-        places.sort(Comparator.comparing(place -> place.id().toWire()));
+        places.sort(Comparator.comparing(PlaceRow::id));
         int edgeCount = 0;
         for (PlaceRow place : places) {
             out.println("place [" + place.id().toWire() + "] " + place.label()

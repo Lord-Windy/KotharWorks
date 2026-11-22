@@ -162,4 +162,23 @@ class CommandCodecTest {
         assertThrows(IllegalArgumentException.class, () -> CommandCodec.decodeWal(
                 "{\"kind\":\"clockAdvance\",\"walSeq\":1,\"admittedMs\":1e3,\"worldHash\":null}"));
     }
+
+    @Test
+    void walHeaderRoundTripsAndValidatesShape() {
+        WalHeader header = new WalHeader(Long.MIN_VALUE, 1, 1);
+        String encoded = header.encode();
+        assertEquals("{\"type\":\"WAL_HEADER\",\"worldSeed\":-9223372036854775808,"
+                + "\"rulesVersion\":1,\"engineVersion\":1}", encoded);
+        assertEquals(header, WalHeader.decode(encoded));
+        JsonCodec.JsonObj parsedObj = (JsonCodec.JsonObj) JsonCodec.parse(encoded);
+        assertTrue(WalHeader.isHeader(parsedObj));
+        assertEquals(header, WalHeader.decode(parsedObj));
+
+        assertThrows(IllegalArgumentException.class, () -> WalHeader.decode("[]"));
+        assertThrows(IllegalArgumentException.class, () -> WalHeader.decode("{}"));
+        assertThrows(IllegalArgumentException.class, () -> WalHeader.decode(
+                "{\"type\":\"WAL_HEADER\",\"worldSeed\":\"bad\",\"rulesVersion\":1,\"engineVersion\":1}"));
+        assertThrows(IllegalArgumentException.class, () -> WalHeader.decode(
+                "{\"type\":\"WAL_HEADER\",\"worldSeed\":1,\"rulesVersion\":2147483648,\"engineVersion\":1}"));
+    }
 }

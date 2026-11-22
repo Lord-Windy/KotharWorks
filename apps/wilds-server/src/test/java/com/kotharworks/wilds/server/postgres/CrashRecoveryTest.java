@@ -70,7 +70,7 @@ import com.kotharworks.wilds.server.ports.StoredWorldEvent;
 import com.kotharworks.wilds.server.ports.UserRecord;
 import com.kotharworks.wilds.server.ports.WorldRecord;
 import com.kotharworks.wilds.server.ports.WorldStorePort;
-import com.kotharworks.wilds.headless.WalHeader;
+import com.kotharworks.wilds.replay.WalHeader;
 import com.zaxxer.hikari.HikariDataSource;
 
 /**

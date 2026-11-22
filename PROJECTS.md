@@ -41,7 +41,7 @@ the two-phase task mechanics and queue runner with O(1) heap-ticket cancellation
 `com.kotharworks.wilds.task`), the outward-only `WorldEvent` outbox with monotonic
 cursors (`com.kotharworks.wilds.event`), the deeply immutable `WorldView` and
 fog-of-war `ObservationProjector` (`com.kotharworks.wilds.observe`), the
-`CommandCodec`/`WalRecord` replay codecs, and the golden replay + 5,000-step seeded
+`CommandCodec`/`WalHeader`/`WalRecord` replay codecs, and the golden replay + 5,000-step seeded
 fuzz harnesses. See
 [`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
@@ -183,7 +183,7 @@ mid-flight crash with `PAUSE_WHILE_DOWN` recovery and bit-for-bit
 | error_prone_annotations | provided | `wilds-server` (resolves @GuardedBy inside JDBI3/HikariCP class files under `-Werror`) |
 | slf4j-simple | runtime | `wilds-server` (clean provider for HikariCP/Testcontainers logs) |
 | Testcontainers junit-jupiter + postgresql | test | `wilds-server` (singleton `postgres:17-alpine`) |
-| wilds-headless | test | `wilds-server` (WAL export byte-parity) |
+| wilds-headless | test | `wilds-server` (cold `HeadlessMain` WAL replay parity) |
 
 ## Dependency graph
 

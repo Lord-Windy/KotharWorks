@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import com.kotharworks.auth.principal.UserId;
 import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.replay.CommandCodec;
-import com.kotharworks.wilds.server.ports.WalJsonlCodec;
+import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.ports.SeatRecord;
@@ -256,8 +256,8 @@ public final class InMemoryWorldStore implements WorldStorePort {
     public void exportWalJsonl(int worldId, Writer out) throws IOException {
         synchronized (lock) {
             requireWorld(worldId);
-            out.write(WalJsonlCodec.headerLine(world.worldSeed(), world.rulesVersion(),
-                    world.engineVersion()));
+            out.write(new WalHeader(world.worldSeed(), world.rulesVersion(),
+                    world.engineVersion()).encode());
             out.write('\n');
             for (WalRecord record : walByWorld.get(worldId)) {
                 out.write(CommandCodec.encodeWal(record));

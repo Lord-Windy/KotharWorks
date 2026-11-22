@@ -13,17 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.kotharworks.wilds.headless;
-
-import com.kotharworks.wilds.replay.JsonCodec;
+package com.kotharworks.wilds.replay;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Optional first line of a {@code .jsonl} write-ahead log:
  * {@code {"type":"WAL_HEADER","worldSeed":4805198,"rulesVersion":1,"engineVersion":1}}.
- * A replay rig uses it to fail fast (exit code 2) when the stream was exported by an
- * incompatible engine/rules pair. Absent headers mean "no compatibility claim".
+ * Shared by {@code wilds-headless} and {@code wilds-server} so exported WAL streams
+ * carry a canonical seed + version-triple compatibility header with zero codec drift.
  */
 public record WalHeader(long worldSeed, int rulesVersion, int engineVersion) {
 
@@ -32,7 +31,20 @@ public record WalHeader(long worldSeed, int rulesVersion, int engineVersion) {
 
     /** True when {@code obj} carries the {@code "type":"WAL_HEADER"} marker. */
     public static boolean isHeader(JsonCodec.JsonObj obj) {
+        Objects.requireNonNull(obj, "obj");
         return obj.getOrNull("type") instanceof JsonCodec.JsonStr type && TYPE.equals(type.value());
+    }
+
+    /**
+     * Decodes a header JSON line; non-object JSON or missing/wrong-typed/out-of-range
+     * fields are rejected with {@link IllegalArgumentException}.
+     */
+    public static WalHeader decode(String json) {
+        JsonCodec.JsonValue parsed = JsonCodec.parse(json);
+        if (!(parsed instanceof JsonCodec.JsonObj obj)) {
+            throw new IllegalArgumentException("WAL header must be a JSON object");
+        }
+        return decode(obj);
     }
 
     /**

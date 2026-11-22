@@ -202,7 +202,12 @@ public final class CommandCodec {
 
     /** Decodes a WAL record produced by {@link #encodeWal}; shape errors are rejected. */
     public static WalRecord decodeWal(String json) {
-        JsonCodec.JsonObj root = expectObj(JsonCodec.parse(json), "WAL", "walRecord");
+        return decodeWal(expectObj(JsonCodec.parse(json), "WAL", "walRecord"));
+    }
+
+    /** Decodes a pre-parsed WAL record JSON object; shape errors are rejected. */
+    public static WalRecord decodeWal(JsonCodec.JsonObj root) {
+        Objects.requireNonNull(root, "root");
         String kind = expectStr(field(root, "WAL", "kind"), "WAL", "walRecord kind");
         return switch (kind) {
             case "clockAdvance" -> new WalRecord.ClockAdvance(

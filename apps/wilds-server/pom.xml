@@ -79,7 +79,7 @@
             <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- Test-only: asserts exportWalJsonl byte-parity against WalHeader.encode(). -->
+        <!-- Test-only: cold HeadlessMain WAL replay parity in FullSpineIntegrationTest. -->
         <dependency>
             <groupId>com.kotharworks</groupId>
             <artifactId>wilds-headless</artifactId>

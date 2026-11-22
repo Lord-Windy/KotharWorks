@@ -58,7 +58,7 @@ import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
 import com.kotharworks.wilds.server.ports.UserRecord;
 import com.kotharworks.wilds.server.ports.WorldRecord;
-import com.kotharworks.wilds.headless.WalHeader;
+import com.kotharworks.wilds.replay.WalHeader;
 
 /**
  * Ticket 08 acceptance (2) plus the durable store contracts: concurrent JIT

@@ -27,12 +27,12 @@ import java.util.UUID;
 import com.kotharworks.auth.principal.UserId;
 import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.replay.CommandCodec;
+import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
-import com.kotharworks.wilds.server.ports.WalJsonlCodec;
 import com.kotharworks.wilds.server.ports.WorldRecord;
 import com.kotharworks.wilds.server.ports.WorldStorePort;
 import org.jdbi.v3.core.Jdbi;
@@ -336,8 +336,8 @@ public final class PostgresWorldStore implements WorldStorePort {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
                         "no world row to export: " + worldId)));
-        out.write(WalJsonlCodec.headerLine(world.worldSeed(), world.rulesVersion(),
-                world.engineVersion()));
+        out.write(new WalHeader(world.worldSeed(), world.rulesVersion(),
+                world.engineVersion()).encode());
         out.write('\n');
         for (WalRecord record : loadWalAfter(worldId, 0L)) {
             out.write(CommandCodec.encodeWal(record));
