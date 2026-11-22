@@ -90,6 +90,10 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         if (rateBurst < 1) {
             throw new IllegalArgumentException("rateBurst must be >= 1: " + rateBurst);
         }
+        if (checkpointIntervalMs < 1) {
+            throw new IllegalArgumentException(
+                    "checkpointIntervalMs must be >= 1: " + checkpointIntervalMs);
+        }
     }
 
     /**
@@ -137,7 +141,7 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
             String flag = args[i];
             switch (flag) {
                 case "--port" -> port = parseInt(next(args, ++i, flag), flag);
-                case "--seed" -> worldSeed = parseLong(next(args, ++i, flag), flag);
+                case "--seed" -> worldSeed = parseSeed(next(args, ++i, flag), flag);
                 case "--time-scale" -> timeScale = parseLong(next(args, ++i, flag), flag);
                 case "--pump-interval-ms" -> pumpIntervalMs = parseLong(next(args, ++i, flag), flag);
                 case "--auth-mode" -> authMode = parseAuthMode(next(args, ++i, flag));
@@ -176,25 +180,20 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
             }
         }
         if (authMode == AuthMode.OIDC) {
-            requireOidc("oidcIssuerUrl", oidcIssuerUrl);
-            requireOidc("oidcClientId", oidcClientId);
-            requireOidc("oidcClientSecret", oidcClientSecret);
-            requireOidc("oidcAuthorizationEndpoint", oidcAuthorizationEndpoint);
-            requireOidc("oidcTokenEndpoint", oidcTokenEndpoint);
-            requireOidc("oidcJwksUri", oidcJwksUri);
+            requireOidc("--oidc-issuer", oidcIssuerUrl);
+            requireOidc("--oidc-client-id", oidcClientId);
+            requireOidc("--oidc-client-secret", oidcClientSecret);
+            requireOidc("--oidc-authorization-endpoint", oidcAuthorizationEndpoint);
+            requireOidc("--oidc-token-endpoint", oidcTokenEndpoint);
+            requireOidc("--oidc-jwks-uri", oidcJwksUri);
         }
         return this;
     }
 
-    private static void requireOidc(String name, String value) {
+    private static void requireOidc(String flag, String value) {
         if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException(
-                    "--auth-mode=oidc requires --" + toFlag(name));
+            throw new IllegalArgumentException("--auth-mode=oidc requires " + flag);
         }
-    }
-
-    private static String toFlag(String camel) {
-        return "--" + camel.replaceAll("([A-Z])", "-$1").toLowerCase(java.util.Locale.ROOT);
     }
 
     private static String next(String[] args, int index, String flag) {
@@ -218,6 +217,21 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(flag + " expects an integer, got: " + value);
         }
+    }
+
+    private static long parseSeed(String value, String flag) {
+        if (value.startsWith("0x") || value.startsWith("0X")) {
+            String hex = value.substring(2);
+            if (hex.isEmpty() || hex.startsWith("+") || hex.startsWith("-")) {
+                throw new IllegalArgumentException(flag + " expects a valid hex seed, got: " + value);
+            }
+            try {
+                return Long.parseUnsignedLong(hex, 16);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(flag + " expects a 64-bit hex seed, got: " + value);
+            }
+        }
+        return parseLong(value, flag);
     }
 
     private static StorageMode parseStorage(String value) {

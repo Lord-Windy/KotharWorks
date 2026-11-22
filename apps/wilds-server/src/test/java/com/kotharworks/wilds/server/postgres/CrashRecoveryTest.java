@@ -594,6 +594,16 @@ class CrashRecoveryTest {
         }
 
         @Override
+        public java.util.Optional<WalRecord.CommandEntry> findCommandByCmdId(int worldId,
+                UUID cmdId) {
+            RuntimeException fault = existsByCmdIdFault;
+            if (fault != null) {
+                throw fault;
+            }
+            return delegate.findCommandByCmdId(worldId, cmdId);
+        }
+
+        @Override
         public boolean existsByCmdId(int worldId, UUID cmdId) {
             RuntimeException fault = existsByCmdIdFault;
             if (fault != null) {

@@ -30,6 +30,7 @@ import com.kotharworks.auth.http.AuthenticatedRouter.RouteContext;
 import com.kotharworks.wilds.server.adapters.http.ApiJson;
 import com.kotharworks.wilds.server.adapters.http.EventCodec;
 import com.kotharworks.wilds.server.adapters.http.RouteGuard;
+import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer.AuthorizedSeat;
 import com.kotharworks.wilds.server.domain.WorldHost;
@@ -40,14 +41,13 @@ import com.sun.net.httpserver.HttpExchange;
 
 /**
  * Live Server-Sent Events: {@code GET /api/v1/stream?since={cursor}}. The
- * handler runs on the caller's virtual thread with a chunked response
- * ({@code sendResponseHeaders(200, 0L)} — {@code 0L} enables chunked transfer,
- * {@code -1L} would send no body): missed events replay from the store first,
- * then live events stream from the per-seat bus queue as
- * {@code id:\nevent:\ndata:\n\n} frames, flushing after each. {@code : keepalive}
- * fires on every 25 s poll timeout, and the poison marker (cursor {@code < 1})
- * pushes by {@code EventBusPort.close()} wakes the reader so server shutdown
- * never hangs a client.
+ * handler subscribes to {@link EventBusPort} before sending {@code 200}
+ * chunked headers ({@code sendResponseHeaders(200, 0L)}), replays missed
+ * events (persisted + any WAL-committed deferred batch on {@link WorldHost}),
+ * then streams live events as {@code id:\nevent:\ndata:\n\n} frames, flushing
+ * after each. Overflow markers re-replay from {@link WorldHost}; {@code : keepalive}
+ * fires on every 25 s poll timeout; and the poison marker wakes the reader so
+ * server shutdown never hangs a client.
  */
 public final class SseRoutes {
 
@@ -55,14 +55,13 @@ public final class SseRoutes {
     private static final int REPLAY_BATCH = 500;
 
     private final WorldHost worldHost;
-    private final WorldStorePort worldStore;
     private final EventBusPort eventBus;
     private final SeatAuthorizer seatAuthorizer;
 
     public SseRoutes(WorldHost worldHost, WorldStorePort worldStore, EventBusPort eventBus,
             SeatAuthorizer seatAuthorizer) {
         this.worldHost = Objects.requireNonNull(worldHost, "worldHost");
-        this.worldStore = Objects.requireNonNull(worldStore, "worldStore");
+        Objects.requireNonNull(worldStore, "worldStore");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         this.seatAuthorizer = Objects.requireNonNull(seatAuthorizer, "seatAuthorizer");
     }
@@ -79,49 +78,51 @@ public final class SseRoutes {
                 ? ApiJson.queryLong(query, "seatId", -1)
                 : null;
         long since = ApiJson.queryLong(query, "since", 0);
+        if (since < 0) {
+            throw new IllegalArgumentException(
+                    "query parameter \"since\" must be >= 0, got: " + since);
+        }
         AuthorizedSeat authorized = seatAuthorizer.authorize(ctx.principal(), seatIdParam,
                 worldHost.view());
         long seatId = authorized.seat().seatId();
         int worldId = worldHost.worldId();
 
+        BlockingQueue<StoredWorldEvent> queue;
+        try {
+            queue = eventBus.subscribe(worldId, seatId);
+        } catch (IllegalStateException busClosed) {
+            ApiJson.error(ctx, 503, "STORAGE_UNAVAILABLE", "server is shutting down");
+            return;
+        }
         HttpExchange exchange = ctx.exchange();
-        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
-        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
-        // 0L (not -1L): chunked streaming mode on the JDK HttpServer.
-        exchange.sendResponseHeaders(200, 0L);
-        BlockingQueue<StoredWorldEvent> queue = eventBus.subscribe(worldId, seatId);
-        long lastSent = since;
-        try (OutputStream out = exchange.getResponseBody()) {
-            // Replay everything the client missed, straight from the store.
-            while (true) {
-                List<StoredWorldEvent> batch = worldStore.readEventsSince(worldId, seatId,
-                        lastSent, REPLAY_BATCH);
-                if (batch.isEmpty()) {
-                    break;
-                }
-                for (StoredWorldEvent event : batch) {
-                    if (event.cursor() > lastSent) {
-                        writeFrame(out, event);
-                        lastSent = event.cursor();
+        try {
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+            exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+            // 0L (not -1L): chunked streaming mode on the JDK HttpServer.
+            exchange.sendResponseHeaders(200, 0L);
+            long lastSent = since;
+            try (OutputStream out = exchange.getResponseBody()) {
+                lastSent = catchUp(out, seatId, lastSent);
+                while (true) {
+                    StoredWorldEvent event = queue.poll(KEEPALIVE_SECONDS, TimeUnit.SECONDS);
+                    if (event == null) {
+                        out.write((": keepalive\n\n").getBytes(StandardCharsets.UTF_8));
+                        out.flush();
+                        continue;
                     }
+                    if (InMemoryEventBus.OVERFLOW.kind().equals(event.kind())) {
+                        lastSent = catchUp(out, seatId, lastSent);
+                        continue;
+                    }
+                    if (event.cursor() < 1) {
+                        return; // poison marker: the event bus closed (server shutdown)
+                    }
+                    if (event.cursor() <= lastSent) {
+                        continue; // already replayed
+                    }
+                    writeFrame(out, event);
+                    lastSent = event.cursor();
                 }
-            }
-            // Live tail: wake on event, keepalive on poll timeout, poison on close.
-            while (true) {
-                StoredWorldEvent event = queue.poll(KEEPALIVE_SECONDS, TimeUnit.SECONDS);
-                if (event == null) {
-                    out.write((": keepalive\n\n").getBytes(StandardCharsets.UTF_8));
-                    out.flush();
-                    continue;
-                }
-                if (event.cursor() < 1) {
-                    return; // poison marker: the event bus closed (server shutdown)
-                }
-                if (event.cursor() <= lastSent) {
-                    continue; // already replayed
-                }
-                writeFrame(out, event);
-                lastSent = event.cursor();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -129,6 +130,23 @@ public final class SseRoutes {
             // Client disconnect: the normal way a stream ends.
         } finally {
             eventBus.unsubscribe(queue);
+        }
+    }
+
+    private long catchUp(OutputStream out, long seatId, long lastSent) throws IOException {
+        long cursor = lastSent;
+        while (true) {
+            List<StoredWorldEvent> batch = worldHost.readSeatEventsSince(
+                    seatId, cursor, REPLAY_BATCH);
+            if (batch.isEmpty()) {
+                return cursor;
+            }
+            for (StoredWorldEvent event : batch) {
+                if (event.cursor() > cursor) {
+                    writeFrame(out, event);
+                    cursor = event.cursor();
+                }
+            }
         }
     }
 

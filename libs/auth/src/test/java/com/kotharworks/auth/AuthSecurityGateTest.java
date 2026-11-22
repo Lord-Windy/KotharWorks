@@ -251,6 +251,7 @@ class AuthSecurityGateTest {
                 Map.of("Content-Type", "application/x-www-form-urlencoded"),
                 "persona=%3Cscript%3Eevil%3C/script%3E");
         assertEquals(400, unknown.status());
+        assertTrue(unknown.bodyContains("\"errorCode\":\"UNKNOWN_PERSONA\""), unknown.body());
         assertFalse(unknown.bodyContains("<script>"), unknown.body());
 
         Reply badUrlEncoding = request(rig.port(), "POST", "/dev/login",
@@ -331,7 +332,7 @@ class AuthSecurityGateTest {
         Reply pause = request(rig.port(), "POST", "/api/v1/admin/pause",
                 Map.of("Content-Type", "application/json"), "{}");
         assertEquals(401, pause.status());
-        assertTrue(pause.bodyContains("AUTHENTICATION_REQUIRED"), pause.body());
+        assertTrue(pause.bodyContains("\"errorCode\":\"AUTHENTICATION_REQUIRED\""), pause.body());
         assertFalse(rig.adminInvoked().get());
 
         // Unknown path → 404; known path, wrong method → 405 with Allow header.

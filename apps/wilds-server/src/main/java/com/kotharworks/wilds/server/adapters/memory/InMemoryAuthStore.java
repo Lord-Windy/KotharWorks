@@ -30,6 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.kotharworks.auth.AuthErrorCode;
+import com.kotharworks.auth.AuthRejectException;
 import com.kotharworks.auth.http.CookieCodec;
 import com.kotharworks.auth.principal.ExternalIdentity;
 import com.kotharworks.auth.principal.GlobalRole;
@@ -86,26 +88,20 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     public UserRecord upsertUser(ExternalIdentity identity, String displayName) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(displayName, "displayName");
-        UUID existing = userIdsByIdentity.get(identity);
-        if (existing != null) {
-            UserRecord user = usersById.get(existing);
-            if (user != null) {
-                return user;
-            }
-        }
-        UUID uuid = UUID.nameUUIDFromBytes(
-                (identity.issuer() + "\n" + identity.subject()).getBytes(StandardCharsets.UTF_8));
+        UUID uuid = userIdsByIdentity.computeIfAbsent(identity, id -> UUID.nameUUIDFromBytes(
+                (id.issuer() + "\n" + id.subject()).getBytes(StandardCharsets.UTF_8)));
         UserRecord fresh = UserRecord.active(new UserId(uuid), displayName, null);
-        userIdsByIdentity.putIfAbsent(identity, uuid);
-        UserRecord settled = usersById.computeIfAbsent(uuid, _ -> fresh);
-        if (!settled.displayName().equals(displayName) && settled.suspendedAt() == null) {
-            // Display names may be refreshed by a re-verified identity.
-            UserRecord renamed = new UserRecord(settled.userId(), displayName,
-                    settled.maxSeatsOverride(), settled.suspendedAt(), settled.suspendedReason());
-            usersById.replace(uuid, renamed);
-            return renamed;
-        }
-        return settled;
+        return usersById.compute(uuid, (_, existing) -> {
+            if (existing == null) {
+                return fresh;
+            }
+            if (!existing.displayName().equals(displayName) && existing.suspendedAt() == null) {
+                return new UserRecord(existing.userId(), displayName,
+                        existing.maxSeatsOverride(), existing.suspendedAt(),
+                        existing.suspendedReason());
+            }
+            return existing;
+        });
     }
 
     @Override
@@ -140,6 +136,12 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     @Override
     public CreatedSession createSession(UserId userId, ExternalIdentity externalId,
             String displayName, Set<GlobalRole> grantedRoles, Instant expiresAt) {
+        Objects.requireNonNull(userId, "userId");
+        UserRecord user = usersById.get(userId.value());
+        if (user != null && user.suspendedAt() != null) {
+            throw new AuthRejectException(AuthErrorCode.ACCOUNT_SUSPENDED,
+                    "account suspended: " + user.suspendedReason());
+        }
         String rawToken = CookieCodec.newRandomToken();
         byte[] digest = CookieCodec.sha256Digest(rawToken);
         String csrfToken = newToken();
@@ -152,15 +154,10 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     @Override
     public Optional<SessionRecord> findActiveSessionBySha256(byte[] sha256) {
         SessionRecord record = sessionsByDigest.get(B64.encodeToString(sha256));
-        if (record == null || record.expiresAt().isBefore(clock.instant())) {
+        if (record == null || !record.expiresAt().isAfter(clock.instant())) {
             return Optional.empty();
         }
         return Optional.of(record);
-    }
-
-    @Override
-    public Optional<SessionRecord> findByDigest(byte[] sha256Digest) {
-        return Optional.ofNullable(sessionsByDigest.get(B64.encodeToString(sha256Digest)));
     }
 
     @Override
@@ -203,12 +200,21 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     }
 
     @Override
-    public void revokeToken(long tokenId) {
+    public boolean revokeToken(UserId owner, String resourceNamespace, long scopedResourceId,
+            long tokenId) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(resourceNamespace, "resourceNamespace");
+        boolean matched = false;
         for (TokenRow row : tokensByDigest.values()) {
-            if (row.tokenId() == tokenId) {
+            if (row.tokenId() == tokenId
+                    && row.ownerUserId().equals(owner)
+                    && row.resourceNamespace().equals(resourceNamespace)
+                    && row.scopedResourceId() == scopedResourceId) {
                 row.revoked().set(true);
+                matched = true;
             }
         }
+        return matched;
     }
 
     // ------------------------------------------------------------------ helpers

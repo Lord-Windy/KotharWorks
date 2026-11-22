@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.kotharworks.auth.AuthRejectException;
 import com.kotharworks.auth.principal.ExternalIdentity;
 import com.kotharworks.auth.principal.UserId;
 import com.kotharworks.auth.spi.ScopedTokenRecord;
@@ -39,6 +40,7 @@ import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryAuthStore;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryWorldStore;
 import com.kotharworks.wilds.server.domain.ControllerKind;
+import com.kotharworks.wilds.server.domain.SeatRateLimiter;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
@@ -207,13 +209,17 @@ class InMemoryStoresTest {
     }
 
     @Test
-    void readEventsSinceHonorsLimit() {
+    void readEventsSinceHonorsLimitAndMaxCursorAndEventKindSanitization() {
         InMemoryWorldStore store = new InMemoryWorldStore();
         int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
         store.appendEvents(worldId, List.of(
                 StoredWorldEvent.full(1L, 1L, "task_started", 1L, null, "p", sampleEvent()),
                 StoredWorldEvent.full(2L, 2L, "task_started", 1L, null, "p", sampleEvent())));
         assertEquals(1, store.readEventsSince(worldId, 1L, 0, 1).size());
+        assertTrue(store.readEventsSince(worldId, 1L, Long.MAX_VALUE, 10).isEmpty(),
+                "sinceCursor == Long.MAX_VALUE must not overflow into Long.MIN_VALUE");
+        assertThrows(IllegalArgumentException.class,
+                () -> StoredWorldEvent.full(1L, 1L, "bad\nkind", 1L, null, "p", sampleEvent()));
     }
 
     // ------------------------------------------------------------------ checkpoints
@@ -235,27 +241,34 @@ class InMemoryStoresTest {
     // ------------------------------------------------------------------ auth store
 
     @Test
-    void authStoreUpsertIsIdempotentAndSuspensionIsLive() {
+    void authStoreUpsertRefreshesDisplayNameAndSuspensionIsLive() {
         InMemoryAuthStore store = new InMemoryAuthStore(CLOCK);
         ExternalIdentity identity = new ExternalIdentity("https://dev.local", "dev-sam");
         UserId first = store.upsertUser(identity, "Sam").userId();
-        UserId second = store.upsertUser(identity, "Sam").userId();
-        assertEquals(first, second);
+        var renamed = store.upsertUser(identity, "Samwise");
+        assertEquals(first, renamed.userId());
+        assertEquals("Samwise", renamed.displayName());
         assertTrue(store.findUser(first).orElseThrow().suspendedAt() == null);
 
         store.suspendUser(first, "gate test");
         var suspended = store.findUser(first).orElseThrow();
         assertEquals(CLOCK.instant(), suspended.suspendedAt());
         assertEquals("gate test", suspended.suspendedReason());
+        assertEquals("Samwise", store.upsertUser(identity, "IgnoredWhileSuspended").displayName());
+        assertThrows(AuthRejectException.class, () -> store.createSession(first, identity,
+                "Samwise", java.util.Set.of(com.kotharworks.auth.principal.GlobalRole.PLAYER),
+                CLOCK.instant().plusSeconds(60)));
         assertThrows(IllegalArgumentException.class,
                 () -> store.suspendUser(new UserId(UUID.randomUUID()), "nobody"));
     }
 
     @Test
-    void tokenDigestLookupFailsClosedOnSuspension() {
+    void tokenDigestLookupFailsClosedOnSuspensionAndRevocationIsOwnerAndSeatScoped() {
         InMemoryAuthStore store = new InMemoryAuthStore(CLOCK);
         ExternalIdentity identity = new ExternalIdentity("https://dev.local", "dev-sam");
         UserId owner = store.upsertUser(identity, "Sam").userId();
+        UserId otherOwner = store.upsertUser(
+                new ExternalIdentity("https://dev.local", "dev-alice"), "Alice").userId();
         var created = store.createToken(owner, "wilds:seat", 3L, "label", "iw_bot_pref_s3cret",
                 "pref", "digest".getBytes());
         assertEquals(1L, created.tokenId());
@@ -265,17 +278,22 @@ class InMemoryStoresTest {
         assertFalse(active.ownerSuspended());
         assertEquals(3L, active.scopedResourceId());
 
+        // Foreign owner or wrong seatId cannot revoke tokenId=1.
+        assertFalse(store.revokeToken(otherOwner, "wilds:seat", 3L, created.tokenId()));
+        assertFalse(store.revokeToken(owner, "wilds:seat", 99L, created.tokenId()));
+        assertFalse(store.findActiveTokenBySha256("digest".getBytes()).orElseThrow().revoked());
+
         store.suspendUser(owner, "suspended");
         assertTrue(store.findActiveTokenBySha256("digest".getBytes()).orElseThrow()
                 .ownerSuspended());
 
-        store.revokeToken(created.tokenId());
+        assertTrue(store.revokeToken(owner, "wilds:seat", 3L, created.tokenId()));
         assertTrue(store.findActiveTokenBySha256("digest".getBytes()).orElseThrow().revoked());
         assertTrue(store.findActiveTokenBySha256("other".getBytes()).isEmpty());
     }
 
     @Test
-    void sessionCreateFindRevokeRoundTrip() {
+    void sessionCreateFindRevokeAndExpiryRoundTrip() {
         InMemoryAuthStore store = new InMemoryAuthStore(CLOCK);
         ExternalIdentity identity = new ExternalIdentity("https://dev.local", "dev-alice");
         UserId userId = store.upsertUser(identity, "Alice").userId();
@@ -286,6 +304,40 @@ class InMemoryStoresTest {
         assertTrue(store.findByDigest(created.record().sessionSha256()).isPresent());
         store.revokeSession(created.record().sessionSha256());
         assertTrue(store.findActiveSessionBySha256(created.record().sessionSha256()).isEmpty());
+
+        var alreadyExpired = store.createSession(userId, identity, "Alice",
+                java.util.Set.of(com.kotharworks.auth.principal.GlobalRole.PLAYER),
+                CLOCK.instant());
+        assertTrue(store.findByDigest(alreadyExpired.record().sessionSha256()).isEmpty());
+    }
+
+    @Test
+    void seatRateLimiterHandlesNegativeNanoTimeSubMillisecondPollingAndExtremeCaps() {
+        long[] nanos = new long[] {-10_000_000_000L}; // negative System.nanoTime() origin
+        SeatRateLimiter limiter = new SeatRateLimiter(10L, 3L, () -> nanos[0]);
+
+        // Initial burst of 3 succeeds even when nanoTime() < 0, 4th rejects.
+        assertTrue(limiter.tryAcquire(1L));
+        assertTrue(limiter.tryAcquire(1L));
+        assertTrue(limiter.tryAcquire(1L));
+        assertFalse(limiter.tryAcquire(1L));
+
+        // 1,000 rapid polls spaced by 100 microseconds (= 100 ms total = 1 token at 10/s)
+        // must accumulate exact nanotokens without truncation starvation.
+        int admitted = 0;
+        for (int i = 0; i < 1_000; i++) {
+            nanos[0] += 100_000L; // +0.1 ms
+            if (limiter.tryAcquire(1L)) {
+                admitted++;
+            }
+        }
+        assertEquals(1, admitted, "sub-millisecond polling must earn exact tokens over 100ms");
+
+        // Extreme Long.MAX_VALUE rate/burst never overflows.
+        SeatRateLimiter extreme = new SeatRateLimiter(Long.MAX_VALUE, Long.MAX_VALUE, () -> nanos[0]);
+        assertTrue(extreme.tryAcquire(7L));
+        nanos[0] += 5_000_000_000L;
+        assertTrue(extreme.tryAcquire(7L));
     }
 
     private static WorldEvent sampleEvent() {

@@ -160,8 +160,16 @@ public final class EventCodec {
             }
             String type = ApiJson.requireString(obj, "type");
             tasks.add(switch (type) {
-                case "wait" -> new TaskSpec.Wait(ApiJson.requireLong(obj, "durationMs"),
-                        Math.toIntExact(ApiJson.requireLong(obj, "batches")));
+                case "wait" -> {
+                    long durationMs = ApiJson.requireLong(obj, "durationMs");
+                    long batchesLong = ApiJson.requireLong(obj, "batches");
+                    if (batchesLong < 1 || batchesLong > Integer.MAX_VALUE) {
+                        throw new IllegalArgumentException(
+                                "field \"batches\" must be 1.." + Integer.MAX_VALUE
+                                        + ", got: " + batchesLong);
+                    }
+                    yield new TaskSpec.Wait(durationMs, (int) batchesLong);
+                }
                 case "travel" -> new TaskSpec.Travel(
                         com.kotharworks.wilds.id.PlaceId.parse(
                                 ApiJson.requireString(obj, "destination")));

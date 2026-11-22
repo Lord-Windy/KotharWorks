@@ -75,8 +75,16 @@ public interface WorldStorePort {
 
     // ------------------------------------------------------------- command WAL
 
+    /**
+     * Looks up a previously committed command by {@code (worldId, cmdId)} for
+     * pre-checkpoint / post-eviction idempotency and seat-ownership checks.
+     */
+    Optional<WalRecord.CommandEntry> findCommandByCmdId(int worldId, UUID cmdId);
+
     /** Whether a command with this {@code cmdId} is already committed (pre-restart idempotency). */
-    boolean existsByCmdId(int worldId, UUID cmdId);
+    default boolean existsByCmdId(int worldId, UUID cmdId) {
+        return findCommandByCmdId(worldId, cmdId).isPresent();
+    }
 
     /**
      * Appends a {@code CLOCK_ADVANCE} anchor; Commit-Before-Mutate requires

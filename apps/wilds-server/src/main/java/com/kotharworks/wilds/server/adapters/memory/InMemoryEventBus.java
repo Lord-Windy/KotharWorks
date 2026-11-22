@@ -26,18 +26,25 @@ import com.kotharworks.wilds.server.ports.StoredWorldEvent;
 
 /**
  * In-memory {@link EventBusPort}: copy-on-write subscriber list, one bounded
- * queue per subscriber, seat-scoped delivery. {@link #close} pushes a poison
- * marker into every queue so blocking SSE pollers wake immediately and exit —
- * server shutdown never hangs a reader.
+ * queue per subscriber, seat-scoped delivery. On queue saturation an
+ * {@link #OVERFLOW} marker replaces buffered items so the SSE reader re-replays
+ * from the durable/host event log without dropping cursors. {@link #close}
+ * clears each queue and pushes {@link #CLOSED} so blocking SSE pollers wake
+ * immediately and exit — server shutdown never hangs a reader even if its
+ * queue was full.
  */
 public final class InMemoryEventBus implements EventBusPort {
 
-    /** Capacity of each subscriber queue; overflow drops (clients replay from the store). */
+    /** Capacity of each subscriber queue. */
     public static final int QUEUE_CAPACITY = 1024;
 
     /** Poison marker enqueued on {@link #close}; cursor {@code 0} is never a real event. */
     public static final StoredWorldEvent CLOSED = new StoredWorldEvent(0, 0, "__closed__", null,
             null, null, null);
+
+    /** Overflow marker prompting SSE readers to catch up from the event store. */
+    public static final StoredWorldEvent OVERFLOW = new StoredWorldEvent(0, 0, "__overflow__",
+            null, null, null, null);
 
     private record Subscriber(int worldId, long seatId, BlockingQueue<StoredWorldEvent> queue) {
     }
@@ -51,7 +58,12 @@ public final class InMemoryEventBus implements EventBusPort {
             throw new IllegalStateException("event bus is closed");
         }
         BlockingQueue<StoredWorldEvent> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
-        subscribers.add(new Subscriber(worldId, seatId, queue));
+        Subscriber sub = new Subscriber(worldId, seatId, queue);
+        subscribers.add(sub);
+        if (closed) {
+            subscribers.remove(sub);
+            throw new IllegalStateException("event bus is closed");
+        }
         return queue;
     }
 
@@ -74,7 +86,11 @@ public final class InMemoryEventBus implements EventBusPort {
                 if (event.seatId() == null || !event.seatId().equals(subscriber.seatId())) {
                     continue;
                 }
-                subscriber.queue().offer(event);
+                if (!subscriber.queue().offer(event)) {
+                    subscriber.queue().clear();
+                    subscriber.queue().offer(OVERFLOW);
+                    break;
+                }
             }
         }
     }
@@ -85,6 +101,7 @@ public final class InMemoryEventBus implements EventBusPort {
         List<Subscriber> current = List.copyOf(subscribers);
         subscribers.clear();
         for (Subscriber subscriber : current) {
+            subscriber.queue().clear();
             subscriber.queue().offer(CLOSED);
         }
     }

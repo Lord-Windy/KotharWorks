@@ -41,6 +41,16 @@ public record StoredWorldEvent(long cursor, long occurredMs, String kind, Long s
 
     public StoredWorldEvent {
         Objects.requireNonNull(kind, "kind");
+        if (kind.isBlank()) {
+            throw new IllegalArgumentException("kind must not be blank");
+        }
+        for (int i = 0; i < kind.length(); i++) {
+            char c = kind.charAt(i);
+            if (Character.isISOControl(c) || Character.isWhitespace(c)) {
+                throw new IllegalArgumentException(
+                        "kind must not contain whitespace or control characters: \"" + kind + "\"");
+            }
+        }
         if (cursor < 0) {
             throw new IllegalArgumentException("cursor must be >= 0: " + cursor);
         }

@@ -62,7 +62,7 @@ public final class InMemoryWorldStore implements WorldStorePort {
     private final Set<String> seatNames = new HashSet<>();
     private WorldRecord world;
     private final Map<Integer, List<WalRecord>> walByWorld = new HashMap<>();
-    private final Map<Integer, Set<String>> cmdIdsByWorld = new HashMap<>();
+    private final Map<Integer, Map<String, WalRecord.CommandEntry>> cmdEntriesByWorld = new HashMap<>();
     private final Map<Integer, TreeMap<Long, StoredWorldEvent>> eventsByWorld = new HashMap<>();
     private final Map<Integer, StoredCheckpoint> checkpointsByWorld = new HashMap<>();
 
@@ -129,7 +129,7 @@ public final class InMemoryWorldStore implements WorldStorePort {
                 world = new WorldRecord(1, worldSeed, rulesVersion, engineVersion, protocolVersion,
                         WorldRecord.ACTIVE);
                 walByWorld.put(world.worldId(), new ArrayList<>());
-                cmdIdsByWorld.put(world.worldId(), new HashSet<>());
+                cmdEntriesByWorld.put(world.worldId(), new HashMap<>());
                 eventsByWorld.put(world.worldId(), new TreeMap<>());
                 return world;
             }
@@ -147,10 +147,17 @@ public final class InMemoryWorldStore implements WorldStorePort {
     }
 
     @Override
-    public boolean existsByCmdId(int worldId, UUID cmdId) {
+    public Optional<WalRecord.CommandEntry> findCommandByCmdId(int worldId, UUID cmdId) {
+        Objects.requireNonNull(cmdId, "cmdId");
         synchronized (lock) {
-            return cmdIdsByWorld.getOrDefault(worldId, Set.of()).contains(cmdId.toString());
+            return Optional.ofNullable(
+                    cmdEntriesByWorld.getOrDefault(worldId, Map.of()).get(cmdId.toString()));
         }
+    }
+
+    @Override
+    public boolean existsByCmdId(int worldId, UUID cmdId) {
+        return findCommandByCmdId(worldId, cmdId).isPresent();
     }
 
     @Override
@@ -172,12 +179,15 @@ public final class InMemoryWorldStore implements WorldStorePort {
         }
         synchronized (lock) {
             requireWorld(worldId);
-            if (!cmdIdsByWorld.get(worldId).add(cmdId.toString())) {
+            Map<String, WalRecord.CommandEntry> byCmdId = cmdEntriesByWorld.get(worldId);
+            if (byCmdId.containsKey(cmdId.toString())) {
                 throw new IllegalStateException("duplicate cmdId in WAL: " + cmdId);
             }
             long walSeq = walSeqs.getAndIncrement();
-            walByWorld.get(worldId).add(new WalRecord.CommandEntry(walSeq, admittedMs, seatId,
-                    cmdId.toString(), cmd, worldHash));
+            WalRecord.CommandEntry entry = new WalRecord.CommandEntry(walSeq, admittedMs, seatId,
+                    cmdId.toString(), cmd, worldHash);
+            byCmdId.put(cmdId.toString(), entry);
+            walByWorld.get(worldId).add(entry);
             return walSeq;
         }
     }
@@ -200,7 +210,7 @@ public final class InMemoryWorldStore implements WorldStorePort {
             requireWorld(worldId);
             TreeMap<Long, StoredWorldEvent> log = eventsByWorld.get(worldId);
             List<StoredWorldEvent> result = new ArrayList<>(Math.min(limit, 64));
-            for (StoredWorldEvent row : log.tailMap(sinceCursor + 1).values()) {
+            for (StoredWorldEvent row : log.tailMap(sinceCursor, false).values()) {
                 if (result.size() >= limit) {
                     break;
                 }

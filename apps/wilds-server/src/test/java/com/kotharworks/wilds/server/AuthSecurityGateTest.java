@@ -273,11 +273,21 @@ class AuthSecurityGateTest {
     // ------------------------------------------------------------------ #11 instant suspension
 
     @Test
-    void suspensionImmediatelyKillsJwtAndBotTokenAccess() throws Exception {
+    void suspensionImmediatelyKillsJwtCookieAndBotTokenAccess() throws Exception {
         rig();
         String alice = jwt(DevPersona.ALICE);
         String sam = jwt(DevPersona.SAM);
         String admin = jwt(DevPersona.ADMIN);
+
+        // Establish a BFF cookie session for Sam before suspension.
+        HttpResponse<String> samCookieLogin = http.send(HttpRequest.newBuilder(
+                        URI.create(base + "/dev/login"))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString("persona=dev-sam"))
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(303, samCookieLogin.statusCode());
+        String samCookie = samCookieLogin.headers().firstValue("Set-Cookie").orElseThrow()
+                .split(";")[0];
 
         HttpResponse<String> samCharter = post("/api/v1/seats",
                 "{\"seatName\":\"Sam Seat\",\"controllerKind\":\"HUMAN\"}", sam);
@@ -299,16 +309,116 @@ class AuthSecurityGateTest {
 
         HttpResponse<String> samJwt = get("/api/v1/auth/me", sam);
         assertEquals(403, samJwt.statusCode(), "suspended JWT must be 403 immediately");
-        assertEquals("ACCOUNT_SUSPENDED", strField(json(samJwt.body()), "error"));
+        assertEquals("ACCOUNT_SUSPENDED", strField(json(samJwt.body()), "errorCode"));
 
-        HttpResponse<String> samToken = get("/api/v1/observation", token);
+        HttpResponse<String> samSession = http.send(HttpRequest.newBuilder(
+                        URI.create(base + "/api/v1/auth/me"))
+                .header("Cookie", samCookie)
+                .GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(403, samSession.statusCode(), "suspended session cookie must be 403 immediately");
+        assertEquals("ACCOUNT_SUSPENDED", strField(json(samSession.body()), "errorCode"));
+
+        HttpResponse<String> samRelogin = http.send(HttpRequest.newBuilder(
+                        URI.create(base + "/dev/login"))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString("persona=dev-sam"))
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(403, samRelogin.statusCode(), "suspended account cannot mint new session");
+        assertEquals("ACCOUNT_SUSPENDED", strField(json(samRelogin.body()), "errorCode"));
+
+        HttpResponse<String> samToken = get("/api/v1/observation?seatId=" + botSeatId, token);
         assertEquals(403, samToken.statusCode(), "suspended owner's token must be 403");
-        assertEquals("ACCOUNT_SUSPENDED", strField(json(samToken.body()), "error"));
+        assertEquals("ACCOUNT_SUSPENDED", strField(json(samToken.body()), "errorCode"));
 
         // Sanity: Alice is untouched; admin re-suspending is idempotent.
         assertNotEquals(403, get("/api/v1/auth/me", alice).statusCode());
         assertEquals(200, post("/api/v1/admin/users/" + samUserId + "/suspend",
                 "{}", admin).statusCode());
+    }
+
+    @Test
+    void tokenRevocationIdorBlocked_multiSeatAmbiguity_rateLimit_fogAndEnvelopeGuards()
+            throws Exception {
+        stopServer();
+        ServerConfig tightRateConfig = new ServerConfig(0, 1L, 1L, 60_000L, AuthMode.DEV_LOCAL,
+                "http://127.0.0.1:0", null, null, null, null, null, null, 1L, 4L,
+                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, 300_000L);
+        server = new WildsServer(tightRateConfig);
+        server.start();
+        base = "http://127.0.0.1:" + server.port();
+        http = HttpClient.newHttpClient();
+
+        String sam = jwt(DevPersona.SAM);
+        String admin = jwt(DevPersona.ADMIN);
+        String alice = jwt(DevPersona.ALICE);
+
+        // (a) Cross-user & cross-seat token revocation IDOR is blocked.
+        long samBotSeat = charter(sam, "Sam Bot", "SCRIPT_BOT");
+        long samOtherSeat = charter(sam, "Sam Bot Two", "SCRIPT_BOT");
+        long adminBotSeat = charter(admin, "Admin Bot", "SCRIPT_BOT");
+        JsonObj minted = json(post("/api/v1/seats/" + samBotSeat + "/tokens", "{}", sam).body());
+        long samTokenId = intField(minted, "tokenId");
+        String samBotToken = strField(minted, "token");
+
+        // Admin passing Admin's own seatId with Sam's tokenId must 404 and leave Sam's token alive.
+        HttpResponse<String> crossUserRevoke = http.send(HttpRequest.newBuilder(
+                        URI.create(base + "/api/v1/seats/" + adminBotSeat + "/tokens/" + samTokenId))
+                .header("Authorization", "Bearer " + admin)
+                .DELETE().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, crossUserRevoke.statusCode());
+        // Sam passing Sam's OTHER seatId with samTokenId must also 404.
+        HttpResponse<String> crossSeatRevoke = http.send(HttpRequest.newBuilder(
+                        URI.create(base + "/api/v1/seats/" + samOtherSeat + "/tokens/" + samTokenId))
+                .header("Authorization", "Bearer " + sam)
+                .DELETE().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, crossSeatRevoke.statusCode());
+        assertEquals(200, get("/api/v1/observation", samBotToken).statusCode(),
+                "victim bot token must still work after IDOR attempts");
+
+        // (b) Multi-seat human omitting ?seatId= gets 400 SEAT_REQUIRED; explicit ?seatId= works.
+        HttpResponse<String> ambiguous = get("/api/v1/observation", sam);
+        assertEquals(400, ambiguous.statusCode());
+        assertEquals("SEAT_REQUIRED", strField(json(ambiguous.body()), "errorCode"));
+        assertEquals(200, get("/api/v1/observation?seatId=" + samBotSeat, sam).statusCode());
+
+        // (c) Command envelope guards: register_owner (403), client actorOwner (400), huge batches (400).
+        long aliceSeat = charter(alice, "Alice Seat", "HUMAN");
+        String aliceActor = actorOfSeat(aliceSeat);
+        assertEquals(403, post("/api/v1/commands", "{\"cmdId\":\"" + UUID.randomUUID()
+                + "\",\"type\":\"register_owner\"}", alice).statusCode());
+        assertEquals(400, post("/api/v1/commands", "{\"cmdId\":\"" + UUID.randomUUID()
+                + "\",\"type\":\"enqueue\",\"actorOwner\":\"own:0:1\",\"targetActor\":\""
+                + aliceActor + "\",\"tasks\":[]}", alice).statusCode());
+        HttpResponse<String> hugeBatches = post("/api/v1/commands", "{\"cmdId\":\""
+                + UUID.randomUUID() + "\",\"type\":\"enqueue\",\"targetActor\":\"" + aliceActor
+                + "\",\"tasks\":[{\"type\":\"wait\",\"durationMs\":1000,\"batches\":5000000000}]}",
+                alice);
+        assertEquals(400, hugeBatches.statusCode(), hugeBatches.body());
+        assertEquals("INVALID_ARGUMENT", strField(json(hugeBatches.body()), "errorCode"));
+
+        // (d) Fog-of-war on /api/v1/examine & public event wire stripping.
+        String samActor = actorOfSeat(samBotSeat);
+        HttpResponse<String> foreignExamine = get(
+                "/api/v1/examine?type=actor&id=" + samActor + "&zoom=examine", alice);
+        assertEquals(403, foreignExamine.statusCode());
+        assertEquals("FORBIDDEN", strField(json(foreignExamine.body()), "errorCode"));
+
+        HttpResponse<String> publicEvents = get("/api/v1/public/events?since=0", null);
+        assertEquals(200, publicEvents.statusCode());
+        assertTrue(!publicEvents.body().contains("privateSummary"), publicEvents.body());
+        assertTrue(!publicEvents.body().contains("\"payload\""), publicEvents.body());
+
+        // (e) Per-seat rate limiting (burst = 4) rejects excess burst with 429 RATE_LIMITED.
+        boolean saw429 = false;
+        for (int i = 0; i < 6; i++) {
+            HttpResponse<String> r = get("/api/v1/observation?seatId=" + adminBotSeat, admin);
+            if (r.statusCode() == 429) {
+                assertEquals("RATE_LIMITED", strField(json(r.body()), "errorCode"));
+                saw429 = true;
+                break;
+            }
+        }
+        assertTrue(saw429, "seat exceeding burst must receive 429 RATE_LIMITED");
     }
 
     // ------------------------------------------------------------------ #12 sanity: full happy path

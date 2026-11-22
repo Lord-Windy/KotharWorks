@@ -158,6 +158,18 @@ class MainTest {
         ServerConfig partial = ServerConfig.parse(new String[] {"--auth-mode", "oidc"});
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 partial::validated);
-        assertTrue(e.getMessage().contains("--oidc-issuer-url"));
+        assertEquals("--auth-mode=oidc requires --oidc-issuer", e.getMessage());
+    }
+
+    @Test
+    void parseSupportsUnsignedHexSeedsAndRejectsInvalidCheckpointInterval() {
+        assertEquals(0x49524F4EL,
+                ServerConfig.parse(new String[] {"--seed", "0x49524F4E"}).worldSeed());
+        assertEquals(-1L,
+                ServerConfig.parse(new String[] {"--seed", "0xffffffffffffffff"}).worldSeed());
+        assertThrows(IllegalArgumentException.class,
+                () -> ServerConfig.parse(new String[] {"--seed", "0x"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> ServerConfig.parse(new String[] {"--checkpoint-interval-ms", "0"}));
     }
 }

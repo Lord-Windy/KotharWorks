@@ -16,15 +16,17 @@
 package com.kotharworks.wilds.server.domain;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.kotharworks.wilds.WildsEngine;
 import com.kotharworks.wilds.command.Phase1Result;
@@ -34,6 +36,7 @@ import com.kotharworks.wilds.observe.WorldView;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.rules.RuleRegistry;
 import com.kotharworks.wilds.seed.WorldSeed;
+import com.kotharworks.wilds.server.ports.ClockPort;
 import com.kotharworks.wilds.server.ports.EventBusPort;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
@@ -47,14 +50,15 @@ import com.kotharworks.wilds.server.ports.WorldStorePort;
  * {@link WorldView} (MVCC-style lock-free reads).
  *
  * <p><strong>Strict Commit-Before-Mutate.</strong> A submitted command runs a
- * five-step admission on the writer thread: (1) {@code cmdId} idempotency
- * against the receipt cache and the store; (2) a pre-mutation
- * {@code CLOCK_ADVANCE} anchor when due events exist; (3) 100%-pure Phase-1
- * validation (rejection &rarr; {@code 409}, zero WAL writes, zero mutation);
- * (4) the command is committed to {@code WorldStorePort} <em>before</em> any
- * state mutation (store failure &rarr; {@code 503 STORAGE_UNAVAILABLE}, RAM
- * untouched); (5) apply, persist events, publish the fresh view, complete the
- * caller's {@link ReplySlot}, then fan events out to the bus.
+ * five-step admission on the writer thread: (1) seat-scoped {@code cmdId}
+ * idempotency against the bounded receipt cache and the store; (2) a
+ * pre-mutation {@code CLOCK_ADVANCE} anchor when due events exist at
+ * {@code currentLogicalMs}; (3) 100%-pure Phase-1 validation (rejection &rarr;
+ * {@code 409}, zero WAL writes, zero mutation); (4) the command is committed
+ * to {@code WorldStorePort} <em>before</em> any state mutation (store failure
+ * &rarr; {@code 503 STORAGE_UNAVAILABLE}, RAM untouched); (5) advance to
+ * {@code admittedMs}, apply, persist events, publish the fresh view, complete
+ * the caller's {@link ReplySlot}, then fan events out to the bus.
  */
 public final class WorldHost {
 
@@ -67,12 +71,17 @@ public final class WorldHost {
     /** Default uptime checkpoint cadence (5 minutes), matching {@code --checkpoint-interval-ms}. */
     public static final long DEFAULT_CHECKPOINT_INTERVAL_MS = 300_000L;
 
+    private static final int MAX_RECEIPT_CACHE = 65_536;
     private static final System.Logger LOG = System.getLogger(WorldHost.class.getName());
     private static final long OFFER_TIMEOUT_MS = 5_000L;
     private static final long REPLY_TIMEOUT_MS = 10_000L;
 
+    private record CachedReceipt(long seatId, CommandReceipt receipt) {
+    }
+
     private final WorldStorePort worldStore;
     private final EventBusPort eventBus;
+    private final ClockPort clockPort;
     private final long timeScale;
     private final long quietAdvanceMs;
     private final long checkpointIntervalMs;
@@ -80,12 +89,18 @@ public final class WorldHost {
     private final int worldId;
     private final WildsEngine engine;
     private final ArrayBlockingQueue<HostMessage> mailbox = new ArrayBlockingQueue<>(1024);
-    private final Map<UUID, CommandReceipt> receiptCache = new HashMap<>();
+    private final Map<UUID, CachedReceipt> receiptCache = new LinkedHashMap<>(256, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<UUID, CachedReceipt> eldest) {
+            return size() > MAX_RECEIPT_CACHE;
+        }
+    };
     private final List<StoredWorldEvent> pendingEvents = new ArrayList<>();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
     private final Thread writerThread;
 
     private volatile WorldView view;
-    private volatile boolean closed;
+    private volatile List<StoredWorldEvent> pendingEventsSnapshot = List.of();
     private long lastWalSeq;
     private long lastPersistedClockMs;
     private long lastTickWallNanos;
@@ -138,19 +153,14 @@ public final class WorldHost {
     }
 
     /**
-     * Boots (or recovers) the world and starts the writer virtual thread. A
-     * stored checkpoint is verified by hash and replayed forward from the WAL
-     * tail; with no checkpoint yet a fresh seeded engine replays the entire WAL
-     * from {@code walSeq 0} (a crash before the first checkpoint loses nothing).
-     * Either way {@code lastWalSeq} ends at the highest replayed {@code walSeq},
-     * so a periodic checkpoint written before any new append pins the WAL
-     * watermark instead of resetting it to 0 (which would poison the next boot
-     * with a full-WAL re-apply over an already-advanced snapshot).
+     * Boots (or recovers) the world and starts the writer virtual thread over
+     * an injected monotonic {@link ClockPort}.
      */
-    public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
-            long timeScale, long quietAdvanceMs, long checkpointIntervalMs) {
+    public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, ClockPort clockPort,
+            long worldSeed, long timeScale, long quietAdvanceMs, long checkpointIntervalMs) {
         this.worldStore = Objects.requireNonNull(worldStore, "worldStore");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
+        this.clockPort = Objects.requireNonNull(clockPort, "clockPort");
         if (timeScale < 1) {
             throw new IllegalArgumentException("timeScale must be >= 1: " + timeScale);
         }
@@ -173,17 +183,23 @@ public final class WorldHost {
             }
             this.lastWalSeq = replayWal(checkpoint.upToWalSeq());
         } else {
-            // Spec: with no checkpoint yet, the fresh seeded engine still replays
-            // the whole WAL tail from up_to_wal_seq = 0 — a kill -9 before the
-            // first checkpoint must lose no acknowledged command.
             this.engine = new WildsEngine(new WorldSeed(worldSeed));
             this.lastWalSeq = replayWal(0L);
         }
         this.lastPersistedClockMs = engine.nowMs();
-        this.lastTickWallNanos = System.nanoTime();
+        this.lastTickWallNanos = clockPort.nanoTime();
         this.lastCheckpointWallNanos = lastTickWallNanos;
         this.view = engine.view();
         this.writerThread = Thread.ofVirtual().name("wilds-world-host").start(this::runWriter);
+    }
+
+    /**
+     * Boots (or recovers) the world over {@link ClockPort#SYSTEM}.
+     */
+    public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
+            long timeScale, long quietAdvanceMs, long checkpointIntervalMs) {
+        this(worldStore, eventBus, ClockPort.SYSTEM, worldSeed, timeScale, quietAdvanceMs,
+                checkpointIntervalMs);
     }
 
     /**
@@ -192,14 +208,14 @@ public final class WorldHost {
      */
     public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
             long timeScale) {
-        this(worldStore, eventBus, worldSeed, timeScale, DEFAULT_QUIET_ADVANCE_MS,
-                DEFAULT_CHECKPOINT_INTERVAL_MS);
+        this(worldStore, eventBus, ClockPort.SYSTEM, worldSeed, timeScale,
+                DEFAULT_QUIET_ADVANCE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS);
     }
 
     /** Convenience constructor with the default 5 minute checkpoint cadence. */
     public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, long worldSeed,
             long timeScale, long quietAdvanceMs) {
-        this(worldStore, eventBus, worldSeed, timeScale, quietAdvanceMs,
+        this(worldStore, eventBus, ClockPort.SYSTEM, worldSeed, timeScale, quietAdvanceMs,
                 DEFAULT_CHECKPOINT_INTERVAL_MS);
     }
 
@@ -207,20 +223,23 @@ public final class WorldHost {
 
     /**
      * Submits one command to the writer and blocks the calling virtual thread
-     * until the reply slot completes. Duplicate {@code cmdId}s never
-     * re-execute: every caller gets the identical receipt.
+     * until the reply slot completes. Duplicate {@code cmdId}s from the owning
+     * seat never re-execute: every caller gets the identical receipt.
      */
     public CommandOutcome submit(long seatId, UUID cmdId, WorldCommand command) {
         Objects.requireNonNull(cmdId, "cmdId");
         Objects.requireNonNull(command, "command");
-        if (closed) {
+        if (closed.get()) {
             return new CommandOutcome.StorageUnavailable("world host is closed");
         }
         ReplySlot slot = new ReplySlot();
+        SubmitCommand envelope = new SubmitCommand(seatId, cmdId, command, slot);
         try {
-            if (!mailbox.offer(new SubmitCommand(seatId, cmdId, command, slot),
-                    OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            if (!mailbox.offer(envelope, OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 return new CommandOutcome.StorageUnavailable("world host mailbox is full");
+            }
+            if (closed.get() && mailbox.remove(envelope)) {
+                return new CommandOutcome.StorageUnavailable("world host is closed");
             }
             return slot.await(REPLY_TIMEOUT_MS);
         } catch (InterruptedException e) {
@@ -231,7 +250,7 @@ public final class WorldHost {
 
     /** Enqueues a pump tick (non-blocking; dropped when the mailbox is full). */
     public void tick() {
-        if (closed) {
+        if (closed.get()) {
             return;
         }
         mailbox.offer(Tick.INSTANCE);
@@ -243,16 +262,11 @@ public final class WorldHost {
      * bus so every SSE subscriber wakes.
      */
     public void close() {
-        if (closed) {
+        if (!closed.compareAndSet(false, true)) {
             return;
         }
-        closed = true;
-        mailbox.offer(Shutdown.INSTANCE);
-        try {
-            writerThread.join(5_000L);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        enqueueTerminalMessage(Shutdown.INSTANCE);
+        awaitWriterExit();
         eventBus.close();
     }
 
@@ -261,23 +275,32 @@ public final class WorldHost {
      * rig: stops accepting submissions and stops the writer without flushing
      * deferred events, without the final shutdown clock anchor, and without a
      * checkpoint — exactly the durable state a hard process death leaves
-     * behind. Unpersisted events are lost by design and re-derived from WAL
-     * replay on the next boot. Any in-flight tick or command is processed to
-     * completion first (mailbox messages never interrupt each other), so the
-     * abort point is deterministic.
+     * behind.
      */
     public void closeWithoutCheckpoint() {
-        if (closed) {
+        if (!closed.compareAndSet(false, true)) {
             return;
         }
-        closed = true;
-        mailbox.offer(Abort.INSTANCE);
+        enqueueTerminalMessage(Abort.INSTANCE);
+        awaitWriterExit();
+        eventBus.close();
+    }
+
+    private void enqueueTerminalMessage(HostMessage terminal) {
+        while (!mailbox.offer(terminal)) {
+            HostMessage evicted = mailbox.poll();
+            if (evicted != null) {
+                abortQueuedMessage(evicted, "world host is closing");
+            }
+        }
+    }
+
+    private void awaitWriterExit() {
         try {
             writerThread.join(5_000L);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        eventBus.close();
     }
 
     // ------------------------------------------------------------------ writer side
@@ -296,6 +319,10 @@ public final class WorldHost {
                                             + submit.cmdId(), unexpected);
                             submit.replySlot().complete(new CommandOutcome.StorageUnavailable(
                                     "world host error: " + unexpected.getMessage()));
+                        } catch (Throwable fatal) {
+                            submit.replySlot().complete(new CommandOutcome.StorageUnavailable(
+                                    "world host fatal error"));
+                            throw fatal;
                         }
                     }
                     case Tick _ -> {
@@ -325,20 +352,42 @@ public final class WorldHost {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            closed.set(true);
+            HostMessage leftover;
+            while ((leftover = mailbox.poll()) != null) {
+                abortQueuedMessage(leftover, "world host is closed");
+            }
+        }
+    }
+
+    private static void abortQueuedMessage(HostMessage message, String reason) {
+        switch (message) {
+            case SubmitCommand submit -> submit.replySlot().complete(
+                    new CommandOutcome.StorageUnavailable(reason));
+            case RequestCheckpoint req -> req.done().countDown();
+            case Tick _, Shutdown _, Abort _ -> {
+                // No caller waiting.
+            }
         }
     }
 
     private void handleSubmit(SubmitCommand submit) {
         UUID cmdId = submit.cmdId();
-        // (1) Idempotency: in-memory cache first, then the pre-restart store check.
-        CommandReceipt cached = receiptCache.get(cmdId);
+        // (1) Seat-scoped idempotency: bounded cache first, then store lookup.
+        CachedReceipt cached = receiptCache.get(cmdId);
         if (cached != null) {
-            submit.replySlot().complete(new CommandOutcome.Ok(cached));
+            if (cached.seatId() != submit.seatId()) {
+                submit.replySlot().complete(new CommandOutcome.Rejected(
+                        "FORBIDDEN", 0L, "cmdId belongs to another seat"));
+                return;
+            }
+            submit.replySlot().complete(new CommandOutcome.Ok(cached.receipt()));
             return;
         }
-        boolean alreadyCommitted;
+        Optional<WalRecord.CommandEntry> priorCommitted;
         try {
-            alreadyCommitted = worldStore.existsByCmdId(worldId, cmdId);
+            priorCommitted = worldStore.findCommandByCmdId(worldId, cmdId);
         } catch (RuntimeException storeFailure) {
             LOG.log(System.Logger.Level.WARNING,
                     "world {0} store refused cmdId check for {1}: {2}",
@@ -347,16 +396,24 @@ public final class WorldHost {
                     "store refused idempotency check: " + storeFailure.getMessage()));
             return;
         }
-        if (alreadyCommitted) {
-            // Documented edge: committed before a restart but the receipt was not
-            // rebuilt (tampered/foreign store). Reply "already committed" without
-            // re-executing; the receipt's WAL seq is unknown (0).
-            submit.replySlot().complete(new CommandOutcome.Ok(new CommandReceipt(cmdId,
-                    engine.nowMs(), 0, revisionFor(submit.command(), engine.view()))));
+        if (priorCommitted.isPresent()) {
+            WalRecord.CommandEntry prior = priorCommitted.get();
+            if (prior.seatId() != submit.seatId()) {
+                submit.replySlot().complete(new CommandOutcome.Rejected(
+                        "FORBIDDEN", 0L, "cmdId belongs to another seat"));
+                return;
+            }
+            CommandReceipt rebuilt = new CommandReceipt(cmdId, prior.admittedMs(),
+                    prior.walSeq(), revisionFor(prior.command(), engine.view()));
+            receiptCache.put(cmdId, new CachedReceipt(prior.seatId(), rebuilt));
+            submit.replySlot().complete(new CommandOutcome.Ok(rebuilt));
             return;
         }
-        // (2) Pre-mutation clock anchor when due events exist at admission time.
-        long admittedMs = engine.nowMs();
+
+        // (2) Determine admittedMs from current logical time; commit CLOCK_ADVANCE first
+        //     when due events exist <= admittedMs.
+        long wallNow = clockPort.nanoTime();
+        long admittedMs = currentLogicalMs(wallNow);
         OptionalLong nextDue = engine.peekNextDueMs();
         if (nextDue.isPresent() && nextDue.getAsLong() <= admittedMs) {
             try {
@@ -370,6 +427,8 @@ public final class WorldHost {
                 return;
             }
             engine.advanceTo(admittedMs);
+            lastPersistedClockMs = engine.nowMs();
+            lastTickWallNanos = wallNow;
             List<StoredWorldEvent> anchored = drainEmitted();
             boolean flushed = tryFlushPendingEvents("clock-anchor");
             eventBus.publish(worldId, anchored);
@@ -399,8 +458,13 @@ public final class WorldHost {
                     "store refused command commit: " + storeFailure.getMessage()));
             return;
         }
-        // (5) Apply, persist, publish the view, complete the reply, then fan out.
+        // (5) Advance clock to admittedMs (matching WAL replay), apply, persist, publish, fan out.
         lastWalSeq = walSeq;
+        if (admittedMs > engine.nowMs()) {
+            engine.advanceTo(admittedMs);
+        }
+        lastPersistedClockMs = engine.nowMs();
+        lastTickWallNanos = wallNow;
         Phase1Result applied = engine.apply(submit.command());
         if (applied instanceof Phase1Result.Rejected bugGuard) {
             throw new IllegalStateException("WAL-committed command rejected at apply: " + cmdId
@@ -410,20 +474,14 @@ public final class WorldHost {
         tryFlushPendingEvents("post-apply " + cmdId);
         CommandReceipt receipt = new CommandReceipt(cmdId, admittedMs, walSeq,
                 revisionFor(submit.command(), engine.view()));
-        receiptCache.put(cmdId, receipt);
+        receiptCache.put(cmdId, new CachedReceipt(submit.seatId(), receipt));
         submit.replySlot().complete(new CommandOutcome.Ok(receipt));
         eventBus.publish(worldId, emitted);
     }
 
     private void handleTick() {
-        long wallNow = System.nanoTime();
-        // Wall time accumulates since the last COMMITTED advance (not since the last
-        // tick message): resetting it per tick would cap target at one pump-step
-        // beyond nowMs, so any task due further out than
-        // pumpIntervalMs * timeScale (multi-second travels and waits) could never
-        // be reached and the live clock would wedge forever.
-        long wallDeltaMs = Math.max(0L, (wallNow - lastTickWallNanos) / 1_000_000L);
-        long target = engine.nowMs() + wallDeltaMs * timeScale;
+        long wallNow = clockPort.nanoTime();
+        long target = currentLogicalMs(wallNow);
         OptionalLong nextDue = engine.peekNextDueMs();
         boolean duePending = nextDue.isPresent() && nextDue.getAsLong() <= target;
         boolean quietDue = target - lastPersistedClockMs >= quietAdvanceMs;
@@ -459,6 +517,15 @@ public final class WorldHost {
         }
     }
 
+    private long currentLogicalMs(long wallNowNanos) {
+        long wallDeltaMs = Math.max(0L, (wallNowNanos - lastTickWallNanos) / 1_000_000L);
+        long now = engine.nowMs();
+        long headroom = Math.max(0L, Long.MAX_VALUE - now);
+        long maxUnscaled = Long.MAX_VALUE / timeScale;
+        long scaledDelta = wallDeltaMs >= maxUnscaled ? headroom : wallDeltaMs * timeScale;
+        return now + Math.min(scaledDelta, headroom);
+    }
+
     /**
      * Writes a checkpoint of the live world best-effort: routes through the
      * single writer thread when called externally, flushes any deferred events
@@ -471,7 +538,7 @@ public final class WorldHost {
             writeCheckpointOnWriter();
             return;
         }
-        if (closed) {
+        if (closed.get()) {
             return;
         }
         CountDownLatch done = new CountDownLatch(1);
@@ -490,7 +557,7 @@ public final class WorldHost {
             flushPendingEvents();
             worldStore.saveCheckpoint(worldId, lastWalSeq, engine.nowMs(), engine.worldHash(),
                     engine.snapshotJson());
-            lastCheckpointWallNanos = System.nanoTime();
+            lastCheckpointWallNanos = clockPort.nanoTime();
         } catch (RuntimeException storeFailure) {
             // Best effort; the WAL tail recovers the difference on the next boot.
             LOG.log(System.Logger.Level.WARNING,
@@ -521,10 +588,6 @@ public final class WorldHost {
     /**
      * Replays every WAL row after {@code afterWalSeq} in ascending order,
      * rebuilding the {@code cmdId} receipt cache and re-backfilling events.
-     *
-     * @return the highest replayed {@code walSeq} (or {@code afterWalSeq} when
-     *         nothing replays) — the watermark a subsequent checkpoint must
-     *         carry so the next boot never re-applies applied commands
      */
     private long replayWal(long afterWalSeq) {
         long lastSeq = afterWalSeq;
@@ -554,19 +617,15 @@ public final class WorldHost {
                                 + entry.cmdId() + ": " + rejected.errorCode());
                     }
                     backfillEvents();
-                    receiptCache.put(cmdId, new CommandReceipt(cmdId, entry.admittedMs(),
-                            entry.walSeq(), revisionFor(entry.command(), engine.view())));
+                    CommandReceipt receipt = new CommandReceipt(cmdId, entry.admittedMs(),
+                            entry.walSeq(), revisionFor(entry.command(), engine.view()));
+                    receiptCache.put(cmdId, new CachedReceipt(entry.seatId(), receipt));
                 }
             }
         }
         return lastSeq;
     }
 
-    /**
-     * Drains newly emitted events from the engine, republishes the volatile
-     * {@link WorldView}, and stages the events in {@link #pendingEvents} until
-     * {@link #flushPendingEvents()} confirms durable storage.
-     */
     private List<StoredWorldEvent> drainEmitted() {
         List<WorldEvent> events = engine.drainEvents();
         WorldView fresh = engine.view();
@@ -579,6 +638,7 @@ public final class WorldHost {
             stored.add(StoredWorldEvent.of(event, seatKeyFor(fresh, event)));
         }
         pendingEvents.addAll(stored);
+        pendingEventsSnapshot = List.copyOf(pendingEvents);
         return List.copyOf(stored);
     }
 
@@ -588,6 +648,7 @@ public final class WorldHost {
         }
         worldStore.appendEvents(worldId, List.copyOf(pendingEvents));
         pendingEvents.clear();
+        pendingEventsSnapshot = List.of();
     }
 
     private boolean tryFlushPendingEvents(String context) {
@@ -640,6 +701,33 @@ public final class WorldHost {
     }
 
     // ------------------------------------------------------------------ reads (lock-free)
+
+    /**
+     * Reads private events for {@code seatId} with {@code cursor > sinceCursor}
+     * up to {@code limit}, merging persisted rows with any WAL-committed events
+     * currently staged in {@code pendingEvents} during a transient store blip
+     * so SSE reconnects and catch-up queries never drop cursors.
+     */
+    public List<StoredWorldEvent> readSeatEventsSince(long seatId, long sinceCursor, int limit) {
+        List<StoredWorldEvent> persisted = worldStore.readEventsSince(
+                worldId, seatId, sinceCursor, limit);
+        List<StoredWorldEvent> deferred = pendingEventsSnapshot;
+        if (deferred.isEmpty() || persisted.size() >= limit) {
+            return persisted;
+        }
+        long floor = persisted.isEmpty() ? sinceCursor : persisted.getLast().cursor();
+        List<StoredWorldEvent> merged = new ArrayList<>(persisted);
+        for (StoredWorldEvent event : deferred) {
+            if (merged.size() >= limit) {
+                break;
+            }
+            if (event.cursor() > floor && Objects.equals(event.seatId(), seatId)) {
+                merged.add(event);
+                floor = event.cursor();
+            }
+        }
+        return List.copyOf(merged);
+    }
 
     /** The freshest published {@link WorldView} — deeply immutable, lock-free to read. */
     public WorldView view() {

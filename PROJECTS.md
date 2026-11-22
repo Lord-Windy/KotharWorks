@@ -108,11 +108,13 @@ Hexagonal runtime core of the Ironwood Wilds online server (Tickets 07-09), on
 Java 25 Virtual Threads with in-memory reference adapters (`adapters/memory/`) or
 production PostgreSQL persistence (`--storage=postgres` via HikariCP + JDBI3).
 `domain/WorldHost` is the single writer: a dedicated virtual thread drains a bounded
-`ArrayBlockingQueue` mailbox enforcing **strict Commit-Before-Mutate** WAL ordering
-(pure Phase-1 validation first, `WorldStorePort.appendCommand` before any state
-mutation, `503 STORAGE_UNAVAILABLE` with untouched RAM on store failure), `cmdId`
-UUID idempotency with receipt caching, pre-mutation `CLOCK_ADVANCE` anchors plus a
-quiet `ClockPump` adapter, and lock-free volatile `WorldView` MVCC reads with
+`ArrayBlockingQueue` mailbox over an injectable `ClockPort` enforcing **strict
+Commit-Before-Mutate** WAL ordering (pure Phase-1 validation first,
+`WorldStorePort.appendCommand` at `currentLogicalMs` before any state mutation,
+`503 STORAGE_UNAVAILABLE` with untouched RAM on store failure), seat-scoped `cmdId`
+UUID idempotency with bounded LRU receipt caching and WAL-backed pre-checkpoint
+reconstruction, pre-mutation `CLOCK_ADVANCE` anchors plus a quiet `ClockPump`
+adapter, and lock-free volatile `WorldView` MVCC reads with
 checkpoint-hash-verified + WAL-tail boot recovery, `PAUSE_WHILE_DOWN` clock resume
 (logical time never advances offline), periodic + graceful-close checkpointing
 (retention: latest ten) and a best-effort final `CLOCK_ADVANCE` anchor so the

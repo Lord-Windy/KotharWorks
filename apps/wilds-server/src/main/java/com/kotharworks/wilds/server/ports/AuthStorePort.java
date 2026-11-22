@@ -109,8 +109,16 @@ public interface AuthStorePort extends IdentityProvisioner, SessionStore {
      */
     Optional<com.kotharworks.auth.spi.ScopedTokenRecord> findActiveTokenBySha256(byte[] sha256);
 
-    /** Revokes the token (idempotent; unknown ids are silently ignored). */
-    void revokeToken(long tokenId);
+    /**
+     * Revokes a token owned by {@code owner} and scoped to
+     * {@code (resourceNamespace, scopedResourceId)}. Idempotent when the
+     * matching token is already revoked.
+     *
+     * @return {@code true} if a token matching owner, scope, and id existed;
+     *         {@code false} if unknown or owned/scoped elsewhere
+     */
+    boolean revokeToken(UserId owner, String resourceNamespace, long scopedResourceId,
+            long tokenId);
 
     /**
      * Suspends the account: the next request authenticated as this user — JWT,

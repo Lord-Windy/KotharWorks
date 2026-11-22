@@ -198,7 +198,7 @@ public final class AuthRoutes {
             JsonCodec.JsonObj body = ApiJson.parseObject(ctx.requestBody());
             String supplied = ApiJson.optString(body, "reason");
             if (supplied != null && !supplied.isBlank()) {
-                reason = supplied;
+                reason = ApiJson.validatePrintable(supplied, "reason", 1, 200);
             }
         }
         authStore.suspendUser(user.userId(), reason);

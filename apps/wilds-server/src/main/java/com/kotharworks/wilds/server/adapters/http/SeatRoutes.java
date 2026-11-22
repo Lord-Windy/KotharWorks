@@ -84,28 +84,37 @@ public final class SeatRoutes {
     private void charter(RouteContext ctx) throws IOException {
         Principal.HumanPrincipal human = (Principal.HumanPrincipal) ctx.principal();
         JsonCodec.JsonObj body = ApiJson.parseObject(ctx.requestBody());
-        String seatName = ApiJson.requireString(body, "seatName");
+        String trimmed = ApiJson.validatePrintable(
+                ApiJson.requireString(body, "seatName"), "seatName", 3, 40);
         ControllerKind kind = parseKind(ApiJson.requireString(body, "controllerKind"));
-        String initialActorLabel = ApiJson.optString(body, "initialActorLabel");
+        String suppliedActorLabel = ApiJson.optString(body, "initialActorLabel");
+        String label = suppliedActorLabel != null && !suppliedActorLabel.isBlank()
+                ? ApiJson.validatePrintable(suppliedActorLabel, "initialActorLabel", 1, 80)
+                : trimmed + "'s Actor";
         UserRecord user = authStore.findUser(human.userId())
                 .orElseGet(() -> UserRecord.active(human.userId(), human.displayName(), null));
 
-        // Charter critical section: quota check + createSeat serialize here; the world
-        // mutation itself (RegisterOwner) always flows through the WorldHost mailbox.
+        // Charter critical section: idempotent same-name lookup precedes quota check so
+        // a PLAYER retrying after a transient 503 WorldHost commit failure can complete
+        // registration cleanly without tripping their 1-seat cap.
         SeatRecord seat;
         boolean fresh;
         synchronized (charterLock) {
             List<SeatRecord> existing = worldStore.findSeatsByOwner(human.userId());
-            seatAuthorizer.canCharter(human, kind, existing.size(), user.maxSeatsOverride());
-            String trimmed = seatName.trim();
             seat = existing.stream()
                     .filter(candidate -> candidate.seatName().equals(trimmed))
                     .findFirst()
                     .orElse(null);
             fresh = seat == null;
+            if (!fresh && seat.controllerKind() != kind) {
+                throw new SeatAuthorizationException(409, "DUPLICATE_SEAT",
+                        "seat \"" + trimmed + "\" is already chartered with kind "
+                                + seat.controllerKind());
+            }
             if (fresh) {
+                seatAuthorizer.canCharter(human, kind, existing.size(), user.maxSeatsOverride());
                 try {
-                    seat = worldStore.createSeat(human.userId(), seatName, kind);
+                    seat = worldStore.createSeat(human.userId(), trimmed, kind);
                 } catch (IllegalArgumentException e) {
                     if (e.getMessage() != null && e.getMessage().startsWith("DUPLICATE_SEAT")) {
                         throw new SeatAuthorizationException(409, "DUPLICATE_SEAT",
@@ -117,9 +126,6 @@ public final class SeatRoutes {
         }
         UUID cmdId = UUID.nameUUIDFromBytes(("seat-register:" + worldHost.worldId() + ":"
                 + seat.seatId()).getBytes(StandardCharsets.UTF_8));
-        String label = initialActorLabel != null && !initialActorLabel.isBlank()
-                ? initialActorLabel
-                : seat.seatName() + "'s Actor";
         CommandOutcome outcome = worldHost.submit(seat.seatId(), cmdId,
                 new WorldCommand.RegisterOwner(seat.seatId(), seat.seatName(), label));
         switch (outcome) {
@@ -180,7 +186,7 @@ public final class SeatRoutes {
             JsonCodec.JsonObj body = ApiJson.parseObject(ctx.requestBody());
             String supplied = ApiJson.optString(body, "label");
             if (supplied != null && !supplied.isBlank()) {
-                label = supplied;
+                label = ApiJson.validatePrintable(supplied, "label", 1, 80);
             }
         }
         ApiTokenCodec.GeneratedToken generated = apiTokenCodec.generate();
@@ -196,8 +202,11 @@ public final class SeatRoutes {
         Principal.HumanPrincipal human = (Principal.HumanPrincipal) ctx.principal();
         long seatId = ApiJson.pathLong(ctx.pathParams(), "seatId");
         long tokenId = ApiJson.pathLong(ctx.pathParams(), "tokenId");
-        requireOwnedSeat(seatId, human);
-        authStore.revokeToken(tokenId);
+        SeatRecord seat = requireOwnedSeat(seatId, human);
+        if (!authStore.revokeToken(human.userId(), SEAT_NAMESPACE, seat.seatId(), tokenId)) {
+            throw new SeatAuthorizationException(404, "UNKNOWN_TARGET",
+                    "no token " + tokenId + " on seat " + seatId);
+        }
         ctx.respondJson(200, "{\"revoked\":true}");
     }
 

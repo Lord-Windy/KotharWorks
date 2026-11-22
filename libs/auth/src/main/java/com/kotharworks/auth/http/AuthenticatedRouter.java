@@ -205,7 +205,7 @@ public final class AuthenticatedRouter {
         try {
             doDispatch(exchange);
         } catch (AuthRejectException reject) {
-            writeError(exchange, reject.code());
+            writeError(exchange, reject.code(), reject.getMessage());
         } catch (IOException | RuntimeException e) {
             errorReporter.accept(e);
             writeInternalServerError(exchange);
@@ -417,8 +417,10 @@ public final class AuthenticatedRouter {
 
     // -------------------------------------------------------------- error body
 
-    private static void writeError(HttpExchange exchange, AuthErrorCode code) {
-        byte[] body = ("{\"error\":\"" + code.name() + "\"}").getBytes(StandardCharsets.UTF_8);
+    private static void writeError(HttpExchange exchange, AuthErrorCode code, String detail) {
+        String msg = detail == null || detail.isBlank() ? code.name() : detail;
+        byte[] body = ("{\"errorCode\":\"" + code.name() + "\",\"message\":\""
+                + escapeJson(msg) + "\"}").getBytes(StandardCharsets.UTF_8);
         try {
             if (code == AuthErrorCode.PAYLOAD_TOO_LARGE) {
                 exchange.getResponseHeaders().set("Connection", "close");
@@ -451,7 +453,8 @@ public final class AuthenticatedRouter {
     }
 
     private static void writeInternalServerError(HttpExchange exchange) {
-        byte[] body = "{\"error\":\"INTERNAL_ERROR\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] body = "{\"errorCode\":\"INTERNAL_ERROR\",\"message\":\"internal server error\"}"
+                .getBytes(StandardCharsets.UTF_8);
         try {
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(500, body.length);
@@ -461,6 +464,30 @@ public final class AuthenticatedRouter {
         } catch (IOException | RuntimeException ignored) {
             // Response channel already broken; nothing further to do.
         }
+    }
+
+    private static String escapeJson(String value) {
+        StringBuilder out = new StringBuilder(value.length() + 8);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\b' -> out.append("\\b");
+                case '\f' -> out.append("\\f");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        return out.toString();
     }
 
     /** Convenience: the bound address of the wrapped server (for fuse checks). */

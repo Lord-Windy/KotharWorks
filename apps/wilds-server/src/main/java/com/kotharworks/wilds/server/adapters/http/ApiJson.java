@@ -77,10 +77,46 @@ public final class ApiJson {
         return expectObj(JsonCodec.parse(json), "request body");
     }
 
-    /** String field value, or {@code null} when absent. */
+    /** String field value, or {@code null} when absent/null; wrong types reject. */
     public static String optString(JsonObj obj, String key) {
         JsonCodec.JsonValue value = obj.getOrNull(key);
-        return value instanceof JsonStr str ? str.value() : null;
+        if (value == null || value instanceof JsonCodec.JsonNull) {
+            return null;
+        }
+        if (value instanceof JsonStr str) {
+            return str.value();
+        }
+        throw new IllegalArgumentException("field \"" + key + "\" must be a JSON string");
+    }
+
+    /**
+     * Validates a trimmed printable label ({@code minLen..maxLen} chars, no ISO
+     * control chars, no unpaired UTF-16 surrogates).
+     */
+    public static String validatePrintable(String raw, String field, int minLen, int maxLen) {
+        String trimmed = raw == null ? "" : raw.trim();
+        if (trimmed.length() < minLen || trimmed.length() > maxLen) {
+            throw new IllegalArgumentException("field \"" + field + "\" must be " + minLen + ".."
+                    + maxLen + " characters after trim");
+        }
+        for (int i = 0; i < trimmed.length(); i++) {
+            char c = trimmed.charAt(i);
+            if (Character.isISOControl(c)) {
+                throw new IllegalArgumentException(
+                        "field \"" + field + "\" must not contain ISO control characters");
+            }
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= trimmed.length() || !Character.isLowSurrogate(trimmed.charAt(i + 1))) {
+                    throw new IllegalArgumentException(
+                            "field \"" + field + "\" contains an unpaired UTF-16 surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException(
+                        "field \"" + field + "\" contains an unpaired UTF-16 surrogate");
+            }
+        }
+        return trimmed;
     }
 
     /** Required string field ({@link IllegalArgumentException} when absent/wrong type). */

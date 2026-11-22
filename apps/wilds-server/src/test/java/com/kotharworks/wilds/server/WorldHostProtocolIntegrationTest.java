@@ -48,8 +48,10 @@ import com.kotharworks.wilds.replay.JsonCodec.JsonInt;
 import com.kotharworks.wilds.replay.JsonCodec.JsonObj;
 import com.kotharworks.wilds.replay.JsonCodec.JsonStr;
 import com.kotharworks.wilds.replay.WalRecord;
+import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryWorldStore;
 import com.kotharworks.wilds.server.domain.CommandOutcome;
+import com.kotharworks.wilds.server.domain.WorldHost;
 import com.kotharworks.wilds.state.TaskSpec;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -354,5 +356,176 @@ class WorldHostProtocolIntegrationTest {
         var poison = queue.poll(5, java.util.concurrent.TimeUnit.SECONDS);
         assertTrue(poison != null && poison.cursor() < 1,
                 "subscriber queue must receive the wake marker");
+    }
+
+    // ------------------------------------------------------------------ Pass 07 regressions
+
+    @Test
+    void idleWallTimeDoesNotTeleportNewlySubmittedTasksAndCrossSeatCmdIdIsRejected() {
+        long[] wallNanos = new long[] {1_000_000_000L};
+        InMemoryWorldStore memStore = new InMemoryWorldStore();
+        WorldHost host = new WorldHost(memStore, new InMemoryEventBus(), () -> wallNanos[0],
+                1L, 1L, 60_000L, Long.MAX_VALUE);
+        try {
+            assertInstanceOf(CommandOutcome.Ok.class, host.submit(1L, UUID.randomUUID(),
+                    new WorldCommand.RegisterOwner(1L, "Alice", "Alice Actor")));
+            assertInstanceOf(CommandOutcome.Ok.class, host.submit(2L, UUID.randomUUID(),
+                    new WorldCommand.RegisterOwner(2L, "Bob", "Bob Actor")));
+            OwnerId aliceOwner = host.view().findOwnerBySeatKey(1L).orElseThrow().id();
+            ActorId aliceActor = host.view().actorsOwnedBy(aliceOwner).getFirst().id();
+            OwnerId bobOwner = host.view().findOwnerBySeatKey(2L).orElseThrow().id();
+            ActorId bobActor = host.view().actorsOwnedBy(bobOwner).getFirst().id();
+
+            // Sit idle for 45 wall-clock seconds (< 60s quiet threshold): ticks do not spam WAL.
+            wallNanos[0] += java.util.concurrent.TimeUnit.SECONDS.toNanos(45);
+            host.tick();
+
+            // Submit a 30-second Wait at t=45s: admittedMs must be 45_000ms, dueAtMs = 75_000ms.
+            UUID aliceCmdId = UUID.randomUUID();
+            CommandOutcome.Ok ok = assertInstanceOf(CommandOutcome.Ok.class,
+                    host.submit(1L, aliceCmdId, new WorldCommand.EnqueueTasks(
+                            aliceOwner, aliceActor, null, List.of(new TaskSpec.Wait(30_000L, 1)))));
+            assertEquals(45_000L, ok.receipt().admittedMs());
+
+            // 1 second later (t=46s), tick must NOT finish the 30-second task prematurely!
+            wallNanos[0] += java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+            host.tick();
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (host.view().actor(aliceActor).orElseThrow().activeTask() == null
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(host.view().actor(aliceActor).orElseThrow().activeTask() != null,
+                    "30s task queued after 45s idle must still be running 1s later");
+
+            // Seat 2 attempting to replay Seat 1's cmdId is rejected with FORBIDDEN (no oracle).
+            CommandOutcome.Rejected crossCmd = assertInstanceOf(CommandOutcome.Rejected.class,
+                    host.submit(2L, aliceCmdId, new WorldCommand.EnqueueTasks(
+                            bobOwner, bobActor, null, List.of(new TaskSpec.Wait(1_000L, 1)))));
+            assertEquals("FORBIDDEN", crossCmd.errorCode());
+
+            // Advancing the remaining 29 seconds (to t=75s) completes the task cleanly.
+            wallNanos[0] += java.util.concurrent.TimeUnit.SECONDS.toNanos(29);
+            host.tick();
+            long finishDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (host.view().actor(aliceActor).orElseThrow().activeTask() != null
+                    && System.nanoTime() < finishDeadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(host.view().actor(aliceActor).orElseThrow().activeTask() == null,
+                    "task completes once the full 30s has elapsed");
+        } finally {
+            host.close();
+        }
+    }
+
+    @Test
+    void playerCharterRetryAfter503Recovers_andEmptyEventPollPreservesNextSince() throws Exception {
+        rig(60_000L, 1L);
+        String alice = server.devIssuer().mintSignedJwt(DevPersona.ALICE);
+
+        // Fault appendCommand during PLAYER Alice's first charter -> 503; retry succeeds!
+        store.setAppendCommandFault(new IllegalStateException("transient wal failure"));
+        HttpResponse<String> faultedCharter = post("/api/v1/seats",
+                "{\"seatName\":\"Alice Hold\",\"controllerKind\":\"HUMAN\"}", alice);
+        assertEquals(503, faultedCharter.statusCode(), faultedCharter.body());
+
+        store.setAppendCommandFault(null);
+        HttpResponse<String> recoveredCharter = post("/api/v1/seats",
+                "{\"seatName\":\"Alice Hold\",\"controllerKind\":\"HUMAN\"}", alice);
+        assertEquals(200, recoveredCharter.statusCode(), recoveredCharter.body());
+        assertNotEquals("null", recoveredCharter.body());
+        assertEquals(200, get("/api/v1/observation", alice).statusCode());
+
+        // Event polling: first page advances nextSince > 0; empty follow-up preserves nextSince!
+        HttpResponse<String> page1 = get("/api/v1/events?since=0", alice);
+        assertEquals(200, page1.statusCode());
+        long cursor1 = intField(json(page1.body()), "nextSince");
+        assertTrue(cursor1 >= 1L, "initial registration event advances cursor");
+
+        HttpResponse<String> page2 = get("/api/v1/events?since=" + cursor1, alice);
+        assertEquals(200, page2.statusCode());
+        assertEquals(cursor1, intField(json(page2.body()), "nextSince"),
+                "empty event poll must preserve since cursor rather than resetting to 0");
+
+        HttpResponse<String> pubEmpty = get("/api/v1/public/events?since=" + cursor1, null);
+        assertEquals(200, pubEmpty.statusCode());
+        assertEquals(cursor1, intField(json(pubEmpty.body()), "nextSince"),
+                "empty public event poll must also preserve since cursor");
+    }
+
+    @Test
+    void preCheckpointCmdIdRetryRebuildsExactReceipt_andSseOverflowRecoversAllCursors()
+            throws Exception {
+        long[] wallNanos = new long[] {5_000_000_000L};
+        InMemoryWorldStore memStore = new InMemoryWorldStore();
+        InMemoryEventBus bus = new InMemoryEventBus();
+        WorldHost host1 = new WorldHost(memStore, bus, () -> wallNanos[0],
+                1L, 1L, 60_000L, Long.MAX_VALUE);
+        assertInstanceOf(CommandOutcome.Ok.class, host1.submit(1L, UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(1L, "Sam", "Sam Actor")));
+        OwnerId owner = host1.view().findOwnerBySeatKey(1L).orElseThrow().id();
+        ActorId actor = host1.view().actorsOwnedBy(owner).getFirst().id();
+
+        wallNanos[0] += java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(250);
+        UUID cmdId = UUID.randomUUID();
+        CommandOutcome.Ok original = assertInstanceOf(CommandOutcome.Ok.class,
+                host1.submit(1L, cmdId, new WorldCommand.EnqueueTasks(
+                        owner, actor, null, List.of(new TaskSpec.Wait(1_000L, 1)))));
+        assertTrue(original.receipt().walSeq() >= 2L);
+        assertEquals(250L, original.receipt().admittedMs());
+        host1.close(); // writes checkpoint covering walSeq, so next boot replays 0 rows
+
+        WorldHost host2 = new WorldHost(memStore, new InMemoryEventBus(), () -> wallNanos[0],
+                1L, 1L, 60_000L, Long.MAX_VALUE);
+        try {
+            CommandOutcome.Ok retried = assertInstanceOf(CommandOutcome.Ok.class,
+                    host2.submit(1L, cmdId, new WorldCommand.EnqueueTasks(
+                            owner, actor, null, List.of(new TaskSpec.Wait(1_000L, 1)))));
+            assertEquals(original.receipt().walSeq(), retried.receipt().walSeq(),
+                    "pre-checkpoint retry must recover exact walSeq from command_wal");
+            assertEquals(original.receipt().admittedMs(), retried.receipt().admittedMs(),
+                    "pre-checkpoint retry must recover exact admittedMs from command_wal");
+        } finally {
+            host2.close();
+        }
+
+        // SSE overflow: burst > 1024 events into a live stream before the reader drains;
+        // the OVERFLOW marker triggers catchUp() so zero cursors are lost.
+        rig(60_000L, 1L);
+        JsonObj seat = charter();
+        long seatId = intField(seat, "seatId");
+        int worldId = server.worldHost().worldId();
+
+        HttpClient sseClient = HttpClient.newHttpClient();
+        HttpResponse<java.io.InputStream> stream = sseClient.send(
+                HttpRequest.newBuilder(URI.create(base + "/api/v1/stream?since=0"))
+                        .header("Authorization", "Bearer " + sam)
+                        .GET().build(),
+                HttpResponse.BodyHandlers.ofInputStream());
+        assertEquals(200, stream.statusCode());
+
+        List<com.kotharworks.wilds.server.ports.StoredWorldEvent> burst = new ArrayList<>(1_100);
+        for (long c = 2L; c <= 1_101L; c++) {
+            burst.add(com.kotharworks.wilds.server.ports.StoredWorldEvent.full(
+                    c, c * 10L, "task_started", seatId, null, "burst-" + c, null));
+        }
+        store.appendEvents(worldId, burst);
+        server.eventBus().publish(worldId, burst); // overflows 1024-capacity subscriber queue
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                stream.body(), StandardCharsets.UTF_8))) {
+            long expectedCursor = 1L; // cursor 1 = owner_registered, 2..1101 = burst
+            while (expectedCursor <= 1_101L) {
+                String line = reader.readLine();
+                assertTrue(line != null, "stream ended early at cursor " + expectedCursor);
+                if (!line.startsWith("id: ")) {
+                    continue;
+                }
+                long cursor = Long.parseLong(line.substring("id: ".length()).trim());
+                assertEquals(expectedCursor, cursor, "SSE overflow catchUp must drop zero cursors");
+                expectedCursor++;
+            }
+        }
     }
 }

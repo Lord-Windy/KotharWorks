@@ -168,7 +168,8 @@ public final class DevLocalJwtIssuer {
             String subject = formField(ctx.requestBody(), "persona");
             DevPersona persona = subject == null ? null : DevPersona.fromSubject(subject).orElse(null);
             if (persona == null) {
-                ctx.respondJson(400, "{\"error\":\"UNKNOWN_PERSONA\"}");
+                ctx.respondJson(400,
+                        "{\"errorCode\":\"UNKNOWN_PERSONA\",\"message\":\"unknown persona\"}");
                 return;
             }
             String jwt = mintSignedJwt(persona);

@@ -64,7 +64,11 @@ public final class Main {
         }
         try (WildsServer server = new WildsServer(config)) {
             server.start();
-            System.out.println("wilds-server listening on http://127.0.0.1:" + server.port()
+            String displayHost = config.bindAddress().contains(":")
+                    && !config.bindAddress().startsWith("[")
+                    ? "[" + config.bindAddress() + "]"
+                    : config.bindAddress();
+            System.out.println("wilds-server listening on http://" + displayHost + ":" + server.port()
                     + " (mode=" + config.authMode().name().toLowerCase(java.util.Locale.ROOT)
                     + ", timeScale=" + config.timeScale() + ", world=" + config.worldSeed()
                     + ", storage=" + config.storage().name().toLowerCase(java.util.Locale.ROOT)

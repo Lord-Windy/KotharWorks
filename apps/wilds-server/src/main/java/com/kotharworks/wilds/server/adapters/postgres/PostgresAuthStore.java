@@ -31,6 +31,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import com.kotharworks.auth.AuthErrorCode;
+import com.kotharworks.auth.AuthRejectException;
 import com.kotharworks.auth.http.CookieCodec;
 import com.kotharworks.auth.principal.ExternalIdentity;
 import com.kotharworks.auth.principal.GlobalRole;
@@ -126,6 +128,12 @@ public final class PostgresAuthStore implements AuthStorePort {
     @Override
     public SessionStore.CreatedSession createSession(UserId userId, ExternalIdentity identity,
             String displayName, Set<GlobalRole> grantedRoles, Instant expiresAt) {
+        Objects.requireNonNull(userId, "userId");
+        UserRecord user = findUser(userId).orElse(null);
+        if (user != null && user.suspendedAt() != null) {
+            throw new AuthRejectException(AuthErrorCode.ACCOUNT_SUSPENDED,
+                    "account suspended: " + user.suspendedReason());
+        }
         String rawToken = CookieCodec.newRandomToken();
         byte[] digest = CookieCodec.sha256Digest(rawToken);
         byte[] csrfBytes = new byte[32];
@@ -204,10 +212,16 @@ public final class PostgresAuthStore implements AuthStorePort {
     }
 
     @Override
-    public void revokeToken(long tokenId) {
-        jdbi.useHandle(handle -> handle.execute(
-                "UPDATE auth.api_tokens SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL",
-                now(), tokenId));
+    public boolean revokeToken(UserId owner, String resourceNamespace, long scopedResourceId,
+            long tokenId) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(resourceNamespace, "resourceNamespace");
+        int matched = jdbi.withHandle(handle -> handle.execute(
+                "UPDATE auth.api_tokens SET revoked_at = COALESCE(revoked_at, ?)"
+                        + " WHERE token_id = ? AND owner_user_id = ?"
+                        + " AND resource_namespace = ? AND scoped_resource_id = ?",
+                now(), tokenId, owner.value(), resourceNamespace, scopedResourceId));
+        return matched > 0;
     }
 
     // ------------------------------------------------------------------ row helpers

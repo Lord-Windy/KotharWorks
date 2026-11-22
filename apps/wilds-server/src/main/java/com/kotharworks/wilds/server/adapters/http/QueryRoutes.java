@@ -133,32 +133,44 @@ public final class QueryRoutes {
     }
 
     private void events(RouteContext ctx) throws IOException {
-        AuthorizedSeat authorized = authorize(ctx);
         Map<String, String> query = ApiJson.query(ctx);
-        long since = ApiJson.queryLong(query, "since", 0);
+        AuthorizedSeat authorized = authorize(ctx, query);
+        long since = parseSince(query);
         int limit = eventLimit(query);
-        List<StoredWorldEvent> rows = worldStore.readEventsSince(worldHost.worldId(),
+        List<StoredWorldEvent> rows = worldHost.readSeatEventsSince(
                 authorized.seat().seatId(), since, limit);
-        respondEventPage(ctx, rows, EventCodec::toJsonValue);
+        respondEventPage(ctx, since, rows, EventCodec::toJsonValue);
     }
 
     private void publicEvents(RouteContext ctx) throws IOException {
         Map<String, String> query = ApiJson.query(ctx);
-        long since = ApiJson.queryLong(query, "since", 0);
+        long since = parseSince(query);
         int limit = eventLimit(query);
         List<StoredWorldEvent> rows = worldStore.readEventsSince(worldHost.worldId(), null,
                 since, limit);
-        respondEventPage(ctx, rows, EventCodec::toPublicJsonValue);
+        respondEventPage(ctx, since, rows, EventCodec::toPublicJsonValue);
     }
 
     // ------------------------------------------------------------------ helpers
 
     private AuthorizedSeat authorize(RouteContext ctx) {
-        Map<String, String> query = ApiJson.query(ctx);
+        return authorize(ctx, ApiJson.query(ctx));
+    }
+
+    private AuthorizedSeat authorize(RouteContext ctx, Map<String, String> query) {
         Long seatIdParam = query.containsKey("seatId") && !query.get("seatId").isBlank()
                 ? ApiJson.queryLong(query, "seatId", -1)
                 : null;
         return seatAuthorizer.authorize(ctx.principal(), seatIdParam, worldHost.view());
+    }
+
+    private static long parseSince(Map<String, String> query) {
+        long since = ApiJson.queryLong(query, "since", 0);
+        if (since < 0) {
+            throw new IllegalArgumentException(
+                    "query parameter \"since\" must be >= 0, got: " + since);
+        }
+        return since;
     }
 
     private static int eventLimit(Map<String, String> query) {
@@ -170,11 +182,11 @@ public final class QueryRoutes {
         return (int) limit;
     }
 
-    private static void respondEventPage(RouteContext ctx, List<StoredWorldEvent> rows,
+    private static void respondEventPage(RouteContext ctx, long since, List<StoredWorldEvent> rows,
             java.util.function.Function<StoredWorldEvent, JsonCodec.JsonValue> renderer)
             throws IOException {
         List<JsonCodec.JsonValue> rendered = new ArrayList<>(rows.size());
-        long nextSince = 0;
+        long nextSince = since;
         for (StoredWorldEvent row : rows) {
             rendered.add(renderer.apply(row));
             nextSince = row.cursor();

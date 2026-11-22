@@ -24,6 +24,7 @@ import java.io.Writer;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -93,6 +94,7 @@ public final class WildsServer implements AutoCloseable {
     private final DevLocalJwtIssuer devIssuer;
     private final OidcConfig oidcConfig;
     private final HikariDataSource ownedDataSource;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     /** Production-style constructor: real clock, fresh in-memory adapters. */
     public WildsServer(ServerConfig config) throws IOException {
@@ -268,10 +270,14 @@ public final class WildsServer implements AutoCloseable {
         return devIssuer;
     }
 
-    /** Stops pump, HTTP server, world host (final anchor + checkpoint), and the event bus. */
+    /** Stops pump, wakes SSE subscribers, stops HTTP server, checkpoints world host, and closes pool. */
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         pump.close();
+        eventBus.close();
         router.stop(0);
         worldHost.close();
         if (ownedDataSource != null) {
@@ -280,12 +286,17 @@ public final class WildsServer implements AutoCloseable {
     }
 
     /**
-     * Abrupt abort for the crash-recovery rig: stops pump, HTTP server, and
-     * world host with NO shutdown anchor, NO checkpoint, and by design drops
-     * any deferred (unpersisted) events — the in-process {@code kill -9}.
+     * Abrupt abort for the crash-recovery rig: stops pump, SSE subscribers,
+     * HTTP server, and world host with NO shutdown anchor, NO checkpoint, and
+     * by design drops any deferred (unpersisted) events — the in-process
+     * {@code kill -9}.
      */
     public void closeWithoutCheckpoint() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         pump.close();
+        eventBus.close();
         router.stop(0);
         worldHost.closeWithoutCheckpoint();
         if (ownedDataSource != null) {

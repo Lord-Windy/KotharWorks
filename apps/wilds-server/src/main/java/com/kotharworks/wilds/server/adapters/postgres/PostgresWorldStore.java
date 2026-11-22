@@ -174,6 +174,25 @@ public final class PostgresWorldStore implements WorldStorePort {
     // ------------------------------------------------------------------ command WAL
 
     @Override
+    public Optional<WalRecord.CommandEntry> findCommandByCmdId(int worldId, UUID cmdId) {
+        Objects.requireNonNull(cmdId, "cmdId");
+        return jdbi.withHandle(handle -> handle.select(
+                        "SELECT wal_seq, admitted_ms, seat_id, cmd_id::text AS cmd_id,"
+                                + " payload_json::text AS payload, world_hash"
+                                + " FROM wilds_world.command_wal"
+                                + " WHERE world_id = ? AND cmd_id = ?",
+                        worldId, cmdId)
+                .map((rs, ctx) -> new WalRecord.CommandEntry(
+                        rs.getLong("wal_seq"),
+                        rs.getLong("admitted_ms"),
+                        rs.getLong("seat_id"),
+                        rs.getString("cmd_id"),
+                        CommandCodec.decode(rs.getString("payload")),
+                        rs.getObject("world_hash", Long.class)))
+                .findFirst());
+    }
+
+    @Override
     public boolean existsByCmdId(int worldId, UUID cmdId) {
         return jdbi.withHandle(handle -> handle.select(
                         "SELECT EXISTS (SELECT 1 FROM wilds_world.command_wal"
