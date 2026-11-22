@@ -19,6 +19,8 @@ import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.PlaceId;
 import com.kotharworks.wilds.observe.WorldView;
 
+import java.util.Objects;
+
 /**
  * Procgen strategy seam: composes the deterministic inspection text for a place or
  * actor at a requested zoom level.
@@ -46,10 +48,16 @@ public interface DescriptionComposer {
     sealed interface InspectTarget permits InspectTarget.PlaceTarget, InspectTarget.ActorTarget {
         /** Inspect a place row. */
         record PlaceTarget(PlaceId placeId) implements InspectTarget {
+            public PlaceTarget {
+                Objects.requireNonNull(placeId, "placeId");
+            }
         }
 
         /** Inspect an actor row. */
         record ActorTarget(ActorId actorId) implements InspectTarget {
+            public ActorTarget {
+                Objects.requireNonNull(actorId, "actorId");
+            }
         }
     }
 

@@ -196,4 +196,109 @@ class WorldHashAndSnapshotTest {
         String tampered = good.replace("wilds-snapshot-v1", "wilds-snapshot-v0");
         assertThrows(IllegalArgumentException.class, () -> SnapshotCodec.decode(tampered));
     }
+
+    @Test
+    void snapshotRoundTripPreservesSubsequentIdAndCounterAllocation() {
+        WorldState live = richState(777);
+        // Add two more places (slots 3 [reused gen 2] and 4 [gen 1]), then remove 4 and 1 out of order
+        PlaceRow extraA = live.places().insertNew(
+                id -> new PlaceRow(id, new RuleId("camp"), "Outpost A", List.of()));
+        PlaceRow extraB = live.places().insertNew(
+                id -> new PlaceRow(id, new RuleId("camp"), "Outpost B", List.of()));
+        assertEquals(new PlaceId(3, 2), extraA.id());
+        assertEquals(new PlaceId(4, 1), extraB.id());
+        assertTrue(live.places().remove(extraB.id()));
+        assertTrue(live.places().remove(extraA.id()));
+
+        WorldState restored = SnapshotCodec.decode(SnapshotCodec.encode(live));
+        assertEquals(WorldHash.hash(live), WorldHash.hash(restored));
+
+        // Subsequent min-index slot allocations, event seqs, cursors, and heap polls must match 1:1
+        for (int step = 0; step < 3; step++) {
+            String label = "Reclaimed " + step;
+            PlaceRow fromLive = live.places().insertNew(
+                    id -> new PlaceRow(id, new RuleId("trail"), label, List.of()));
+            PlaceRow fromRestored = restored.places().insertNew(
+                    id -> new PlaceRow(id, new RuleId("trail"), label, List.of()));
+            assertEquals(fromLive.id(), fromRestored.id());
+        }
+        assertEquals(live.allocateEventSeq(), restored.allocateEventSeq());
+        assertEquals(live.allocateEventCursor(), restored.allocateEventCursor());
+        assertEquals(live.dueEvents().poll(), restored.dueEvents().poll());
+        assertEquals(WorldHash.hash(live), WorldHash.hash(restored));
+    }
+
+    @Test
+    void lengthPrefixedStringsNeverCollideAcrossFieldBoundaries() {
+        WorldState abThenC = new WorldState(new WorldSeed(42), RuleRegistry.WILDS_RULES_VERSION);
+        MinimalSeedTopologyBootstrap.INSTANCE.populateInitialTopology(
+                abThenC, RuleRegistry.minimalDefault());
+        PlaceId home = new PlaceId(0, 1);
+        OwnerRow owner1 = abThenC.owners().insertNew(
+                id -> new OwnerRow(id, 1L, "ab", 0, home, List.of(home)));
+        abThenC.ownersBySeatKey().put(1L, owner1.id());
+        OwnerRow owner2 = abThenC.owners().insertNew(
+                id -> new OwnerRow(id, 2L, "c", 0, home, List.of(home)));
+        abThenC.ownersBySeatKey().put(2L, owner2.id());
+
+        WorldState aThenBc = new WorldState(new WorldSeed(42), RuleRegistry.WILDS_RULES_VERSION);
+        MinimalSeedTopologyBootstrap.INSTANCE.populateInitialTopology(
+                aThenBc, RuleRegistry.minimalDefault());
+        OwnerRow alt1 = aThenBc.owners().insertNew(
+                id -> new OwnerRow(id, 1L, "a", 0, home, List.of(home)));
+        aThenBc.ownersBySeatKey().put(1L, alt1.id());
+        OwnerRow alt2 = aThenBc.owners().insertNew(
+                id -> new OwnerRow(id, 2L, "bc", 0, home, List.of(home)));
+        aThenBc.ownersBySeatKey().put(2L, alt2.id());
+
+        assertNotEquals(WorldHash.hash(abThenC), WorldHash.hash(aThenBc));
+
+        // Unpaired UTF-16 surrogates constructed in memory must throw rather than hash to '?'
+        WorldState malformed = new WorldState(new WorldSeed(42), RuleRegistry.WILDS_RULES_VERSION);
+        MinimalSeedTopologyBootstrap.INSTANCE.populateInitialTopology(
+                malformed, RuleRegistry.minimalDefault());
+        OwnerRow broken = malformed.owners().insertNew(
+                id -> new OwnerRow(id, 1L, "bad\uD800", 0, home, List.of(home)));
+        malformed.ownersBySeatKey().put(1L, broken.id());
+        assertThrows(IllegalArgumentException.class, () -> WorldHash.hash(malformed));
+    }
+
+    @Test
+    void decodeRejectsInconsistentSeatKeysDanglingReferencesAndStaleSeqCounters() {
+        String baseline = SnapshotCodec.encode(richState(777));
+
+        // Duplicate key in ownersBySeatKey array
+        String dupSeatKeyEntry = baseline.replace(
+                "[[7,\"own:0:1\"],[8,\"own:1:1\"]]",
+                "[[7,\"own:0:1\"],[7,\"own:1:1\"]]");
+        assertThrows(IllegalArgumentException.class, () -> SnapshotCodec.decode(dupSeatKeyEntry));
+
+        // Missing entry in ownersBySeatKey relative to live owners
+        String missingSeatKeyEntry = baseline.replace(
+                "[[7,\"own:0:1\"],[8,\"own:1:1\"]]",
+                "[[7,\"own:0:1\"]]");
+        assertThrows(IllegalArgumentException.class, () -> SnapshotCodec.decode(missingSeatKeyEntry));
+
+        // Duplicate externalSeatKey across distinct live OwnerRows
+        String dupOwnerSeat = baseline
+                .replace("\"externalSeatKey\":8", "\"externalSeatKey\":7")
+                .replace("[[7,\"own:0:1\"],[8,\"own:1:1\"]]", "[[7,\"own:1:1\"]]");
+        assertThrows(IllegalArgumentException.class, () -> SnapshotCodec.decode(dupOwnerSeat));
+
+        // nextEventSeq <= max dueEvent.seq (richState has max seq = 3, nextEventSeq = 4)
+        String staleNextSeq = baseline.replace("\"nextEventSeq\":4", "\"nextEventSeq\":3");
+        assertThrows(IllegalArgumentException.class, () -> SnapshotCodec.decode(staleNextSeq));
+
+        // Dangling actor placeId pointing at removed slot 3
+        String danglingPlace = baseline.replace("\"placeId\":\"plc:0:1\"", "\"placeId\":\"plc:3:2\"");
+        assertThrows(IllegalArgumentException.class, () -> SnapshotCodec.decode(danglingPlace));
+    }
+
+    @Test
+    void worldStateCounterExhaustionThrowsInsteadOfWrapping() {
+        WorldState state = new WorldState(new WorldSeed(1), RuleRegistry.WILDS_RULES_VERSION);
+        state.restoreCounters(0L, Long.MAX_VALUE, Long.MAX_VALUE);
+        assertThrows(IllegalStateException.class, state::allocateEventSeq);
+        assertThrows(IllegalStateException.class, state::allocateEventCursor);
+    }
 }

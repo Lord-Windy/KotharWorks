@@ -18,6 +18,7 @@ package com.kotharworks.wilds.replay;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.TreeSet;
 
 /**
  * Zero-dependency, deterministic RFC 8259 JSON codec over the closed
@@ -26,11 +27,22 @@ import java.util.Objects;
  * state through JSON. {@link JsonObj} preserves insertion key order via an immutable
  * entry list (never a {@code HashMap}); duplicate keys are rejected.
  *
+ * <p>Strings strictly enforce well-formed Unicode scalar values without NUL
+ * ({@code \u0000}) or unpaired UTF-16 surrogates, keeping in-memory state, UTF-8
+ * JSONL logs, {@link WorldHash}, and PostgreSQL {@code JSONB} 100% aligned. Nesting
+ * depth is capped at {@link #MAX_DEPTH} to prevent stack-overflow DoS on untrusted
+ * inputs.
+ *
  * <p>Shared by {@link SnapshotCodec}, the Ticket-04 {@code CommandCodec}, and the
  * server/host applications. The writer is canonical: compact, no whitespace, fixed
  * escaping, so equal values always write byte-identically.
  */
 public final class JsonCodec {
+
+    /** Maximum container nesting depth accepted by {@link #parse} and {@link #write}. */
+    public static final int MAX_DEPTH = 64;
+
+    private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
 
     private JsonCodec() {
     }
@@ -56,6 +68,7 @@ public final class JsonCodec {
     public record JsonStr(String value) implements JsonValue {
         public JsonStr {
             Objects.requireNonNull(value, "value");
+            validateScalarString(value, "JSON string");
         }
     }
 
@@ -71,10 +84,11 @@ public final class JsonCodec {
 
         public JsonObj {
             entries = List.copyOf(entries);
-            for (int i = 0; i < entries.size(); i++) {
-                for (int j = i + 1; j < entries.size(); j++) {
-                    if (entries.get(i).key().equals(entries.get(j).key())) {
-                        throw new IllegalArgumentException("duplicate object key: " + entries.get(i).key());
+            if (entries.size() > 1) {
+                TreeSet<String> seen = new TreeSet<>();
+                for (Entry entry : entries) {
+                    if (!seen.add(entry.key())) {
+                        throw new IllegalArgumentException("duplicate object key: " + entry.key());
                     }
                 }
             }
@@ -85,6 +99,7 @@ public final class JsonCodec {
             public Entry {
                 Objects.requireNonNull(key, "key");
                 Objects.requireNonNull(value, "value");
+                validateScalarString(key, "JSON object key");
             }
         }
 
@@ -109,7 +124,7 @@ public final class JsonCodec {
         Objects.requireNonNull(json, "json");
         Parser parser = new Parser(json);
         parser.skipWhitespace();
-        JsonValue value = parser.parseValue();
+        JsonValue value = parser.parseValue(0);
         parser.skipWhitespace();
         if (!parser.atEnd()) {
             throw parser.error("trailing garbage after JSON value");
@@ -121,27 +136,35 @@ public final class JsonCodec {
     public static String write(JsonValue value) {
         Objects.requireNonNull(value, "value");
         StringBuilder out = new StringBuilder();
-        writeValue(value, out);
+        writeValue(value, out, 0);
         return out.toString();
     }
 
-    private static void writeValue(JsonValue value, StringBuilder out) {
+    private static void writeValue(JsonValue value, StringBuilder out, int depth) {
         switch (value) {
             case JsonNull ignored -> out.append("null");
             case JsonBool(boolean flag) -> out.append(flag ? "true" : "false");
             case JsonInt(long number) -> out.append(number);
             case JsonStr(String text) -> writeString(text, out);
             case JsonArr(List<JsonValue> values) -> {
+                if (depth >= MAX_DEPTH) {
+                    throw new IllegalArgumentException(
+                            "maximum JSON nesting depth " + MAX_DEPTH + " exceeded");
+                }
                 out.append('[');
                 for (int i = 0; i < values.size(); i++) {
                     if (i > 0) {
                         out.append(',');
                     }
-                    writeValue(values.get(i), out);
+                    writeValue(values.get(i), out, depth + 1);
                 }
                 out.append(']');
             }
             case JsonObj(List<JsonObj.Entry> entries) -> {
+                if (depth >= MAX_DEPTH) {
+                    throw new IllegalArgumentException(
+                            "maximum JSON nesting depth " + MAX_DEPTH + " exceeded");
+                }
                 out.append('{');
                 for (int i = 0; i < entries.size(); i++) {
                     if (i > 0) {
@@ -149,7 +172,7 @@ public final class JsonCodec {
                     }
                     writeString(entries.get(i).key(), out);
                     out.append(':');
-                    writeValue(entries.get(i).value(), out);
+                    writeValue(entries.get(i).value(), out, depth + 1);
                 }
                 out.append('}');
             }
@@ -170,7 +193,9 @@ public final class JsonCodec {
                 case '\t' -> out.append("\\t");
                 default -> {
                     if (c < 0x20) {
-                        out.append(String.format("\\u%04x", (int) c));
+                        out.append("\\u00")
+                                .append(HEX_DIGITS[(c >>> 4) & 0xF])
+                                .append(HEX_DIGITS[c & 0xF]);
                     } else {
                         out.append(c);
                     }
@@ -178,6 +203,25 @@ public final class JsonCodec {
             }
         }
         out.append('"');
+    }
+
+    private static void validateScalarString(String text, String label) {
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\0') {
+                throw new IllegalArgumentException(label + " must not contain NUL (\\u0000)");
+            }
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    throw new IllegalArgumentException(
+                            label + " contains an unpaired UTF-16 high surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException(
+                        label + " contains an unpaired UTF-16 low surrogate");
+            }
+        }
     }
 
     /** Single-pass recursive-descent parser over a {@code String} with an index cursor. */
@@ -211,14 +255,14 @@ public final class JsonCodec {
             }
         }
 
-        JsonValue parseValue() {
+        JsonValue parseValue(int depth) {
             if (atEnd()) {
                 throw error("unexpected end of input");
             }
             char c = peek();
             return switch (c) {
-                case '{' -> parseObject();
-                case '[' -> parseArray();
+                case '{' -> parseObject(depth);
+                case '[' -> parseArray(depth);
                 case '"' -> new JsonStr(parseString());
                 case 't' -> parseLiteral("true", new JsonBool(true));
                 case 'f' -> parseLiteral("false", new JsonBool(false));
@@ -232,7 +276,10 @@ public final class JsonCodec {
             };
         }
 
-        private JsonValue parseObject() {
+        private JsonValue parseObject(int depth) {
+            if (depth >= MAX_DEPTH) {
+                throw error("maximum JSON nesting depth " + MAX_DEPTH + " exceeded");
+            }
             pos++; // consume '{'
             List<JsonObj.Entry> entries = new ArrayList<>();
             skipWhitespace();
@@ -252,7 +299,7 @@ public final class JsonCodec {
                 }
                 pos++;
                 skipWhitespace();
-                entries.add(JsonObj.entry(key, parseValue()));
+                entries.add(JsonObj.entry(key, parseValue(depth + 1)));
                 skipWhitespace();
                 if (atEnd()) {
                     throw error("unterminated object");
@@ -267,7 +314,10 @@ public final class JsonCodec {
             }
         }
 
-        private JsonValue parseArray() {
+        private JsonValue parseArray(int depth) {
+            if (depth >= MAX_DEPTH) {
+                throw error("maximum JSON nesting depth " + MAX_DEPTH + " exceeded");
+            }
             pos++; // consume '['
             List<JsonValue> values = new ArrayList<>();
             skipWhitespace();
@@ -277,7 +327,7 @@ public final class JsonCodec {
             }
             while (true) {
                 skipWhitespace();
-                values.add(parseValue());
+                values.add(parseValue(depth + 1));
                 skipWhitespace();
                 if (atEnd()) {
                     throw error("unterminated array");
@@ -306,6 +356,16 @@ public final class JsonCodec {
                 if (c < 0x20) {
                     throw error("raw control character inside string");
                 }
+                if (Character.isSurrogate(c)) {
+                    if (Character.isHighSurrogate(c)) {
+                        if (atEnd() || !Character.isLowSurrogate(src.charAt(pos))) {
+                            throw error("unpaired UTF-16 high surrogate inside string");
+                        }
+                        text.append(c).append(src.charAt(pos++));
+                        continue;
+                    }
+                    throw error("unpaired UTF-16 low surrogate inside string");
+                }
                 if (c != '\\') {
                     text.append(c);
                     continue;
@@ -324,22 +384,47 @@ public final class JsonCodec {
                     case 'r' -> text.append('\r');
                     case 't' -> text.append('\t');
                     case 'u' -> {
-                        if (pos + 4 > src.length()) {
-                            throw error("truncated unicode escape");
+                        char unit = readUnicodeUnit();
+                        if (unit == '\0') {
+                            throw error("NUL character (\\u0000) is not permitted in JSON strings");
                         }
-                        int code = 0;
-                        for (int i = 0; i < 4; i++) {
-                            int digit = Character.digit(src.charAt(pos++), 16);
-                            if (digit < 0) {
-                                throw error("invalid unicode escape digit");
+                        if (Character.isLowSurrogate(unit)) {
+                            throw error("unpaired UTF-16 low surrogate escape");
+                        }
+                        if (Character.isHighSurrogate(unit)) {
+                            if (pos + 2 > src.length()
+                                    || src.charAt(pos) != '\\'
+                                    || src.charAt(pos + 1) != 'u') {
+                                throw error("unpaired UTF-16 high surrogate escape");
                             }
-                            code = (code << 4) | digit;
+                            pos += 2;
+                            char low = readUnicodeUnit();
+                            if (!Character.isLowSurrogate(low)) {
+                                throw error("expected UTF-16 low surrogate escape after high surrogate");
+                            }
+                            text.append(unit).append(low);
+                        } else {
+                            text.append(unit);
                         }
-                        text.append((char) code);
                     }
                     default -> throw error("invalid escape sequence \\" + escape);
                 }
             }
+        }
+
+        private char readUnicodeUnit() {
+            if (pos + 4 > src.length()) {
+                throw error("truncated unicode escape");
+            }
+            int code = 0;
+            for (int i = 0; i < 4; i++) {
+                int digit = asciiHexDigit(src.charAt(pos++));
+                if (digit < 0) {
+                    throw error("invalid unicode escape digit");
+                }
+                code = (code << 4) | digit;
+            }
+            return (char) code;
         }
 
         /** Grammar {@code -?(0|[1-9][0-9]*)} only: '.', 'e', 'E' mean rejection. */
@@ -382,6 +467,19 @@ public final class JsonCodec {
 
         private static boolean isDigit(char c) {
             return c >= '0' && c <= '9';
+        }
+
+        private static int asciiHexDigit(char c) {
+            if (c >= '0' && c <= '9') {
+                return c - '0';
+            }
+            if (c >= 'a' && c <= 'f') {
+                return c - 'a' + 10;
+            }
+            if (c >= 'A' && c <= 'F') {
+                return c - 'A' + 10;
+            }
+            return -1;
         }
 
         IllegalArgumentException error(String message) {

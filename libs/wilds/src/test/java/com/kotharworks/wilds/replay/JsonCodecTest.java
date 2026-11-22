@@ -25,6 +25,7 @@ import com.kotharworks.wilds.replay.JsonCodec.JsonValue;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -42,16 +43,92 @@ class JsonCodecTest {
 
     @Test
     void parsesEscapedStrings() {
-        JsonValue parsed = JsonCodec.parse("\"a\\\"b\\\\c\\nd\\u00e9\"");
-        assertEquals(new JsonStr("a\"b\\c\nd\u00e9"), parsed);
+        JsonValue parsed = JsonCodec.parse("\"a\\\"b\\\\c\\/d\\b\\f\\n\\r\\te\\u00e9\"");
+        assertEquals(new JsonStr("a\"b\\c/d\b\f\n\r\te\u00e9"), parsed);
     }
 
     @Test
     void escapesOnWriteAndRoundTrips() {
-        JsonStr value = new JsonStr("quote\" backslash\\ newline\n tab\t e\u00e9");
+        JsonStr value = new JsonStr(
+                "quote\" backslash\\ newline\n cr\r tab\t bs\b ff\f soh\u0001 us\u001f e\u00e9");
         String written = JsonCodec.write(value);
-        assertEquals("\"quote\\\" backslash\\\\ newline\\n tab\\t e\u00e9\"", written);
+        assertEquals(
+                "\"quote\\\" backslash\\\\ newline\\n cr\\r tab\\t bs\\b ff\\f soh\\u0001 us\\u001f e\u00e9\"",
+                written);
         assertEquals(value, JsonCodec.parse(written));
+    }
+
+    @Test
+    void surrogatePairsParseAndRoundTrip() {
+        String grin = "\uD83D\uDE00";
+        assertEquals(new JsonStr(grin), JsonCodec.parse("\"\\uD83D\\uDE00\""));
+        assertEquals(new JsonStr(grin), JsonCodec.parse("\"\\ud83d\\ude00\""));
+        assertEquals(new JsonStr(grin), JsonCodec.parse("\"" + grin + "\""));
+        assertEquals("\"" + grin + "\"", JsonCodec.write(new JsonStr(grin)));
+    }
+
+    @Test
+    void rejectsUnpairedSurrogatesNulAndNonAsciiHexDigits() {
+        // Unpaired high/low surrogate escapes
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\\uD800\""));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\\uD800x\""));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\\uD800\\u0041\""));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\\uDC00\""));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\\uDC00\\uD800\""));
+
+        // Raw unpaired surrogates in parse and constructors
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\uD800\""));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\uDC00\""));
+        assertThrows(IllegalArgumentException.class, () -> new JsonStr("bad\uD800"));
+        assertThrows(IllegalArgumentException.class, () -> new JsonStr("bad\uDC00"));
+        assertThrows(IllegalArgumentException.class,
+                () -> JsonObj.entry("bad\uD800", JsonNull.INSTANCE));
+
+        // NUL (\u0000) rejected on parse and construction (Postgres JSONB parity)
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"\\u0000\""));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("\"a\0b\""));
+        assertThrows(IllegalArgumentException.class, () -> new JsonStr("a\0b"));
+        assertThrows(IllegalArgumentException.class,
+                () -> JsonObj.entry("k\0", JsonNull.INSTANCE));
+
+        // Non-ASCII Unicode digits/letters inside unicode escapes (fullwidth & Arabic-Indic)
+        assertThrows(IllegalArgumentException.class,
+                () -> JsonCodec.parse("\"\\u" + "\uFF10\uFF10\uFF14\uFF11\""));
+        assertThrows(IllegalArgumentException.class,
+                () -> JsonCodec.parse("\"\\u00" + "\uFF21\uFF46\""));
+        assertThrows(IllegalArgumentException.class,
+                () -> JsonCodec.parse("\"\\u" + "\u0660\u0660\u0664\u0661\""));
+    }
+
+    @Test
+    void enforcesMaxNestingDepthOnParseAndWrite() {
+        String validDeepArrays = "[".repeat(JsonCodec.MAX_DEPTH) + "0" + "]".repeat(JsonCodec.MAX_DEPTH);
+        JsonValue atLimit = JsonCodec.parse(validDeepArrays);
+        assertEquals(validDeepArrays, JsonCodec.write(atLimit));
+
+        String tooDeepArrays = "[".repeat(JsonCodec.MAX_DEPTH + 1) + "0"
+                + "]".repeat(JsonCodec.MAX_DEPTH + 1);
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse(tooDeepArrays));
+
+        String tooDeepObjects = "{\"a\":".repeat(JsonCodec.MAX_DEPTH + 1) + "0"
+                + "}".repeat(JsonCodec.MAX_DEPTH + 1);
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse(tooDeepObjects));
+
+        JsonValue programmaticTooDeep = new JsonArr(List.of(atLimit));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.write(programmaticTooDeep));
+    }
+
+    @Test
+    void largeObjectDuplicateKeyCheckScalesCleanly() {
+        List<JsonObj.Entry> entries = new ArrayList<>(2_000);
+        for (int i = 0; i < 2_000; i++) {
+            entries.add(JsonObj.entry("k" + i, new JsonInt(i)));
+        }
+        JsonObj large = new JsonObj(entries);
+        assertEquals(new JsonInt(1_999), large.getOrNull("k1999"));
+
+        entries.add(JsonObj.entry("k0", new JsonInt(0)));
+        assertThrows(IllegalArgumentException.class, () -> new JsonObj(entries));
     }
 
     @Test
@@ -95,7 +172,13 @@ class JsonCodecTest {
         assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse(""));
         assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("1 x"));
         assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("01"));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("-00"));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("+1"));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("+0"));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("-"));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse(".5"));
         assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("{\"a\":1,\"a\":2}"));
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("{\"a\":1,}"));
         assertThrows(IllegalArgumentException.class, () -> JsonCodec.parse("[1 2]"));
     }
 

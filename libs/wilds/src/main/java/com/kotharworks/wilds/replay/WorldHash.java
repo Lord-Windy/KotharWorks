@@ -68,7 +68,9 @@ public final class WorldHash {
         sink.putLong(state.nextEventCursor());
 
         sink.putTag("owners");
-        for (EntityTable.SlotDump<OwnerId, OwnerRow> slot : state.owners().dumpSlots()) {
+        List<EntityTable.SlotDump<OwnerId, OwnerRow>> ownerSlots = state.owners().dumpSlots();
+        sink.putInt(ownerSlots.size());
+        for (EntityTable.SlotDump<OwnerId, OwnerRow> slot : ownerSlots) {
             sink.putInt(slot.generation());
             sink.putBoolean(slot.row() != null);
             if (slot.row() != null) {
@@ -86,7 +88,9 @@ public final class WorldHash {
         }
 
         sink.putTag("places");
-        for (EntityTable.SlotDump<PlaceId, PlaceRow> slot : state.places().dumpSlots()) {
+        List<EntityTable.SlotDump<PlaceId, PlaceRow>> placeSlots = state.places().dumpSlots();
+        sink.putInt(placeSlots.size());
+        for (EntityTable.SlotDump<PlaceId, PlaceRow> slot : placeSlots) {
             sink.putInt(slot.generation());
             sink.putBoolean(slot.row() != null);
             if (slot.row() != null) {
@@ -103,7 +107,9 @@ public final class WorldHash {
         }
 
         sink.putTag("actors");
-        for (EntityTable.SlotDump<ActorId, ActorRow> slot : state.actors().dumpSlots()) {
+        List<EntityTable.SlotDump<ActorId, ActorRow>> actorSlots = state.actors().dumpSlots();
+        sink.putInt(actorSlots.size());
+        for (EntityTable.SlotDump<ActorId, ActorRow> slot : actorSlots) {
             sink.putInt(slot.generation());
             sink.putBoolean(slot.row() != null);
             if (slot.row() != null) {
@@ -196,23 +202,30 @@ public final class WorldHash {
     private static final class Sink {
 
         private final MessageDigest digest;
+        private final byte[] scratch = new byte[Long.BYTES];
 
         Sink(MessageDigest digest) {
             this.digest = digest;
         }
 
         void putLong(long value) {
-            digest.update(new byte[] {
-                    (byte) (value >>> 56), (byte) (value >>> 48),
-                    (byte) (value >>> 40), (byte) (value >>> 32),
-                    (byte) (value >>> 24), (byte) (value >>> 16),
-                    (byte) (value >>> 8), (byte) value});
+            scratch[0] = (byte) (value >>> 56);
+            scratch[1] = (byte) (value >>> 48);
+            scratch[2] = (byte) (value >>> 40);
+            scratch[3] = (byte) (value >>> 32);
+            scratch[4] = (byte) (value >>> 24);
+            scratch[5] = (byte) (value >>> 16);
+            scratch[6] = (byte) (value >>> 8);
+            scratch[7] = (byte) value;
+            digest.update(scratch, 0, Long.BYTES);
         }
 
         void putInt(int value) {
-            digest.update(new byte[] {
-                    (byte) (value >>> 24), (byte) (value >>> 16),
-                    (byte) (value >>> 8), (byte) value});
+            scratch[0] = (byte) (value >>> 24);
+            scratch[1] = (byte) (value >>> 16);
+            scratch[2] = (byte) (value >>> 8);
+            scratch[3] = (byte) value;
+            digest.update(scratch, 0, Integer.BYTES);
         }
 
         void putBoolean(boolean value) {
@@ -220,6 +233,7 @@ public final class WorldHash {
         }
 
         void putString(String value) {
+            requireWellFormedUtf16(value);
             byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
             putInt(bytes.length);
             digest.update(bytes);
@@ -227,6 +241,22 @@ public final class WorldHash {
 
         void putTag(String tag) {
             putString(tag);
+        }
+
+        private static void requireWellFormedUtf16(String value) {
+            for (int i = 0; i < value.length(); i++) {
+                char c = value.charAt(i);
+                if (Character.isHighSurrogate(c)) {
+                    if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                        throw new IllegalArgumentException(
+                                "unpaired UTF-16 high surrogate in WorldState string");
+                    }
+                    i++;
+                } else if (Character.isLowSurrogate(c)) {
+                    throw new IllegalArgumentException(
+                            "unpaired UTF-16 low surrogate in WorldState string");
+                }
+            }
         }
     }
 }

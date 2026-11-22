@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -160,6 +161,10 @@ class BootstrapTopologyTest {
                 view, new InspectTarget.ActorTarget(actor.id()), ZoomLevel.LOOK));
 
         assertNotEquals(placeZooms[0], actorZooms[0], "place and actor descriptions must differ");
+        assertTrue(placeZooms[2].contains("\n"), "place EXAMINE must use '\\n' line breaks");
+        assertFalse(placeZooms[2].contains("\r"), "place EXAMINE must never emit '\\r'");
+        assertTrue(actorZooms[2].contains("\n"), "actor EXAMINE must use '\\n' line breaks");
+        assertFalse(actorZooms[2].contains("\r"), "actor EXAMINE must never emit '\\r'");
     }
 
     private static void assertDistinctNonBlank(String[] zooms, String subject) {
@@ -177,6 +182,22 @@ class BootstrapTopologyTest {
         assertThrows(IllegalStateException.class,
                 () -> MinimalSeedTopologyBootstrap.INSTANCE.populateInitialTopology(
                         state, RuleRegistry.minimalDefault()));
+
+        // Also reject a table whose live rows were removed (liveCount == 0, highWaterMark > 0)
+        WorldState emptied = new WorldState(new WorldSeed(7), RuleRegistry.WILDS_RULES_VERSION);
+        PlaceRow temp = emptied.places().insertNew(
+                id -> new PlaceRow(id, new RuleId("camp"), "Temp", List.of()));
+        assertTrue(emptied.places().remove(temp.id()));
+        assertEquals(0, emptied.places().liveCount());
+        assertThrows(IllegalStateException.class,
+                () -> MinimalSeedTopologyBootstrap.INSTANCE.populateInitialTopology(
+                        emptied, RuleRegistry.minimalDefault()));
+    }
+
+    @Test
+    void inspectTargetsRejectNullIds() {
+        assertThrows(NullPointerException.class, () -> new InspectTarget.PlaceTarget(null));
+        assertThrows(NullPointerException.class, () -> new InspectTarget.ActorTarget(null));
     }
 
     @Test

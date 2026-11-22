@@ -47,10 +47,10 @@ public final class MinimalSeedTopologyBootstrap implements WorldTopologyBootstra
     public void populateInitialTopology(WorldState state, RuleRegistry rules) {
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(rules, "rules");
-        if (state.places().liveCount() != 0) {
+        if (state.places().highWaterMark() != 0) {
             throw new IllegalStateException(
-                    "initial topology requires an empty place table: "
-                            + state.places().liveCount() + " places already present");
+                    "initial topology requires an uninitialized place table: highWaterMark="
+                            + state.places().highWaterMark());
         }
         RuleId campId = requirePlaceKind(rules, "camp");
         RuleId trailId = requirePlaceKind(rules, "trail");

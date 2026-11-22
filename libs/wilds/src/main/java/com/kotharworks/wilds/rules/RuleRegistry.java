@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.SequencedMap;
 import java.util.TreeMap;
+import java.util.function.Function;
 
 /**
  * Compile-time structural rule catalog: the closed set of place kinds and task kinds a
@@ -81,8 +82,24 @@ public final class RuleRegistry {
     public RuleRegistry(Map<RuleId, PlaceKindDef> placeKinds, Map<RuleId, TaskKindDef> taskKinds) {
         Objects.requireNonNull(placeKinds, "placeKinds");
         Objects.requireNonNull(taskKinds, "taskKinds");
-        this.placeKinds = new TreeMap<>(placeKinds);
-        this.taskKinds = new TreeMap<>(taskKinds);
+        this.placeKinds = copyValidated(placeKinds, PlaceKindDef::id, "placeKinds");
+        this.taskKinds = copyValidated(taskKinds, TaskKindDef::id, "taskKinds");
+    }
+
+    private static <D> TreeMap<RuleId, D> copyValidated(
+            Map<RuleId, D> source, Function<D, RuleId> idExtractor, String mapName) {
+        TreeMap<RuleId, D> copy = new TreeMap<>();
+        for (Map.Entry<RuleId, D> entry : source.entrySet()) {
+            RuleId key = Objects.requireNonNull(entry.getKey(), mapName + " contains a null key");
+            D def = Objects.requireNonNull(entry.getValue(), mapName + " contains a null value");
+            RuleId defId = idExtractor.apply(def);
+            if (!key.equals(defId)) {
+                throw new IllegalArgumentException(mapName + " key " + key.slug()
+                        + " does not match definition id " + defId.slug());
+            }
+            copy.put(key, def);
+        }
+        return copy;
     }
 
     /**

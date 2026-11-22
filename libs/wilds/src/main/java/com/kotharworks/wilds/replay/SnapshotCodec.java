@@ -93,6 +93,7 @@ public final class SnapshotCodec {
         state.actors().restoreSlots(decodeActorSlots(expectArr(field(root, "actors"), "actors")));
         state.restoreSeatKeys(decodeSeatKeys(expectArr(field(root, "ownersBySeatKey"), "ownersBySeatKey")));
         state.dueEvents().restoreFrom(decodeDueEvents(expectArr(field(root, "dueEvents"), "dueEvents")));
+        validateRestoredState(state);
         return state;
     }
 
@@ -392,9 +393,44 @@ public final class SnapshotCodec {
             }
             long key = expectInt(entry.values().get(0), "ownersBySeatKey key");
             OwnerId owner = OwnerId.parse(expectStr(entry.values().get(1), "ownersBySeatKey owner"));
-            seatKeys.put(key, owner);
+            OwnerId existing = seatKeys.put(key, owner);
+            if (existing != null) {
+                throw new IllegalArgumentException(
+                        "duplicate key in ownersBySeatKey: " + key);
+            }
         }
         return seatKeys;
+    }
+
+    private static void validateRestoredState(WorldState state) {
+        state.owners().forEach(owner -> {
+            if (state.places().getOrNull(owner.homePlaceId()) == null) {
+                throw new IllegalArgumentException("owner " + owner.id().toWire()
+                        + " references missing homePlaceId " + owner.homePlaceId().toWire());
+            }
+        });
+        state.actors().forEach(actor -> {
+            if (state.owners().getOrNull(actor.ownerId()) == null) {
+                throw new IllegalArgumentException("actor " + actor.id().toWire()
+                        + " references missing ownerId " + actor.ownerId().toWire());
+            }
+            if (state.places().getOrNull(actor.placeId()) == null) {
+                throw new IllegalArgumentException("actor " + actor.id().toWire()
+                        + " references missing placeId " + actor.placeId().toWire());
+            }
+            if (actor.activeTask() != null
+                    && actor.activeTask().heapTicket() >= state.nextEventSeq()) {
+                throw new IllegalArgumentException("actor " + actor.id().toWire()
+                        + " activeTask heapTicket " + actor.activeTask().heapTicket()
+                        + " must be < nextEventSeq " + state.nextEventSeq());
+            }
+        });
+        for (ScheduledEvent event : state.dueEvents().snapshotOrderedList()) {
+            if (event.seq() < 1 || event.seq() >= state.nextEventSeq()) {
+                throw new IllegalArgumentException("dueEvent seq " + event.seq()
+                        + " must be in [1, " + state.nextEventSeq() + ")");
+            }
+        }
     }
 
     private static List<ScheduledEvent> decodeDueEvents(JsonCodec.JsonArr events) {

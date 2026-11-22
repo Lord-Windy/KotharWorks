@@ -88,11 +88,17 @@ public final class WorldState {
 
     /** Allocates the next strictly ascending event seq (post-increment: returns, then +1). */
     public long allocateEventSeq() {
+        if (nextEventSeq == Long.MAX_VALUE) {
+            throw new IllegalStateException("event seq space exhausted");
+        }
         return nextEventSeq++;
     }
 
     /** Allocates the next strictly ascending event cursor (post-increment: returns, then +1). */
     public long allocateEventCursor() {
+        if (nextEventCursor == Long.MAX_VALUE) {
+            throw new IllegalStateException("event cursor space exhausted");
+        }
         return nextEventCursor++;
     }
 
@@ -150,19 +156,34 @@ public final class WorldState {
     }
 
     /**
-     * Rebuilds the seat-key index from the owner rows; used by snapshot restore. Every
-     * duplicate {@code externalSeatKey} across distinct owners is rejected.
+     * Restores and validates the seat-key index against the live owner rows; used by
+     * snapshot restore. Rejects duplicate {@code externalSeatKey}s across live owners
+     * and any mismatch between {@code seatKeys} and the live {@link #owners()} table.
      */
     public void restoreSeatKeys(Map<Long, OwnerId> seatKeys) {
         Objects.requireNonNull(seatKeys, "seatKeys");
-        ownersBySeatKey.clear();
-        for (Map.Entry<Long, OwnerId> entry : seatKeys.entrySet()) {
-            OwnerId existing = ownersBySeatKey.put(entry.getKey(), entry.getValue());
-            if (existing != null) {
-                ownersBySeatKey.clear();
-                throw new IllegalArgumentException("duplicate externalSeatKey " + entry.getKey()
-                        + " for owners " + existing.toWire() + " and " + entry.getValue().toWire());
+        TreeMap<Long, OwnerId> expected = new TreeMap<>();
+        owners.forEach(owner -> {
+            OwnerId duplicate = expected.put(owner.externalSeatKey(), owner.id());
+            if (duplicate != null) {
+                throw new IllegalArgumentException("duplicate externalSeatKey "
+                        + owner.externalSeatKey() + " across owners "
+                        + duplicate.toWire() + " and " + owner.id().toWire());
             }
+        });
+        TreeMap<Long, OwnerId> provided = new TreeMap<>();
+        for (Map.Entry<Long, OwnerId> entry : seatKeys.entrySet()) {
+            Long key = Objects.requireNonNull(entry.getKey(), "seatKeys contains a null key");
+            OwnerId value = Objects.requireNonNull(entry.getValue(),
+                    "seatKeys contains a null owner id");
+            provided.put(key, value);
         }
+        if (!expected.equals(provided)) {
+            throw new IllegalArgumentException(
+                    "ownersBySeatKey does not match live owners: expected "
+                            + expected + " but got " + provided);
+        }
+        ownersBySeatKey.clear();
+        ownersBySeatKey.putAll(provided);
     }
 }

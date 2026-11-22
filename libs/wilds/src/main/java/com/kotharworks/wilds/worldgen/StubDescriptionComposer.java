@@ -70,7 +70,7 @@ public final class StubDescriptionComposer implements DescriptionComposer {
             case EXAMINE -> {
                 text.append(" | seed 0x").append(Long.toHexString(view.seed().value()));
                 for (PlaceEdge edge : row.edges()) {
-                    text.append(System.lineSeparator())
+                    text.append('\n')
                             .append("  -> ").append(edge.to().toWire())
                             .append(" (").append(edge.travelDurationMs()).append("ms)");
                 }
@@ -98,20 +98,20 @@ public final class StubDescriptionComposer implements DescriptionComposer {
             case EXAMINE -> {
                 appendEnergy(text, view, row);
                 if (row.activeTask() == null) {
-                    text.append(System.lineSeparator()).append("  idle");
+                    text.append('\n').append("  idle");
                 } else {
                     ActiveTask task = row.activeTask();
-                    text.append(System.lineSeparator())
+                    text.append('\n')
                             .append("  task: ").append(renderSpec(task.spec()))
                             .append(" (started ").append(task.startedAtMs())
                             .append("ms, due ").append(task.dueAtMs())
                             .append("ms, ticket ").append(task.heapTicket())
                             .append(", batches left ").append(task.batchesLeft()).append(')');
                 }
-                text.append(System.lineSeparator())
+                text.append('\n')
                         .append("  queue (").append(row.pendingQueue().size()).append("):");
                 for (TaskSpec spec : row.pendingQueue()) {
-                    text.append(System.lineSeparator())
+                    text.append('\n')
                             .append("    - ").append(renderSpec(spec));
                 }
             }

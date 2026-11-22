@@ -39,6 +39,7 @@ public record OwnerRow(
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(homePlaceId, "homePlaceId");
+        Objects.requireNonNull(discoveredPlaces, "discoveredPlaces");
         if (revision < 0) {
             throw new IllegalArgumentException("revision must be >= 0: " + revision);
         }

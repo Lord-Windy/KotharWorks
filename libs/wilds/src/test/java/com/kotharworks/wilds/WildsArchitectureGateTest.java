@@ -59,6 +59,7 @@ import java.lang.reflect.WildcardType;
 import java.math.BigInteger;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -71,6 +72,7 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.NavigableSet;
@@ -84,6 +86,7 @@ import java.util.SequencedSet;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
+import java.util.TimeZone;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -108,12 +111,21 @@ class WildsArchitectureGateTest {
             "java/lang/System.currentTimeMillis",
             "java/lang/System.nanoTime",
             "java/lang/System.identityHashCode",
+            "java/lang/System.lineSeparator",
+            "java/lang/System.getenv",
+            "java/lang/System.getProperty",
+            "java/lang/System.getProperties",
             "java/lang/System.in",
             "java/lang/System.out",
             "java/lang/System.err",
+            "java/lang/String.format",
+            "java/lang/String.formatted",
             "java/lang/Math.random",
             "java/lang/StrictMath.random",
             "java/lang/Thread.sleep",
+            "java/util/Locale.getDefault",
+            "java/util/TimeZone.getDefault",
+            "java/nio/charset/Charset.defaultCharset",
             "java/util/UUID.randomUUID",
             "java/util/Set.of",
             "java/util/Set.copyOf",
@@ -123,7 +135,7 @@ class WildsArchitectureGateTest {
 
     private static final Set<String> BANNED_TYPES = Set.of(
             "java/util/Date", "java/util/Calendar", "java/util/GregorianCalendar",
-            "java/util/Timer", "java/util/TimerTask",
+            "java/util/Timer", "java/util/TimerTask", "java/util/Formatter",
             "java/util/Random", "java/util/concurrent/ThreadLocalRandom",
             "java/security/SecureRandom", "java/util/SplittableRandom",
             "java/util/HashMap", "java/util/LinkedHashMap",
@@ -249,6 +261,26 @@ class WildsArchitectureGateTest {
     }
 
     @Test
+    void scannerCatchesHostEnvironmentAndLocaleLeaks() {
+        assertTrue(forbiddenReferences(model(LineSeparatorUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/lang/System.lineSeparator")));
+        assertTrue(forbiddenReferences(model(SystemEnvAndPropertyUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/lang/System.getenv")));
+        assertTrue(forbiddenReferences(model(SystemEnvAndPropertyUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/lang/System.getProperty")));
+        assertTrue(forbiddenReferences(model(StringFormatUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/lang/String.format")));
+        assertTrue(forbiddenReferences(model(StringFormatUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/lang/String.formatted")));
+        assertTrue(forbiddenReferences(model(DefaultLocaleAndCharsetUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/util/Locale.getDefault")));
+        assertTrue(forbiddenReferences(model(DefaultLocaleAndCharsetUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/util/TimeZone.getDefault")));
+        assertTrue(forbiddenReferences(model(DefaultLocaleAndCharsetUser.class)).stream()
+                .anyMatch(v -> v.endsWith("-> java/nio/charset/Charset.defaultCharset")));
+    }
+
+    @Test
     void wildsEngineStateRootIsPureDeterministic() {
         assertPureDeterministicStateRoot(WildsEngine.class);
     }
@@ -282,6 +314,8 @@ class WildsArchitectureGateTest {
         assertThrows(AssertionError.class, () -> assertPureDeterministicStateRoot(NestedGenericDoubleState.class));
         assertThrows(AssertionError.class, () -> assertPureDeterministicStateRoot(UnsealedInterfaceFieldState.class));
         assertThrows(AssertionError.class, () -> assertPureDeterministicStateRoot(ExternalPackageFieldState.class));
+        assertThrows(AssertionError.class, () -> assertPureDeterministicStateRoot(EnumWithSeededRngState.class));
+        assertThrows(AssertionError.class, () -> assertPureDeterministicStateRoot(EnumWithUnsortedMapState.class));
     }
 
     @Test
@@ -324,7 +358,7 @@ class WildsArchitectureGateTest {
                 walkStateType(clazz.componentType(), bindings, visited, path + "[]", false);
                 return;
             }
-            if (clazz.isPrimitive() || clazz.isEnum()) {
+            if (clazz.isPrimitive()) {
                 return;
             }
             if (clazz.getName().startsWith("java.")) {
@@ -336,12 +370,13 @@ class WildsArchitectureGateTest {
             if (!clazz.getName().startsWith("com.kotharworks.")) {
                 throw new AssertionError("Disallowed external state type " + clazz.getName() + " at " + path);
             }
-            if ((clazz.isInterface() || Modifier.isAbstract(clazz.getModifiers())) && !clazz.isSealed()) {
+            if ((clazz.isInterface() || (Modifier.isAbstract(clazz.getModifiers()) && !clazz.isEnum()))
+                    && !clazz.isSealed()) {
                 throw new AssertionError("Unsealed abstract/interface state type "
                         + clazz.getName() + " at " + path);
             }
             Type superType = clazz.getGenericSuperclass();
-            if (superType != null && superType != Object.class
+            if (!clazz.isEnum() && superType != null && superType != Object.class
                     && superType != Record.class && superType != Enum.class) {
                 walkStateType(superType, bindings, visited, path + "^super", false);
             }
@@ -700,6 +735,31 @@ class WildsArchitectureGateTest {
         }
     }
 
+    static final class LineSeparatorUser {
+        String nl() {
+            return System.lineSeparator();
+        }
+    }
+
+    static final class SystemEnvAndPropertyUser {
+        String read() {
+            return System.getenv("PATH") + System.getProperty("os.name");
+        }
+    }
+
+    static final class StringFormatUser {
+        String hex(int x) {
+            return String.format("%04x", x) + "%d".formatted(x);
+        }
+    }
+
+    static final class DefaultLocaleAndCharsetUser {
+        String defaults() {
+            return Locale.getDefault() + ":" + TimeZone.getDefault().getID()
+                    + ":" + Charset.defaultCharset().name();
+        }
+    }
+
     static final class DoubleFieldState {
         double x;
     }
@@ -809,6 +869,29 @@ class WildsArchitectureGateTest {
         Cipher cipher;
     }
 
+    enum DirtyRngEnum {
+        ONLY;
+        final SeededRng rng = null;
+    }
+
+    static final class EnumWithSeededRngState {
+        DirtyRngEnum mode;
+    }
+
+    enum DirtyMapEnum {
+        ONLY;
+        final Map<String, String> map = Map.of();
+    }
+
+    static final class EnumWithUnsortedMapState {
+        DirtyMapEnum mode;
+    }
+
+    enum CleanMode {
+        FAST,
+        CAREFUL
+    }
+
     static sealed interface CleanTag permits CleanTagA, CleanTagB {}
 
     static record CleanTagA(int code) implements CleanTag {}
@@ -823,6 +906,7 @@ class WildsArchitectureGateTest {
         TreeSet<String> tags;
         OuterBox<Long> nestedBox;
         CleanTag tag;
+        CleanMode mode;
         int[] dense;
     }
 }
