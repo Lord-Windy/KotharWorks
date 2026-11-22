@@ -30,7 +30,6 @@ import com.kotharworks.wilds.seed.WorldSeed;
 import com.kotharworks.wilds.sim.DueEventHeap;
 import com.kotharworks.wilds.sim.LazyGauge;
 import com.kotharworks.wilds.sim.ScheduledEvent;
-import com.kotharworks.wilds.state.ActiveTask;
 import com.kotharworks.wilds.state.ActorRow;
 import com.kotharworks.wilds.state.OwnerRow;
 import com.kotharworks.wilds.state.PlaceEdge;
@@ -94,6 +93,10 @@ public final class WildsEngine {
         this.outbox = new EventOutbox();
         this.state = new WorldState(seed, RuleRegistry.WILDS_RULES_VERSION);
         Objects.requireNonNull(bootstrap, "bootstrap").populateInitialTopology(state, rules);
+        if (state.places().getOrNull(HOME_PLACE_ID) == null) {
+            throw new IllegalStateException("bootstrap must populate home place "
+                    + HOME_PLACE_ID.toWire());
+        }
     }
 
     private WildsEngine(WorldState restoredState, RuleRegistry rules) {
@@ -203,24 +206,30 @@ public final class WildsEngine {
 
     private void executeCancelQueue(WorldCommand.CancelQueue command) {
         ActorRow actor = requireActor(command.targetActor());
-        int pendingCount = actor.pendingQueue().size();
-        boolean activeCancelled = false;
-        if (command.cancelActive() && actor.activeTask() != null) {
-            TaskQueueRunner.cancelActive(context(), actor);
-            activeCancelled = true;
-        }
-        ActorRow current = requireActor(command.targetActor());
-        ActiveTask keptTask = activeCancelled ? null : current.activeTask();
-        state.actors().replace(new ActorRow(current.id(), current.ownerId(), current.label(),
-                current.revision() + 1, current.placeId(), current.energyMilli(), keptTask,
-                List.of(), current.failPolicy()));
-        outbox.add(new WorldEvent.TaskCancelled(actor.id(), activeCancelled, pendingCount,
-                state.allocateEventCursor(), state.nowMs(), actor.ownerId(), null,
-                "Actor '" + actor.label() + "' task queue cancelled (active="
-                        + activeCancelled + ", cleared=" + pendingCount + ")"));
-        if (keptTask == null) {
+        if (command.cancelActive()) {
+            boolean activeCancelled = actor.activeTask() != null;
+            if (activeCancelled) {
+                TaskQueueRunner.cancelActive(context(), actor);
+            } else {
+                state.actors().replace(new ActorRow(actor.id(), actor.ownerId(), actor.label(),
+                        actor.revision() + 1, actor.placeId(), actor.energyMilli(), null,
+                        actor.pendingQueue(), actor.failPolicy()));
+            }
+            outbox.add(new WorldEvent.TaskCancelled(actor.id(), activeCancelled, 0,
+                    state.allocateEventCursor(), state.nowMs(), actor.ownerId(), null,
+                    "Actor '" + actor.label() + "' active task cancelled (active="
+                            + activeCancelled + ", cleared=0)"));
             TaskQueueRunner.startNextTasks(context(), actor.id());
+            return;
         }
+        int clearedCount = actor.pendingQueue().size();
+        state.actors().replace(new ActorRow(actor.id(), actor.ownerId(), actor.label(),
+                actor.revision() + 1, actor.placeId(), actor.energyMilli(), actor.activeTask(),
+                List.of(), actor.failPolicy()));
+        outbox.add(new WorldEvent.TaskCancelled(actor.id(), false, clearedCount,
+                state.allocateEventCursor(), state.nowMs(), actor.ownerId(), null,
+                "Actor '" + actor.label() + "' pending queue cleared (active=false, cleared="
+                        + clearedCount + ")"));
     }
 
     /**
@@ -231,6 +240,10 @@ public final class WildsEngine {
      * @throws IllegalStateException when {@code targetNowMs} is before the current clock
      */
     public long advanceTo(long targetNowMs) {
+        if (targetNowMs < state.nowMs()) {
+            throw new IllegalStateException("clock must not move backward: " + targetNowMs
+                    + " < " + state.nowMs());
+        }
         DueEventHeap heap = state.dueEvents();
         while (!heap.isEmpty() && heap.peek().dueAtMs() <= targetNowMs) {
             ScheduledEvent event = heap.poll();

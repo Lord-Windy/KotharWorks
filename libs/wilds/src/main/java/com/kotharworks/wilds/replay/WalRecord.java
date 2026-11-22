@@ -27,12 +27,24 @@ import java.util.Objects;
  */
 public sealed interface WalRecord permits WalRecord.ClockAdvance, WalRecord.CommandEntry {
 
+    /** Strictly ascending 1-based log sequence number. */
+    long walSeq();
+
+    /** Non-negative logical millisecond at which this entry was admitted. */
+    long admittedMs();
+
+    /** Optional post-entry {@code WorldHash} digest pinned for replay verification. */
+    Long worldHash();
+
     /** Admitted clock jump: the host advanced the world clock to {@code admittedMs}. */
     record ClockAdvance(long walSeq, long admittedMs, Long worldHash) implements WalRecord {
 
         public ClockAdvance {
             if (walSeq < 1) {
                 throw new IllegalArgumentException("walSeq must be >= 1: " + walSeq);
+            }
+            if (admittedMs < 0) {
+                throw new IllegalArgumentException("admittedMs must be >= 0: " + admittedMs);
             }
         }
     }
@@ -45,7 +57,13 @@ public sealed interface WalRecord permits WalRecord.ClockAdvance, WalRecord.Comm
             if (walSeq < 1) {
                 throw new IllegalArgumentException("walSeq must be >= 1: " + walSeq);
             }
+            if (admittedMs < 0) {
+                throw new IllegalArgumentException("admittedMs must be >= 0: " + admittedMs);
+            }
             Objects.requireNonNull(cmdId, "cmdId");
+            if (cmdId.isBlank()) {
+                throw new IllegalArgumentException("cmdId must not be blank");
+            }
             Objects.requireNonNull(command, "command");
         }
     }

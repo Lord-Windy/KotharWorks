@@ -96,20 +96,26 @@ class CommandCodecTest {
     }
 
     @Test
-    void walRecordsRoundTrip() {
-        WalRecord.ClockAdvance advance = new WalRecord.ClockAdvance(3L, 45_000L, -8_123L);
+    void walRecordsRoundTripAndExposeSharedAccessors() {
+        WalRecord advance = new WalRecord.ClockAdvance(3L, 45_000L, -8_123L);
+        assertEquals(3L, advance.walSeq());
+        assertEquals(45_000L, advance.admittedMs());
+        assertEquals(-8_123L, advance.worldHash());
         assertEquals(advance, CommandCodec.decodeWal(CommandCodec.encodeWal(advance)));
 
-        WalRecord.ClockAdvance bare = new WalRecord.ClockAdvance(1L, 0L, null);
+        WalRecord bare = new WalRecord.ClockAdvance(1L, 0L, null);
         assertEquals(bare, CommandCodec.decodeWal(CommandCodec.encodeWal(bare)));
 
-        WalRecord.CommandEntry entry = new WalRecord.CommandEntry(2L, 1_000L, 7L, "cmd-0002",
+        WalRecord entry = new WalRecord.CommandEntry(2L, 1_000L, 7L, "cmd-0002",
                 new WorldCommand.RegisterOwner(7L, "Ash", "Scout"), null);
+        assertEquals(2L, entry.walSeq());
+        assertEquals(1_000L, entry.admittedMs());
         assertEquals(entry, CommandCodec.decodeWal(CommandCodec.encodeWal(entry)));
 
-        WalRecord.CommandEntry hashed = new WalRecord.CommandEntry(4L, 50_000L, 7L, "cmd-0004",
+        WalRecord hashed = new WalRecord.CommandEntry(4L, 50_000L, 7L, "cmd-0004",
                 new WorldCommand.CancelQueue(new OwnerId(0, 1), new ActorId(0, 1), 3L, true),
                 123_456_789L);
+        assertEquals(123_456_789L, hashed.worldHash());
         assertEquals(hashed, CommandCodec.decodeWal(CommandCodec.encodeWal(hashed)));
     }
 
@@ -135,10 +141,21 @@ class CommandCodecTest {
 
     @Test
     void malformedWalJsonIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> CommandCodec.decodeWal("null"));
-        assertThrows(IllegalArgumentException.class, () -> CommandCodec.decodeWal("{}"));
+        IllegalArgumentException nonObj = assertThrows(IllegalArgumentException.class,
+                () -> CommandCodec.decodeWal("null"));
+        assertTrue(nonObj.getMessage().startsWith("WAL field"), nonObj.getMessage());
+        IllegalArgumentException missingKind = assertThrows(IllegalArgumentException.class,
+                () -> CommandCodec.decodeWal("{}"));
+        assertTrue(missingKind.getMessage().startsWith("WAL JSON"), missingKind.getMessage());
         assertThrows(IllegalArgumentException.class, () -> CommandCodec.decodeWal(
                 "{\"kind\":\"clockAdvance\",\"walSeq\":0,\"admittedMs\":0,\"worldHash\":null}"));
+        assertThrows(IllegalArgumentException.class, () -> CommandCodec.decodeWal(
+                "{\"kind\":\"clockAdvance\",\"walSeq\":1,\"admittedMs\":-1,\"worldHash\":null}"));
+        assertThrows(IllegalArgumentException.class, () -> CommandCodec.decodeWal(
+                "{\"kind\":\"commandEntry\",\"walSeq\":1,\"admittedMs\":0,\"seatId\":1,"
+                        + "\"cmdId\":\"  \",\"command\":{\"type\":\"registerOwner\","
+                        + "\"externalSeatKey\":1,\"ownerName\":\"a\",\"initialActorLabel\":\"b\"},"
+                        + "\"worldHash\":null}"));
         assertThrows(IllegalArgumentException.class, () -> CommandCodec.decodeWal(
                 "{\"kind\":\"commandEntry\",\"walSeq\":1,\"admittedMs\":0,\"seatId\":1,"
                         + "\"cmdId\":\"x\",\"command\":{\"type\":\"nope\"},\"worldHash\":null}"));

@@ -202,8 +202,8 @@ class TaskQueueMechanicsTest {
                 assertInstanceOf(WorldEvent.TaskCancelled.class, cancelEvents.get(0));
         assertTrue(cancelled.cancelledActive());
         assertEquals(0, cancelled.clearedPendingCount());
-        assertEquals(revisionBefore + 2, actor(engine).revision(),
-                "cancelActive bumps revision once, the queue clear once");
+        assertEquals(revisionBefore + 1, actor(engine).revision(),
+                "cancelling the active task with an empty pending queue bumps revision once");
         assertEquals(TaskQueueRunner.IDLE_RATE_MILLI_PER_SEC,
                 actor(engine).energyMilli().rateMilliPerSec());
 
@@ -212,6 +212,213 @@ class TaskQueueMechanicsTest {
         assertNull(actor(engine).activeTask());
         assertTrue(actor(engine).pendingQueue().isEmpty());
         assertTrue(engine.peekNextDueMs().isEmpty());
+    }
+
+    @Test
+    void cancelActiveAdvancesPendingQueueAndSkipsStaleTicketWhileReplacementRuns() {
+        WildsEngine engine = new WildsEngine(SEED);
+        OwnerId owner = registerOwner(engine, 1L, "Ash", "Ash's Scout");
+        ActorId actor = actor(engine).id();
+
+        // Queue active Wait(10_000, 3) + pending [Wait(20_000, 1), Travel(plc:1:1)].
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new TaskSpec.Wait(10_000, 3),
+                                new TaskSpec.Wait(20_000, 1),
+                                new TaskSpec.Travel(new PlaceId(1, 1))))));
+        engine.advanceTo(10_000L); // batch 1 completes; batch 2 scheduled at 20_000ms
+        long staleTicket = actor(engine).activeTask().heapTicket();
+        engine.advanceTo(14_000L);
+        drain(engine);
+        long revisionBefore = actor(engine).revision();
+
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.CancelQueue(owner, actor, revisionBefore, true)));
+        List<WorldEvent> events = drain(engine);
+        assertEquals(2, events.size(), "must emit TaskCancelled followed by next TaskStarted");
+        WorldEvent.TaskCancelled cancelled =
+                assertInstanceOf(WorldEvent.TaskCancelled.class, events.get(0));
+        assertTrue(cancelled.cancelledActive());
+        assertEquals(0, cancelled.clearedPendingCount(),
+                "cancelActive=true must preserve pendingQueue rather than wiping it");
+        WorldEvent.TaskStarted started =
+                assertInstanceOf(WorldEvent.TaskStarted.class, events.get(1));
+        assertEquals(new TaskSpec.Wait(20_000, 1), started.task().spec());
+        assertTrue(started.task().heapTicket() > staleTicket,
+                "replacement task must carry a fresh heapTicket");
+        assertEquals(34_000L, started.task().dueAtMs());
+        assertEquals(revisionBefore + 2, actor(engine).revision(),
+                "+1 for active cancel, +1 for starting the next pending task");
+        assertEquals(List.of(new TaskSpec.Travel(new PlaceId(1, 1))),
+                actor(engine).pendingQueue());
+
+        // Advance past 20_000ms while replacement task is actively running (due 34_000ms).
+        engine.advanceTo(25_000L);
+        assertTrue(drain(engine).isEmpty(),
+                "stale 20_000ms entry must skip via active.heapTicket != cancellationToken");
+        assertEquals(started.task(), actor(engine).activeTask());
+
+        runToIdle(engine);
+        assertEquals(new PlaceId(1, 1), actor(engine).placeId());
+    }
+
+    @Test
+    void replacePendingQueueReplacesFourPendingWithFiveAndStartsOnIdle() {
+        WildsEngine engine = new WildsEngine(SEED);
+        OwnerId owner = registerOwner(engine, 1L, "Ash", "Ash's Scout");
+        ActorId actor = actor(engine).id();
+
+        // 1 active + 4 pending slots occupied.
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.EnqueueTasks(owner, actor, null, List.of(
+                        new TaskSpec.Wait(10_000, 1),
+                        new TaskSpec.Wait(1_000, 1),
+                        new TaskSpec.Wait(1_001, 1),
+                        new TaskSpec.Wait(1_002, 1),
+                        new TaskSpec.Wait(1_003, 1)))));
+        assertEquals(4, actor(engine).pendingQueue().size());
+
+        // Replacing 4 pending slots with 5 fresh tasks succeeds (cap is on replacement size).
+        List<TaskSpec> fiveReplacement = List.of(
+                new TaskSpec.Wait(2_000, 1),
+                new TaskSpec.Wait(2_001, 1),
+                new TaskSpec.Wait(2_002, 1),
+                new TaskSpec.Wait(2_003, 1),
+                new TaskSpec.Wait(2_004, 1));
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.ReplacePendingQueue(owner, actor,
+                        actor(engine).revision(), fiveReplacement)));
+        assertEquals(fiveReplacement, actor(engine).pendingQueue());
+
+        runToIdle(engine);
+        assertNull(actor(engine).activeTask());
+
+        // Replacing on an idle actor immediately starts the new queue head.
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.ReplacePendingQueue(owner, actor,
+                        actor(engine).revision(),
+                        List.of(new TaskSpec.Travel(new PlaceId(1, 1))))));
+        assertEquals(new TaskSpec.Travel(new PlaceId(1, 1)),
+                actor(engine).activeTask().spec());
+    }
+
+    @Test
+    void multipleBackToBackBrokenRoutesUnderAdvanceLoopAndReanchorIdleEnergy() {
+        WildsEngine engine = new WildsEngine(SEED);
+        OwnerId owner = registerOwner(engine, 1L, "Ash", "Ash's Scout");
+        ActorId actor = actor(engine).id();
+
+        // Walk 0 -> 1 -> 2, followed by two consecutive broken-route travels back to 0.
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.EnqueueTasks(owner, actor, null, List.of(
+                        new TaskSpec.Travel(new PlaceId(1, 1)),
+                        new TaskSpec.Travel(new PlaceId(2, 1)),
+                        new TaskSpec.Travel(new PlaceId(0, 1)),
+                        new TaskSpec.Travel(new PlaceId(0, 1))))));
+        drain(engine);
+
+        engine.advanceToNextEvent(); // arrives at plc:1:1, starts leg to plc:2:1
+        drain(engine);
+        engine.advanceToNextEvent(); // arrives at plc:2:1; both Travel(plc:0:1) fail at once
+
+        List<WorldEvent> arrivalEvents = drain(engine);
+        long failures = arrivalEvents.stream()
+                .filter(ev -> ev instanceof WorldEvent.TaskFailed tf
+                        && tf.failureCode() == ErrorCode.NO_ROUTE)
+                .count();
+        assertEquals(2L, failures, "both consecutive broken routes must fail at arrival ms");
+        assertNull(actor(engine).activeTask());
+        assertTrue(actor(engine).pendingQueue().isEmpty());
+        assertEquals(TaskQueueRunner.IDLE_RATE_MILLI_PER_SEC,
+                actor(engine).energyMilli().rateMilliPerSec(),
+                "actor must re-anchor from -40 travel drain back to +25 idle regen");
+    }
+
+    @Test
+    void lowEnergyPenaltyAppliesStrictlyBelow15000Boundary() {
+        // Custom 2-place topology with exact 1_000ms edges: each leg drains 40 milli.
+        WildsEngine engine = new WildsEngine(SEED,
+                com.kotharworks.wilds.rules.RuleRegistry.minimalDefault(),
+                (state, rules) -> {
+                    var camp = new com.kotharworks.wilds.id.RuleId("camp");
+                    var p0 = state.places().insertNew(id -> new PlaceRow(id, camp, "A", List.of()));
+                    var p1 = state.places().insertNew(id -> new PlaceRow(id, camp, "B", List.of()));
+                    state.places().replace(new PlaceRow(p0.id(), camp, "A",
+                            List.of(new PlaceEdge(p1.id(), 1_000L))));
+                    state.places().replace(new PlaceRow(p1.id(), camp, "B",
+                            List.of(new PlaceEdge(p0.id(), 1_000L))));
+                });
+        OwnerId owner = registerOwner(engine, 1L, "Ash", "Scout");
+        ActorId actor = actor(engine).id();
+
+        // 2,125 legs * 40 milli = 85,000 drained -> exact 15_000 milli remaining!
+        for (int i = 0; i < 2_125; i++) {
+            PlaceId dest = (i % 2 == 0) ? new PlaceId(1, 1) : new PlaceId(0, 1);
+            engine.apply(new WorldCommand.EnqueueTasks(owner, actor, null,
+                    List.of(new TaskSpec.Travel(dest))));
+            engine.advanceToNextEvent();
+            engine.drainEvents();
+        }
+        assertEquals(15_000L, actor(engine).energyMilli().valueMilliAt(engine.nowMs()));
+
+        // At exact 15_000 milli: NO penalty (strictly < 15_000).
+        engine.apply(new WorldCommand.EnqueueTasks(owner, actor, null,
+                List.of(new TaskSpec.Travel(new PlaceId(0, 1)))));
+        assertEquals(1_000L, engine.peekNextDueMs().orElseThrow() - engine.nowMs(),
+                "exact 15_000 milli must NOT incur the low-energy penalty");
+        engine.advanceToNextEvent();
+        engine.drainEvents();
+
+        // Now at 14_960 milli (< 15_000): 1_350 permille penalty kicks in -> 1_350ms!
+        assertEquals(14_960L, actor(engine).energyMilli().valueMilliAt(engine.nowMs()));
+        engine.apply(new WorldCommand.EnqueueTasks(owner, actor, null,
+                List.of(new TaskSpec.Travel(new PlaceId(1, 1)))));
+        assertEquals(1_350L, engine.peekNextDueMs().orElseThrow() - engine.nowMs(),
+                "below 15_000 milli must apply the 1_350 permille penalty");
+    }
+
+    @Test
+    void penalizedTravelDurationHandlesLargeEdgeWithoutLongWraparound() {
+        // baseMs * 1_350 overflows signed 64-bit long, while (baseMs * 1_350) / 1_000 fits!
+        long largeEdgeMs = 10_000_000_000_000_000L; // 1e16: * 1_350 > Long.MAX_VALUE (~9.22e18)
+        WildsEngine engine = new WildsEngine(SEED,
+                com.kotharworks.wilds.rules.RuleRegistry.minimalDefault(),
+                (state, rules) -> {
+                    var camp = new com.kotharworks.wilds.id.RuleId("camp");
+                    var p0 = state.places().insertNew(id -> new PlaceRow(id, camp, "A", List.of()));
+                    var p1 = state.places().insertNew(id -> new PlaceRow(id, camp, "B", List.of()));
+                    state.places().replace(new PlaceRow(p0.id(), camp, "A",
+                            List.of(new PlaceEdge(p1.id(), 1_000_000L))));
+                    state.places().replace(new PlaceRow(p1.id(), camp, "B",
+                            List.of(new PlaceEdge(p0.id(), largeEdgeMs))));
+                });
+        OwnerId owner = registerOwner(engine, 1L, "Ash", "Scout");
+        ActorId actor = actor(engine).id();
+
+        // Drain energy below 15_000 on 3 legs (1_000s * 3 = 120,000 drained -> clamped to 0),
+        // ending at p1 where the return edge has largeEdgeMs.
+        engine.apply(new WorldCommand.EnqueueTasks(owner, actor, null,
+                List.of(new TaskSpec.Travel(new PlaceId(1, 1)))));
+        engine.advanceToNextEvent(); // 100_000 - 40_000 = 60_000 at p1
+        // Wait at p1? No, drain via custom snapshot or jump back if smaller edge; simpler:
+        // restore snapshot at p1 with energyMilli = 10_000!
+        com.kotharworks.wilds.state.WorldState snap =
+                com.kotharworks.wilds.replay.SnapshotCodec.decode(engine.snapshotJson());
+        ActorRow p1Actor = snap.actors().getOrNull(actor);
+        snap.actors().replace(new ActorRow(p1Actor.id(), p1Actor.ownerId(), p1Actor.label(),
+                p1Actor.revision(), p1Actor.placeId(),
+                new com.kotharworks.wilds.sim.LazyGauge(10_000L, snap.nowMs(), 25L, 0L, 100_000L),
+                null, List.of(), p1Actor.failPolicy()));
+        WildsEngine lowEnergy = WildsEngine.fromSnapshotJson(
+                com.kotharworks.wilds.replay.SnapshotCodec.encode(snap));
+
+        assertInstanceOf(Phase1Result.Accepted.class, lowEnergy.apply(
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new TaskSpec.Travel(new PlaceId(0, 1))))));
+        long expectedPenalizedMs = 13_500_000_000_000_000L;
+        assertEquals(expectedPenalizedMs,
+                lowEnergy.peekNextDueMs().orElseThrow() - lowEnergy.nowMs(),
+                "large edge duration must compute exact penalized duration without wraparound");
     }
 
     @Test

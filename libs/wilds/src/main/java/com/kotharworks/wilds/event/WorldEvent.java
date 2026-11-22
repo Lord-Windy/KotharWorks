@@ -65,7 +65,8 @@ public sealed interface WorldEvent
         public TaskStarted {
             Objects.requireNonNull(actorId, "actorId");
             Objects.requireNonNull(task, "task");
-            requireCommonInvariants(cursor, occurredMs, scopeOwner, privateSummary);
+            requirePrivateEventInvariants(cursor, occurredMs, scopeOwner, publicSummary,
+                    privateSummary);
         }
     }
 
@@ -81,7 +82,8 @@ public sealed interface WorldEvent
                 throw new IllegalArgumentException(
                         "batchesLeftAfter must be >= 0: " + batchesLeftAfter);
             }
-            requireCommonInvariants(cursor, occurredMs, scopeOwner, privateSummary);
+            requirePrivateEventInvariants(cursor, occurredMs, scopeOwner, publicSummary,
+                    privateSummary);
         }
     }
 
@@ -96,7 +98,8 @@ public sealed interface WorldEvent
                 throw new IllegalArgumentException(
                         "clearedPendingCount must be >= 0: " + clearedPendingCount);
             }
-            requireCommonInvariants(cursor, occurredMs, scopeOwner, privateSummary);
+            requirePrivateEventInvariants(cursor, occurredMs, scopeOwner, publicSummary,
+                    privateSummary);
         }
     }
 
@@ -109,7 +112,8 @@ public sealed interface WorldEvent
             Objects.requireNonNull(actorId, "actorId");
             Objects.requireNonNull(spec, "spec");
             Objects.requireNonNull(failureCode, "failureCode");
-            requireCommonInvariants(cursor, occurredMs, scopeOwner, privateSummary);
+            requirePrivateEventInvariants(cursor, occurredMs, scopeOwner, publicSummary,
+                    privateSummary);
         }
     }
 
@@ -121,7 +125,8 @@ public sealed interface WorldEvent
         public PlaceDiscovered {
             Objects.requireNonNull(placeId, "placeId");
             Objects.requireNonNull(discoveredByActor, "discoveredByActor");
-            requireCommonInvariants(cursor, occurredMs, scopeOwner, privateSummary);
+            requirePrivateEventInvariants(cursor, occurredMs, scopeOwner, publicSummary,
+                    privateSummary);
         }
     }
 
@@ -146,5 +151,15 @@ public sealed interface WorldEvent
         }
         Objects.requireNonNull(scopeOwner, "scopeOwner");
         Objects.requireNonNull(privateSummary, "privateSummary");
+    }
+
+    private static void requirePrivateEventInvariants(long cursor, long occurredMs,
+                                                      OwnerId scopeOwner, String publicSummary,
+                                                      String privateSummary) {
+        requireCommonInvariants(cursor, occurredMs, scopeOwner, privateSummary);
+        if (publicSummary != null) {
+            throw new IllegalArgumentException(
+                    "private WorldEvent must have null publicSummary");
+        }
     }
 }

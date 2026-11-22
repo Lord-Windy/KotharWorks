@@ -105,15 +105,19 @@ class GoldenReplayTest {
         assertTrue(engine.view().actor(bramActor).orElseThrow().pendingQueue().isEmpty());
         engine.drainEvents();
 
-        // (6): Ash waits 3 batches, cancels the active batch, stale entry ignored.
+        // (6): Ash queues [Wait(1_000, 3), Wait(25_000, 1)], cancels active mid-wait ->
+        //      replacement Wait(25_000, 1) immediately starts and stale batch-2 entry skips.
         applyOk(engine, new WorldCommand.EnqueueTasks(ash, ashActor, null,
-                List.of(new TaskSpec.Wait(1_000, 3))));
-        engine.advanceTo(engine.nowMs() + 1_000L); // batch 1 completes; batch 2 re-queued
+                List.of(new TaskSpec.Wait(1_000, 3),
+                        new TaskSpec.Wait(25_000, 1))));
+        engine.advanceTo(engine.nowMs() + 1_000L); // batch 1 completes; batch 2 due at +2_000ms
         engine.drainEvents();
         applyOk(engine, new WorldCommand.CancelQueue(ash, ashActor, null, true));
         engine.drainEvents();
-        engine.advanceTo(engine.nowMs() + 30_000L); // stale batch-2 entry pops and is skipped
+        engine.advanceTo(engine.nowMs() + 5_000L); // stale +2_000ms entry pops while 25s wait runs
         assertTrue(engine.drainEvents().isEmpty(), "stale heap entry must be silent");
+        runToIdle(engine); // finishes replacement Wait(25_000, 1)
+        engine.drainEvents();
 
         // (7): drain Ash's energy with alternating crossings, then one penalized travel.
         drainEnergy(engine, ash, ashActor);

@@ -73,21 +73,25 @@ public record WorldView(WorldSeed seed, int rulesVersion, long nowMs, long world
 
     /** Live owner row for {@code id}, or empty. */
     public Optional<OwnerRow> owner(OwnerId id) {
+        Objects.requireNonNull(id, "id");
         return firstMatch(owners, OwnerRow::id, id);
     }
 
     /** Live place row for {@code id}, or empty. */
     public Optional<PlaceRow> place(PlaceId id) {
+        Objects.requireNonNull(id, "id");
         return firstMatch(places, PlaceRow::id, id);
     }
 
     /** Live actor row for {@code id}, or empty. */
     public Optional<ActorRow> actor(ActorId id) {
+        Objects.requireNonNull(id, "id");
         return firstMatch(actors, ActorRow::id, id);
     }
 
     /** Every actor owned by {@code ownerId}, in table (slot) order. */
     public List<ActorRow> actorsOwnedBy(OwnerId ownerId) {
+        Objects.requireNonNull(ownerId, "ownerId");
         List<ActorRow> owned = new ArrayList<>(actors.size());
         for (ActorRow actor : actors) {
             if (actor.ownerId().equals(ownerId)) {

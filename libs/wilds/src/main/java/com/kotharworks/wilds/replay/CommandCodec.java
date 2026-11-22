@@ -202,19 +202,19 @@ public final class CommandCodec {
 
     /** Decodes a WAL record produced by {@link #encodeWal}; shape errors are rejected. */
     public static WalRecord decodeWal(String json) {
-        JsonCodec.JsonObj root = expectObj(JsonCodec.parse(json), "walRecord");
-        String kind = expectStr(field(root, "kind"), "walRecord kind");
+        JsonCodec.JsonObj root = expectObj(JsonCodec.parse(json), "WAL", "walRecord");
+        String kind = expectStr(field(root, "WAL", "kind"), "WAL", "walRecord kind");
         return switch (kind) {
             case "clockAdvance" -> new WalRecord.ClockAdvance(
-                    expectInt(field(root, "walSeq"), "walSeq"),
-                    expectInt(field(root, "admittedMs"), "admittedMs"),
+                    expectInt(field(root, "WAL", "walSeq"), "WAL", "walSeq"),
+                    expectInt(field(root, "WAL", "admittedMs"), "WAL", "admittedMs"),
                     expectOptionalHash(root));
             case "commandEntry" -> new WalRecord.CommandEntry(
-                    expectInt(field(root, "walSeq"), "walSeq"),
-                    expectInt(field(root, "admittedMs"), "admittedMs"),
-                    expectInt(field(root, "seatId"), "seatId"),
-                    expectStr(field(root, "cmdId"), "cmdId"),
-                    decodeCommand(expectObj(field(root, "command"), "command")),
+                    expectInt(field(root, "WAL", "walSeq"), "WAL", "walSeq"),
+                    expectInt(field(root, "WAL", "admittedMs"), "WAL", "admittedMs"),
+                    expectInt(field(root, "WAL", "seatId"), "WAL", "seatId"),
+                    expectStr(field(root, "WAL", "cmdId"), "WAL", "cmdId"),
+                    decodeCommand(expectObj(field(root, "WAL", "command"), "WAL", "command")),
                     expectOptionalHash(root));
             default -> throw new IllegalArgumentException("unknown wal record kind: \"" + kind + "\"");
         };
@@ -243,11 +243,11 @@ public final class CommandCodec {
     }
 
     private static Long expectOptionalHash(JsonCodec.JsonObj root) {
-        JsonCodec.JsonValue value = field(root, "worldHash");
+        JsonCodec.JsonValue value = field(root, "WAL", "worldHash");
         if (value instanceof JsonCodec.JsonNull) {
             return null;
         }
-        return expectInt(value, "worldHash");
+        return expectInt(value, "WAL", "worldHash");
     }
 
     // ------------------------------------------------------------------ helpers
@@ -257,19 +257,28 @@ public final class CommandCodec {
     }
 
     private static JsonCodec.JsonValue field(JsonCodec.JsonObj obj, String key) {
+        return field(obj, "command", key);
+    }
+
+    private static JsonCodec.JsonValue field(JsonCodec.JsonObj obj, String domain, String key) {
         JsonCodec.JsonValue value = obj.getOrNull(key);
         if (value == null) {
-            throw new IllegalArgumentException("command JSON is missing field \"" + key + "\"");
+            throw new IllegalArgumentException(domain + " JSON is missing field \"" + key + "\"");
         }
         return value;
     }
 
     private static JsonCodec.JsonObj expectObj(JsonCodec.JsonValue value, String path) {
+        return expectObj(value, "command", path);
+    }
+
+    private static JsonCodec.JsonObj expectObj(JsonCodec.JsonValue value, String domain,
+                                               String path) {
         if (value instanceof JsonCodec.JsonObj obj) {
             return obj;
         }
         throw new IllegalArgumentException(
-                "command field \"" + path + "\" must be a JSON object");
+                domain + " field \"" + path + "\" must be a JSON object");
     }
 
     private static JsonCodec.JsonArr expectArr(JsonCodec.JsonValue value, String path) {
@@ -281,18 +290,26 @@ public final class CommandCodec {
     }
 
     private static String expectStr(JsonCodec.JsonValue value, String path) {
+        return expectStr(value, "command", path);
+    }
+
+    private static String expectStr(JsonCodec.JsonValue value, String domain, String path) {
         if (value instanceof JsonCodec.JsonStr str) {
             return str.value();
         }
         throw new IllegalArgumentException(
-                "command field \"" + path + "\" must be a JSON string");
+                domain + " field \"" + path + "\" must be a JSON string");
     }
 
     private static long expectInt(JsonCodec.JsonValue value, String path) {
+        return expectInt(value, "command", path);
+    }
+
+    private static long expectInt(JsonCodec.JsonValue value, String domain, String path) {
         if (value instanceof JsonCodec.JsonInt number) {
             return number.value();
         }
         throw new IllegalArgumentException(
-                "command field \"" + path + "\" must be a JSON integer");
+                domain + " field \"" + path + "\" must be a JSON integer");
     }
 }

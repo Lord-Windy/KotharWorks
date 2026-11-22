@@ -15,6 +15,7 @@
  */
 package com.kotharworks.wilds.command;
 
+import com.kotharworks.wilds.WildsEngine;
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.OwnerId;
 import com.kotharworks.wilds.id.PlaceId;
@@ -22,9 +23,10 @@ import com.kotharworks.wilds.id.RuleId;
 import com.kotharworks.wilds.rules.RuleRegistry;
 import com.kotharworks.wilds.state.ActorRow;
 import com.kotharworks.wilds.state.OwnerRow;
-import com.kotharworks.wilds.state.PlaceRow;
 import com.kotharworks.wilds.state.TaskSpec;
 import com.kotharworks.wilds.state.WorldState;
+import com.kotharworks.wilds.task.TravelMechanic;
+import com.kotharworks.wilds.task.WaitMechanic;
 
 import java.util.List;
 import java.util.Objects;
@@ -77,15 +79,41 @@ public final class Phase1Validator {
 
     private static Phase1Result validateRegisterOwner(WorldState state,
                                                       WorldCommand.RegisterOwner command) {
-        if (command.ownerName().isBlank() || command.initialActorLabel().isBlank()) {
+        if (!isValidNonBlankText(command.ownerName())
+                || !isValidNonBlankText(command.initialActorLabel())) {
             return reject(ErrorCode.INVALID_ARGUMENT, 0L,
-                    "ownerName and initialActorLabel must not be blank");
+                    "ownerName and initialActorLabel must be non-blank well-formed UTF-16 without NUL");
+        }
+        if (state.places().getOrNull(WildsEngine.HOME_PLACE_ID) == null) {
+            return reject(ErrorCode.UNKNOWN_TARGET, 0L,
+                    "no live home place " + WildsEngine.HOME_PLACE_ID.toWire());
         }
         if (state.ownersBySeatKey().containsKey(command.externalSeatKey())) {
             return reject(ErrorCode.DUPLICATE_SEAT, 0L,
                     "externalSeatKey " + command.externalSeatKey() + " is already registered");
         }
         return ACCEPTED;
+    }
+
+    private static boolean isValidNonBlankText(String text) {
+        if (text.isBlank()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\0') {
+                return false;
+            }
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    return false;
+                }
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -105,7 +133,7 @@ public final class Phase1Validator {
                     "no live owner " + actorOwner.toWire() + " or actor " + targetActor.toWire());
         }
         if (!actorRow.ownerId().equals(actorOwner)) {
-            return reject(ErrorCode.FORBIDDEN, actorRow.revision(),
+            return reject(ErrorCode.FORBIDDEN, 0L,
                     "actor " + targetActor.toWire() + " is not owned by " + actorOwner.toWire());
         }
         if (expectedRevision != null && expectedRevision != actorRow.revision()) {
@@ -135,7 +163,7 @@ public final class Phase1Validator {
             }
         }
         for (TaskSpec spec : tasks) {
-            Phase1Result.Rejected rejection = validateSpec(state, rules, spec);
+            Phase1Result.Rejected rejection = validateSpec(state, rules, spec, actorRow.revision());
             if (rejection != null) {
                 return rejection;
             }
@@ -143,37 +171,45 @@ public final class Phase1Validator {
         return ACCEPTED;
     }
 
-    /** Per-task structural checks; returns null when {@code spec} is acceptable. */
+    /** Delegates per-task structural checks to the owning {@code TaskMechanic} seam. */
     private static Phase1Result.Rejected validateSpec(WorldState state, RuleRegistry rules,
-                                                      TaskSpec spec) {
+                                                      TaskSpec spec, long currentRevision) {
         return switch (spec) {
-            case TaskSpec.Wait(long durationMs, int batches) -> {
-                RuleRegistry.TaskKindDef kind = rules.taskKinds().get(new RuleId("wait"));
-                if (kind == null) {
-                    yield reject(ErrorCode.UNKNOWN_RULE, 0L, "no \"wait\" task kind in rules");
-                }
-                if (durationMs < kind.minDurationMs() || durationMs > kind.maxDurationMs()) {
-                    yield reject(ErrorCode.INVALID_ARGUMENT, 0L, "wait durationMs " + durationMs
-                            + " outside [" + kind.minDurationMs() + ", " + kind.maxDurationMs() + "]");
-                }
-                if (batches < 1 || batches > kind.maxBatches()) {
-                    yield reject(ErrorCode.INVALID_ARGUMENT, 0L, "wait batches " + batches
-                            + " outside [1, " + kind.maxBatches() + "]");
-                }
-                yield null;
-            }
-            case TaskSpec.Travel(PlaceId destination) -> {
-                if (!rules.taskKinds().containsKey(new RuleId("travel"))) {
-                    yield reject(ErrorCode.UNKNOWN_RULE, 0L, "no \"travel\" task kind in rules");
-                }
-                PlaceRow destinationRow = state.places().getOrNull(destination);
-                if (destinationRow == null) {
-                    yield reject(ErrorCode.UNKNOWN_TARGET, 0L,
-                            "no live place " + destination.toWire());
-                }
-                yield null;
-            }
+            case TaskSpec.Wait waitSpec -> WaitMechanic.INSTANCE
+                    .validatePhase1(state, rules, waitSpec)
+                    .map(code -> reject(code, currentRevision,
+                            describeWaitRejection(code, waitSpec, rules)))
+                    .orElse(null);
+            case TaskSpec.Travel travelSpec -> TravelMechanic.INSTANCE
+                    .validatePhase1(state, rules, travelSpec)
+                    .map(code -> reject(code, currentRevision,
+                            describeTravelRejection(code, travelSpec.destination())))
+                    .orElse(null);
         };
+    }
+
+    private static String describeWaitRejection(ErrorCode code, TaskSpec.Wait spec,
+                                                RuleRegistry rules) {
+        if (code == ErrorCode.UNKNOWN_RULE) {
+            return "no \"wait\" task kind in rules";
+        }
+        RuleRegistry.TaskKindDef kind = rules.taskKinds().get(new RuleId("wait"));
+        if (kind != null && (spec.durationMs() < kind.minDurationMs()
+                || spec.durationMs() > kind.maxDurationMs())) {
+            return "wait durationMs " + spec.durationMs() + " outside ["
+                    + kind.minDurationMs() + ", " + kind.maxDurationMs() + "]";
+        }
+        if (kind != null) {
+            return "wait batches " + spec.batches() + " outside [1, " + kind.maxBatches() + "]";
+        }
+        return "invalid wait task";
+    }
+
+    private static String describeTravelRejection(ErrorCode code, PlaceId destination) {
+        if (code == ErrorCode.UNKNOWN_RULE) {
+            return "no \"travel\" task kind in rules";
+        }
+        return "no live place " + destination.toWire();
     }
 
     private static Phase1Result.Rejected reject(ErrorCode errorCode, long currentRevision,

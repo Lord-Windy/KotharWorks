@@ -81,9 +81,11 @@ public sealed interface WorldCommand
     }
 
     /**
-     * Clears the actor's pending queue; when {@code cancelActive} is true the running
-     * task is cancelled too (its heap entry is later skipped in O(1) via the stale
-     * {@code heapTicket} token).
+     * When {@code cancelActive} is {@code false}, clears the actor's pending queue while
+     * keeping any running active task untouched. When {@code cancelActive} is
+     * {@code true}, cancels only the running active task (skipping its heap entry in
+     * O(1) via the stale {@code heapTicket} token) and immediately advances to the next
+     * pending task, if any.
      */
     record CancelQueue(OwnerId actorOwner, ActorId targetActor, Long expectedRevision,
                        boolean cancelActive) implements WorldCommand {

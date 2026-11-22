@@ -67,7 +67,7 @@ public final class WaitMechanic implements TaskMechanic<TaskSpec.Wait> {
         long now = ctx.state().nowMs();
         LazyGauge energy = actor.energyMilli().reanchor(now, 0L, WAIT_RATE_MILLI_PER_SEC);
         long ticket = ctx.state().allocateEventSeq();
-        ActiveTask task = new ActiveTask(now, now + spec.durationMs(), ticket, spec,
+        ActiveTask task = new ActiveTask(now, Math.addExact(now, spec.durationMs()), ticket, spec,
                 spec.batches());
         ctx.state().actors().replace(withActiveTask(actor, energy, task));
         ctx.state().dueEvents().push(new ScheduledEvent(task.dueAtMs(), ticket, ticket,
@@ -86,8 +86,8 @@ public final class WaitMechanic implements TaskMechanic<TaskSpec.Wait> {
         long now = ctx.state().nowMs();
         if (batchesLeftAfter > 0) {
             long ticket = ctx.state().allocateEventSeq();
-            ActiveTask nextBatch = new ActiveTask(now, now + spec.durationMs(), ticket, spec,
-                    batchesLeftAfter);
+            ActiveTask nextBatch = new ActiveTask(now, Math.addExact(now, spec.durationMs()),
+                    ticket, spec, batchesLeftAfter);
             ctx.state().actors().replace(withActiveTask(actor, actor.energyMilli(), nextBatch));
             ctx.state().dueEvents().push(new ScheduledEvent(nextBatch.dueAtMs(), ticket, ticket,
                     new DuePayload.CompleteActorTask(actor.id())));

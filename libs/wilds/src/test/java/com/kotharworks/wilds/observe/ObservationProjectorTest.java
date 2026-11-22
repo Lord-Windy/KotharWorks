@@ -164,21 +164,41 @@ class ObservationProjectorTest {
         OwnerId ash = owner(engine, 1L);
         OwnerId bram = owner(engine, 2L);
 
-        // Undiscovered (but live) place: fog semantics -> UNKNOWN_TARGET.
+        // Undiscovered (but live) place: fog semantics -> UNKNOWN_TARGET with no existence oracle.
         ObservationProjector.ObservationRejectedException undiscovered =
                 assertThrows(ObservationProjector.ObservationRejectedException.class,
                         () -> ObservationProjector.examine(engine.view(), bram,
                                 new InspectTarget.PlaceTarget(new PlaceId(2, 1)),
                                 ZoomLevel.LOOK, COMPOSER));
         assertEquals(ErrorCode.UNKNOWN_TARGET, undiscovered.errorCode());
+        assertEquals("no live place plc:2:1", undiscovered.getMessage());
 
-        // Missing place entirely: UNKNOWN_TARGET as well.
+        // Missing place entirely: identical UNKNOWN_TARGET pattern (no oracle).
         ObservationProjector.ObservationRejectedException missing =
                 assertThrows(ObservationProjector.ObservationRejectedException.class,
                         () -> ObservationProjector.examine(engine.view(), bram,
                                 new InspectTarget.PlaceTarget(new PlaceId(9, 1)),
                                 ZoomLevel.LOOK, COMPOSER));
         assertEquals(ErrorCode.UNKNOWN_TARGET, missing.errorCode());
+        assertEquals("no live place plc:9:1", missing.getMessage());
+
+        // Examining discovered plc:1:1 before discovering plc:2:1 must omit plc:2:1 from prose.
+        String ridgeLook = ObservationProjector.examine(engine.view(), bram,
+                new InspectTarget.PlaceTarget(new PlaceId(1, 1)), ZoomLevel.LOOK, COMPOSER);
+        String ridgeExamine = ObservationProjector.examine(engine.view(), bram,
+                new InspectTarget.PlaceTarget(new PlaceId(1, 1)), ZoomLevel.EXAMINE, COMPOSER);
+        assertTrue(!ridgeLook.contains("plc:2:1"), "LOOK prose must omit undiscovered neighbor");
+        assertTrue(!ridgeExamine.contains("plc:2:1"),
+                "EXAMINE prose must omit undiscovered neighbor");
+
+        // Fogged WorldView handed to composer must redact global worldHash to 0L.
+        ObservationProjector.examine(engine.view(), bram,
+                new InspectTarget.PlaceTarget(new PlaceId(0, 1)), ZoomLevel.GLANCE,
+                (fogged, target, zoom) -> {
+                    assertEquals(0L, fogged.worldHash(),
+                            "fogged view must not expose the global unfogged worldHash");
+                    return "ok";
+                });
 
         // Foreign actor: FORBIDDEN.
         ObservationProjector.ObservationRejectedException foreign =

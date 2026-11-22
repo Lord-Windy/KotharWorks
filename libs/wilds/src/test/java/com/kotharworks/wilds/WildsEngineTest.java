@@ -184,12 +184,51 @@ class WildsEngineTest {
     }
 
     @Test
-    void advanceToBackwardThrows() {
+    void advanceToBackwardThrowsWithoutMutatingHeap() {
         WildsEngine engine = new WildsEngine(SEED);
         engine.apply(new WorldCommand.RegisterOwner(1L, "Ash", "Ash's Scout"));
+        engine.apply(new WorldCommand.EnqueueTasks(new OwnerId(0, 1), new ActorId(0, 1),
+                null, List.of(new TaskSpec.Wait(20_000, 1))));
         engine.advanceTo(10L);
+        long hashBefore = engine.worldHash();
         assertThrows(IllegalStateException.class, () -> engine.advanceTo(9L));
-        assertFalse(engine.drainEvents().isEmpty(), "registration event was buffered");
+        assertEquals(hashBefore, engine.worldHash(),
+                "backward advanceTo must fail before touching the world or heap");
+        assertFalse(engine.drainEvents().isEmpty(), "registration + task-start events buffered");
+    }
+
+    @Test
+    void privateWorldEventsRejectNonNullPublicSummary() {
+        OwnerId owner = new OwnerId(0, 1);
+        ActorId actor = new ActorId(0, 1);
+        PlaceId place = new PlaceId(1, 1);
+        TaskSpec.Wait spec = new TaskSpec.Wait(1_000, 1);
+        com.kotharworks.wilds.state.ActiveTask active =
+                new com.kotharworks.wilds.state.ActiveTask(0L, 1_000L, 1L, spec, 1);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new WorldEvent.TaskStarted(actor, active, 1L, 0L, owner, "leak", "priv"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new WorldEvent.TaskBatchCompleted(actor, spec, 0, 1L, 0L, owner, "leak",
+                        "priv"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new WorldEvent.TaskCancelled(actor, true, 0, 1L, 0L, owner, "leak", "priv"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new WorldEvent.TaskFailed(actor, spec,
+                        com.kotharworks.wilds.command.ErrorCode.NO_ROUTE, 1L, 0L, owner, "leak",
+                        "priv"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new WorldEvent.PlaceDiscovered(place, actor, 1L, 0L, owner, "leak", "priv"));
+    }
+
+    @Test
+    void worldViewLookupRejectsNullIds() {
+        WildsEngine engine = new WildsEngine(SEED);
+        WorldView view = engine.view();
+        assertThrows(NullPointerException.class, () -> view.owner(null));
+        assertThrows(NullPointerException.class, () -> view.place(null));
+        assertThrows(NullPointerException.class, () -> view.actor(null));
+        assertThrows(NullPointerException.class, () -> view.actorsOwnedBy(null));
     }
 
     private static OwnerId ownerId(WorldView view) {

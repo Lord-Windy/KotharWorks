@@ -123,9 +123,7 @@ public final class ObservationProjector {
                 PlaceId placeId = placeTarget.placeId();
                 if (fogged.place(placeId).isEmpty()) {
                     throw new ObservationRejectedException(ErrorCode.UNKNOWN_TARGET,
-                            view.place(placeId).isPresent()
-                                    ? "place " + placeId.toWire() + " is not discovered"
-                                    : "no live place " + placeId.toWire());
+                            "no live place " + placeId.toWire());
                 }
             }
         }
@@ -135,7 +133,8 @@ public final class ObservationProjector {
     /**
      * The viewer-scoped copy of {@code view}: only the viewer's owner row, only their
      * actors, only their discovered places (edges filtered to discovered destinations),
-     * and the seat-key map reduced to the viewer.
+     * the seat-key map reduced to the viewer, and {@code worldHash} zeroed so global
+     * unfogged world mutations never leak through a {@code DescriptionComposer}.
      */
     private static WorldView foggedView(WorldView view, OwnerRow viewer) {
         TreeSet<PlaceId> discovered = new TreeSet<>(viewer.discoveredPlaces());
@@ -160,7 +159,7 @@ public final class ObservationProjector {
                 viewerSeatKeys.put(entry.getKey(), entry.getValue());
             }
         }
-        return new WorldView(view.seed(), view.rulesVersion(), view.nowMs(), view.worldHash(),
+        return new WorldView(view.seed(), view.rulesVersion(), view.nowMs(), 0L,
                 List.of(viewer), List.copyOf(foggedPlaces), foggedActors, viewerSeatKeys);
     }
 

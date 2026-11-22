@@ -80,45 +80,91 @@ class CommandValidationTest {
     }
 
     @Test
-    void forbiddenOwnerCommandIsRejectedWithoutMutation() {
+    void forbiddenOwnerCommandIsRejectedWithoutMutationOrRevisionLeak() {
         WildsEngine engine = engineWithAsh();
         OwnerId ashOwner = engine.view().owners().get(0).id();
         OwnerId bramOwner = engine.view().owners().get(1).id();
         ActorId ashActor = engine.view().actors().get(0).id();
 
+        // Advance Ash's actor revision > 0 so a leak would be distinguishable from 0L.
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.EnqueueTasks(ashOwner, ashActor, null,
+                        List.of(new TaskSpec.Wait(2_000, 1)))));
+        assertTrue(engine.view().actor(ashActor).orElseThrow().revision() > 0L);
+
         assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(bramOwner, ashActor, null,
                         List.of(new TaskSpec.Wait(2_000, 1))),
-                ErrorCode.FORBIDDEN, null);
+                ErrorCode.FORBIDDEN, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.ReplacePendingQueue(bramOwner, ashActor, null,
+                        List.of(new TaskSpec.Wait(2_000, 1))),
+                ErrorCode.FORBIDDEN, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.CancelQueue(bramOwner, ashActor, null, true),
+                ErrorCode.FORBIDDEN, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.SetFailurePolicy(bramOwner, ashActor, null,
+                        com.kotharworks.wilds.state.QueueFailurePolicy.HALT_ON_FAIL),
+                ErrorCode.FORBIDDEN, 0L);
     }
 
     @Test
-    void staleRevisionIsRejectedWithCurrentRevision() {
+    void staleRevisionIsRejectedWithCurrentRevisionAcrossAllActorCommands() {
         WildsEngine engine = engineWithAsh();
         OwnerId ashOwner = engine.view().owners().get(0).id();
-        ActorRow ashActor = engine.view().actors().get(0);
+        ActorId ashActorId = engine.view().actors().get(0).id();
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.SetFailurePolicy(ashOwner, ashActorId, 0L,
+                        com.kotharworks.wilds.state.QueueFailurePolicy.HALT_ON_FAIL)));
+        ActorRow ashActor = engine.view().actor(ashActorId).orElseThrow();
+        assertEquals(1L, ashActor.revision());
+
         assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(ashOwner, ashActor.id(),
                         ashActor.revision() + 99, List.of(new TaskSpec.Wait(2_000, 1))),
                 ErrorCode.STALE_STATE, ashActor.revision());
+        assertRejectionUnmutates(engine,
+                new WorldCommand.ReplacePendingQueue(ashOwner, ashActor.id(),
+                        0L, List.of(new TaskSpec.Wait(2_000, 1))),
+                ErrorCode.STALE_STATE, ashActor.revision());
+        assertRejectionUnmutates(engine,
+                new WorldCommand.CancelQueue(ashOwner, ashActor.id(), 0L, false),
+                ErrorCode.STALE_STATE, ashActor.revision());
+        assertRejectionUnmutates(engine,
+                new WorldCommand.SetFailurePolicy(ashOwner, ashActor.id(), 0L,
+                        com.kotharworks.wilds.state.QueueFailurePolicy.ADVANCE),
+                ErrorCode.STALE_STATE, ashActor.revision());
     }
 
     @Test
-    void queueFullIsRejectedWithoutMutation() {
+    void queueFullIsRejectedWithoutMutationAndReportsCurrentRevision() {
         WildsEngine engine = engineWithAsh();
         OwnerId ashOwner = engine.view().owners().get(0).id();
         ActorId ashActor = engine.view().actors().get(0).id();
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.EnqueueTasks(ashOwner, ashActor, null,
+                        List.of(new TaskSpec.Wait(2_000, 1),
+                                new TaskSpec.Wait(2_001, 1),
+                                new TaskSpec.Wait(2_002, 1),
+                                new TaskSpec.Wait(2_003, 1)))));
+        long rev = engine.view().actor(ashActor).orElseThrow().revision();
+        assertTrue(rev > 0L);
+
+        // 3 pending + 3 new = 6 > 5 -> EnqueueTasks rejects with QUEUE_FULL.
+        assertRejectionUnmutates(engine,
+                new WorldCommand.EnqueueTasks(ashOwner, ashActor, null, List.of(
+                        new TaskSpec.Wait(2_004, 1), new TaskSpec.Wait(2_005, 1),
+                        new TaskSpec.Wait(2_006, 1))),
+                ErrorCode.QUEUE_FULL, rev);
+
         List<TaskSpec> six = List.of(
                 new TaskSpec.Wait(2_000, 1), new TaskSpec.Wait(2_001, 1),
                 new TaskSpec.Wait(2_002, 1), new TaskSpec.Wait(2_003, 1),
                 new TaskSpec.Wait(2_004, 1), new TaskSpec.Wait(2_005, 1));
-
-        assertRejectionUnmutates(engine,
-                new WorldCommand.EnqueueTasks(ashOwner, ashActor, null, six),
-                ErrorCode.QUEUE_FULL, null);
         assertRejectionUnmutates(engine,
                 new WorldCommand.ReplacePendingQueue(ashOwner, ashActor, null, six),
-                ErrorCode.QUEUE_FULL, null);
+                ErrorCode.QUEUE_FULL, rev);
     }
 
     @Test
@@ -131,17 +177,36 @@ class CommandValidationTest {
         assertRejectionUnmutates(engine,
                 new WorldCommand.RegisterOwner(3L, "Cora", ""),
                 ErrorCode.INVALID_ARGUMENT, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.RegisterOwner(3L, "Bad\0Name", "Label"),
+                ErrorCode.INVALID_ARGUMENT, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.RegisterOwner(3L, "Cora", "Bad\uD800Surrogate"),
+                ErrorCode.INVALID_ARGUMENT, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.RegisterOwner(3L, "Bad\uDC00Low", "Label"),
+                ErrorCode.INVALID_ARGUMENT, 0L);
 
         OwnerId ashOwner = engine.view().owners().get(0).id();
         ActorId ashActor = engine.view().actors().get(0).id();
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.SetFailurePolicy(ashOwner, ashActor, 0L,
+                        com.kotharworks.wilds.state.QueueFailurePolicy.ADVANCE)));
+        long rev = engine.view().actor(ashActor).orElseThrow().revision();
+        assertEquals(1L, rev);
+
         assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(ashOwner, ashActor, null,
                         List.of(new TaskSpec.Wait(500, 1))),
-                ErrorCode.INVALID_ARGUMENT, null);
+                ErrorCode.INVALID_ARGUMENT, rev);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.EnqueueTasks(ashOwner, ashActor, null,
+                        List.of(new TaskSpec.Wait(3_600_001, 1))),
+                ErrorCode.INVALID_ARGUMENT, rev);
         assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(ashOwner, ashActor, null,
                         List.of(new TaskSpec.Wait(1_000, 11))),
-                ErrorCode.INVALID_ARGUMENT, null);
+                ErrorCode.INVALID_ARGUMENT, rev);
     }
 
     @Test
@@ -157,25 +222,40 @@ class CommandValidationTest {
         WildsEngine engine = engineWithAsh();
         OwnerId ashOwner = engine.view().owners().get(0).id();
         ActorId ashActor = engine.view().actors().get(0).id();
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.SetFailurePolicy(ashOwner, ashActor, 0L,
+                        com.kotharworks.wilds.state.QueueFailurePolicy.ADVANCE)));
+        long rev = engine.view().actor(ashActor).orElseThrow().revision();
 
         assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(ashOwner, ashActor, null, List.of()),
-                ErrorCode.EMPTY_TASKS, null);
+                ErrorCode.EMPTY_TASKS, rev);
         assertRejectionUnmutates(engine,
                 new WorldCommand.ReplacePendingQueue(ashOwner, ashActor, null, List.of()),
-                ErrorCode.EMPTY_TASKS, null);
+                ErrorCode.EMPTY_TASKS, rev);
         assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(ashOwner, new ActorId(9, 1), null,
                         List.of(new TaskSpec.Wait(2_000, 1))),
                 ErrorCode.UNKNOWN_TARGET, 0L);
         assertRejectionUnmutates(engine,
+                new WorldCommand.EnqueueTasks(new OwnerId(9, 1), ashActor, null,
+                        List.of(new TaskSpec.Wait(2_000, 1))),
+                ErrorCode.UNKNOWN_TARGET, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.CancelQueue(new OwnerId(9, 1), ashActor, null, false),
+                ErrorCode.UNKNOWN_TARGET, 0L);
+        assertRejectionUnmutates(engine,
+                new WorldCommand.SetFailurePolicy(ashOwner, new ActorId(9, 1), null,
+                        com.kotharworks.wilds.state.QueueFailurePolicy.ADVANCE),
+                ErrorCode.UNKNOWN_TARGET, 0L);
+        assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(ashOwner, ashActor, null,
                         List.of(new TaskSpec.Travel(new PlaceId(9, 1)))),
-                ErrorCode.UNKNOWN_TARGET, null);
+                ErrorCode.UNKNOWN_TARGET, rev);
     }
 
     @Test
-    void unknownRuleIsRejectedWithoutMutation() {
+    void unknownRuleIsRejectedWithoutMutationAndReportsCurrentRevision() {
         RuleRegistry waitOnlyRules = new RuleRegistry(
                 Map.of(
                         new RuleId("camp"), new RuleRegistry.PlaceKindDef(
@@ -192,11 +272,43 @@ class CommandValidationTest {
                 new WorldCommand.RegisterOwner(1L, "Ash", "Ash's Scout")));
         OwnerId ashOwner = engine.view().owners().get(0).id();
         ActorId ashActor = engine.view().actors().get(0).id();
+        assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
+                new WorldCommand.SetFailurePolicy(ashOwner, ashActor, 0L,
+                        com.kotharworks.wilds.state.QueueFailurePolicy.ADVANCE)));
 
         assertRejectionUnmutates(engine,
                 new WorldCommand.EnqueueTasks(ashOwner, ashActor, null,
                         List.of(new TaskSpec.Travel(new PlaceId(1, 1)))),
-                ErrorCode.UNKNOWN_RULE, null);
+                ErrorCode.UNKNOWN_RULE, 1L);
+
+        RuleRegistry travelOnlyRules = new RuleRegistry(
+                waitOnlyRules.placeKinds(),
+                Map.of(new RuleId("travel"), new RuleRegistry.TaskKindDef(
+                        new RuleId("travel"), "Travel", 0L, Long.MAX_VALUE, 1)));
+        WildsEngine travelEngine = new WildsEngine(SEED, travelOnlyRules,
+                MinimalSeedTopologyBootstrap.INSTANCE);
+        assertInstanceOf(Phase1Result.Accepted.class, travelEngine.apply(
+                new WorldCommand.RegisterOwner(1L, "Ash", "Ash's Scout")));
+        assertRejectionUnmutates(travelEngine,
+                new WorldCommand.EnqueueTasks(
+                        travelEngine.view().owners().get(0).id(),
+                        travelEngine.view().actors().get(0).id(), null,
+                        List.of(new TaskSpec.Wait(1_000, 1))),
+                ErrorCode.UNKNOWN_RULE, 0L);
+    }
+
+    @Test
+    void missingHomePlaceRejectsRegistrationInPhase1AndBootstrapFailsFast() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> new WildsEngine(SEED, RuleRegistry.minimalDefault(),
+                        (state, rules) -> { }));
+
+        WorldState emptyTopology = new WorldState(SEED, RuleRegistry.WILDS_RULES_VERSION);
+        WildsEngine restored = WildsEngine.fromSnapshotJson(
+                SnapshotCodec.encode(emptyTopology));
+        assertRejectionUnmutates(restored,
+                new WorldCommand.RegisterOwner(1L, "Ash", "Scout"),
+                ErrorCode.UNKNOWN_TARGET, 0L);
     }
 
     @Test

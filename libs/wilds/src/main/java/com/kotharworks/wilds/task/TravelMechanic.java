@@ -31,6 +31,7 @@ import com.kotharworks.wilds.state.PlaceRow;
 import com.kotharworks.wilds.state.TaskSpec;
 import com.kotharworks.wilds.state.WorldState;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -51,7 +52,7 @@ public final class TravelMechanic implements TaskMechanic<TaskSpec.Travel> {
     /** Energy drain while a travel leg is running (milli per logical second). */
     public static final long TRAVEL_RATE_MILLI_PER_SEC = -40L;
 
-    /** Energy at/below which the tired-walker duration penalty kicks in. */
+    /** Energy strictly below which the tired-walker duration penalty kicks in. */
     public static final long LOW_ENERGY_MILLI = 15_000L;
 
     /** Integer permille duration multiplier applied when energy is low: {@code 1.35x}. */
@@ -97,10 +98,11 @@ public final class TravelMechanic implements TaskMechanic<TaskSpec.Travel> {
         long energyBefore = actor.energyMilli().valueMilliAt(now);
         LazyGauge energy = actor.energyMilli().reanchor(now, 0L, TRAVEL_RATE_MILLI_PER_SEC);
         long effectiveMs = energyBefore < LOW_ENERGY_MILLI
-                ? (edge.travelDurationMs() * PENALTY_PERMILLE) / 1_000L
+                ? penalizedDurationMs(edge.travelDurationMs())
                 : edge.travelDurationMs();
+        long dueAtMs = Math.addExact(now, effectiveMs);
         long ticket = ctx.state().allocateEventSeq();
-        ActiveTask task = new ActiveTask(now, now + effectiveMs, ticket, spec, 1);
+        ActiveTask task = new ActiveTask(now, dueAtMs, ticket, spec, 1);
         ctx.state().actors().replace(new ActorRow(actor.id(), actor.ownerId(), actor.label(),
                 actor.revision() + 1, actor.placeId(), energy, task, actor.pendingQueue(),
                 actor.failPolicy()));
@@ -177,5 +179,16 @@ public final class TravelMechanic implements TaskMechanic<TaskSpec.Travel> {
             }
         }
         return null;
+    }
+
+    private static long penalizedDurationMs(long baseDurationMs) {
+        try {
+            return Math.multiplyExact(baseDurationMs, PENALTY_PERMILLE) / 1_000L;
+        } catch (ArithmeticException overflow) {
+            return BigInteger.valueOf(baseDurationMs)
+                    .multiply(BigInteger.valueOf(PENALTY_PERMILLE))
+                    .divide(BigInteger.valueOf(1_000L))
+                    .longValueExact();
+        }
     }
 }

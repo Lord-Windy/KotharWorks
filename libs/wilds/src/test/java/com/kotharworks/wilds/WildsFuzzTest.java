@@ -18,16 +18,22 @@ package com.kotharworks.wilds;
 import com.kotharworks.wilds.command.ErrorCode;
 import com.kotharworks.wilds.command.Phase1Result;
 import com.kotharworks.wilds.command.WorldCommand;
+import com.kotharworks.wilds.event.WorldEvent;
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.OwnerId;
 import com.kotharworks.wilds.id.PlaceId;
+import com.kotharworks.wilds.observe.ObservationProjector;
+import com.kotharworks.wilds.observe.OwnerObservation;
+import com.kotharworks.wilds.observe.PlaceDto;
 import com.kotharworks.wilds.observe.WorldView;
+import com.kotharworks.wilds.replay.CommandCodec;
 import com.kotharworks.wilds.seed.SeededRng;
 import com.kotharworks.wilds.seed.WorldSeed;
 import com.kotharworks.wilds.state.ActorRow;
 import com.kotharworks.wilds.state.OwnerRow;
 import com.kotharworks.wilds.state.QueueFailurePolicy;
 import com.kotharworks.wilds.state.TaskSpec;
+import com.kotharworks.wilds.worldgen.StubDescriptionComposer;
 
 import org.junit.jupiter.api.Test;
 
@@ -37,18 +43,22 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Ticket 04 seeded fuzz acceptance: 5,000 random valid/invalid commands and time jumps
- * against two engines running the identical op stream — zero uncaught exceptions, the
- * queue/energy invariants hold after every step, every rejection family is exercised,
- * and a mid-run {@code SnapshotCodec} clone finishes on exactly the continuous engine's
- * {@code WorldHash}.
+ * across two independent engines running the identical op stream from step 0 plus a
+ * mid-run {@code SnapshotCodec} clone at step 2,500 — zero uncaught exceptions,
+ * step-by-step {@code WorldEvent} cursor monotonicity &amp; equality, Phase-1
+ * non-mutation on every random rejection, {@code CommandCodec} round-trip parity,
+ * fog-of-war invariants, and organic coverage of every live rejection family.
  */
 class WildsFuzzTest {
 
     private static final int STEPS = 5_000;
+    private static final int SEED_PREFIX_STEPS = 2;
     private static final int CLONE_AT = 2_500;
     private static final ActorId GHOST_ACTOR = new ActorId(9, 1);
     private static final OwnerId GHOST_OWNER = new OwnerId(9, 1);
@@ -88,42 +98,76 @@ class WildsFuzzTest {
         List<Op> ops = generateOps(new WorldSeed(20_260_404L).stream("fuzz", 0, 0));
         assertEquals(STEPS, ops.size(), "generator must produce the full stream");
 
-        WildsEngine engineFull = new WildsEngine(new WorldSeed(1L));
+        WildsEngine engineA = new WildsEngine(new WorldSeed(1L));
+        WildsEngine engineB = new WildsEngine(new WorldSeed(1L));
         WildsEngine engineClone = null;
-        Set<ErrorCode> rejections = new TreeSet<>();
-        long lastNowFull = 0L;
-        long lastNowClone = 0L;
+        Set<ErrorCode> randomRejections = new TreeSet<>();
+        long lastNowA = 0L;
+        long expectedCursor = 1L;
 
         for (int step = 0; step < STEPS; step++) {
             Op op = ops.get(step);
-            applyOp(op, engineFull, rejections);
-            assertTrue(engineFull.nowMs() >= lastNowFull, "clock must never move backward");
-            lastNowFull = engineFull.nowMs();
-            assertInvariants(engineFull, "full@" + step);
+            Set<ErrorCode> sink = step >= SEED_PREFIX_STEPS ? randomRejections : null;
+
+            applyOp(op, engineA, sink);
+            applyOp(op, engineB, null);
+
+            assertTrue(engineA.nowMs() >= lastNowA, "clock must never move backward");
+            assertEquals(engineA.nowMs(), engineB.nowMs(), "clock drift at step " + step);
+            lastNowA = engineA.nowMs();
+
+            List<WorldEvent> eventsA = engineA.drainEvents();
+            List<WorldEvent> eventsB = engineB.drainEvents();
+            assertEquals(eventsA, eventsB, "event stream diverged at step " + step);
+            for (WorldEvent event : eventsA) {
+                assertEquals(expectedCursor++, event.cursor(),
+                        "non-consecutive event cursor at step " + step);
+                if (event instanceof WorldEvent.OwnerRegistered) {
+                    assertNotNull(event.publicSummary());
+                } else {
+                    assertNull(event.publicSummary(),
+                            "private event must never carry a publicSummary");
+                }
+            }
+
+            if (step % 50 == 0) {
+                assertEquals(engineA.worldHash(), engineB.worldHash(),
+                        "worldHash diverged at step " + step);
+                assertFogInvariants(engineA, "engineA@" + step);
+            }
+            assertInvariants(engineA, "engineA@" + step);
 
             if (step == CLONE_AT) {
-                engineClone = WildsEngine.fromSnapshotJson(engineFull.snapshotJson());
-                assertEquals(engineFull.worldHash(), engineClone.worldHash(),
+                engineClone = WildsEngine.fromSnapshotJson(engineA.snapshotJson());
+                assertEquals(engineA.worldHash(), engineClone.worldHash(),
                         "clone must hash identically at the snapshot point");
             } else if (step > CLONE_AT) {
-                applyOp(op, engineClone, rejections);
-                assertTrue(engineClone.nowMs() >= lastNowClone,
-                        "clone clock must never move backward");
-                lastNowClone = engineClone.nowMs();
+                applyOp(op, engineClone, null);
+                List<WorldEvent> eventsClone = engineClone.drainEvents();
+                assertEquals(eventsA, eventsClone,
+                        "snapshot clone events diverged at step " + step);
+                if (step % 50 == 0) {
+                    assertEquals(engineA.worldHash(), engineClone.worldHash(),
+                            "snapshot clone hash diverged at step " + step);
+                }
                 assertInvariants(engineClone, "clone@" + step);
             }
         }
 
-        assertTrue(engineClone != null, "clone must exist after step " + CLONE_AT);
-        assertEquals(engineFull.worldHash(), engineClone.worldHash(),
+        assertNotNull(engineClone, "clone must exist after step " + CLONE_AT);
+        assertEquals(engineA.worldHash(), engineB.worldHash(),
+                "two independent engines must finish on the exact same WorldHash");
+        assertEquals(engineA.worldHash(), engineClone.worldHash(),
                 "mid-run snapshot clone must converge on the continuous engine");
-        assertEquals(engineFull.snapshotJson(), engineClone.snapshotJson());
+        assertEquals(engineA.snapshotJson(), engineB.snapshotJson());
+        assertEquals(engineA.snapshotJson(), engineClone.snapshotJson());
+        assertTrue(expectedCursor > 100L, "fuzz stream must emit substantial event volume");
 
         for (ErrorCode required : List.of(ErrorCode.FORBIDDEN, ErrorCode.STALE_STATE,
                 ErrorCode.QUEUE_FULL, ErrorCode.INVALID_ARGUMENT, ErrorCode.DUPLICATE_SEAT,
                 ErrorCode.UNKNOWN_TARGET, ErrorCode.EMPTY_TASKS)) {
-            assertTrue(rejections.contains(required),
-                    () -> "fuzz never produced the " + required + " rejection family");
+            assertTrue(randomRejections.contains(required),
+                    () -> "random fuzz ops never organically hit " + required);
         }
     }
 
@@ -132,20 +176,9 @@ class WildsFuzzTest {
     private static List<Op> generateOps(SeededRng rng) {
         List<Op> ops = new ArrayList<>(STEPS);
 
-        // Deterministic prefix: guaranteed registration + every rejection family.
+        // Minimal 2-owner bootstrap only; all rejection families must be hit organically!
         ops.add(new Register(1L, "Ash", "Ash's Scout"));
         ops.add(new Register(2L, "Bram", "Bram's Walker"));
-        ops.add(new Register(1L, "Impostor", "Fake")); // DUPLICATE_SEAT
-        ops.add(new Register(3L, "  ", "Blank")); // INVALID_ARGUMENT
-        ops.add(new Enqueue(0, 0, 1, List.of(new TaskSpec.Wait(2_000, 1)))); // starts a task
-        ops.add(new Enqueue(1, 0, 0, List.of(new TaskSpec.Wait(2_000, 1)))); // FORBIDDEN
-        ops.add(new Enqueue(0, 0, 2, List.of(new TaskSpec.Wait(2_000, 1)))); // STALE_STATE
-        ops.add(new Enqueue(0, 0, 0, List.of(
-                new TaskSpec.Wait(2_000, 1), new TaskSpec.Wait(2_001, 1),
-                new TaskSpec.Wait(2_002, 1), new TaskSpec.Wait(2_003, 1),
-                new TaskSpec.Wait(2_004, 1), new TaskSpec.Wait(2_005, 1)))); // QUEUE_FULL
-        ops.add(new Enqueue(0, -1, 0, List.of(new TaskSpec.Wait(2_000, 1)))); // UNKNOWN_TARGET
-        ops.add(new Enqueue(0, 0, 1, List.of())); // EMPTY_TASKS
 
         while (ops.size() < STEPS) {
             int roll = rng.nextInt(100);
@@ -216,17 +249,17 @@ class WildsFuzzTest {
     private static void applyOp(Op op, WildsEngine engine, Set<ErrorCode> rejections) {
         WorldView view = engine.view();
         switch (op) {
-            case Register register -> record(rejections, engine.apply(
+            case Register register -> submitCommand(engine, rejections,
                     new WorldCommand.RegisterOwner(register.seat(), register.name(),
-                            register.label())));
+                            register.label()));
             case Enqueue enqueue -> {
                 OwnerId owner = resolveOwner(view, enqueue.ownerSlot());
                 ActorId actor = resolveActor(view, enqueue.actorSlot());
                 if (owner == null || actor == null) {
                     return;
                 }
-                record(rejections, engine.apply(new WorldCommand.EnqueueTasks(owner, actor,
-                        revision(view, actor, enqueue.revisionVariant()), enqueue.tasks())));
+                submitCommand(engine, rejections, new WorldCommand.EnqueueTasks(owner, actor,
+                        revision(view, actor, enqueue.revisionVariant()), enqueue.tasks()));
             }
             case Replace replace -> {
                 OwnerId owner = resolveOwner(view, replace.ownerSlot());
@@ -234,9 +267,9 @@ class WildsFuzzTest {
                 if (owner == null || actor == null) {
                     return;
                 }
-                record(rejections, engine.apply(new WorldCommand.ReplacePendingQueue(owner,
+                submitCommand(engine, rejections, new WorldCommand.ReplacePendingQueue(owner,
                         actor, revision(view, actor, replace.revisionVariant()),
-                        replace.tasks())));
+                        replace.tasks()));
             }
             case Cancel cancel -> {
                 OwnerId owner = resolveOwner(view, cancel.ownerSlot());
@@ -244,9 +277,9 @@ class WildsFuzzTest {
                 if (owner == null || actor == null) {
                     return;
                 }
-                record(rejections, engine.apply(new WorldCommand.CancelQueue(owner, actor,
+                submitCommand(engine, rejections, new WorldCommand.CancelQueue(owner, actor,
                         revision(view, actor, cancel.revisionVariant()),
-                        cancel.cancelActive())));
+                        cancel.cancelActive()));
             }
             case SetPolicy setPolicy -> {
                 OwnerId owner = resolveOwner(view, setPolicy.ownerSlot());
@@ -254,15 +287,33 @@ class WildsFuzzTest {
                 if (owner == null || actor == null) {
                     return;
                 }
-                record(rejections, engine.apply(new WorldCommand.SetFailurePolicy(owner, actor,
+                submitCommand(engine, rejections, new WorldCommand.SetFailurePolicy(owner, actor,
                         revision(view, actor, setPolicy.revisionVariant()),
-                        setPolicy.policy())));
+                        setPolicy.policy()));
             }
             case AdvanceTo advanceTo -> engine.advanceTo(engine.nowMs() + advanceTo.deltaMs());
             case AdvanceNext advanceNext -> {
                 if (engine.peekNextDueMs().isPresent()) {
                     engine.advanceToNextEvent();
                 }
+            }
+        }
+    }
+
+    private static void submitCommand(WildsEngine engine, Set<ErrorCode> rejections,
+                                      WorldCommand command) {
+        WorldCommand roundTripped = CommandCodec.decode(CommandCodec.encode(command));
+        assertEquals(command, roundTripped, "CommandCodec round-trip mismatch");
+
+        long hashBefore = engine.worldHash();
+        Phase1Result result = engine.apply(roundTripped);
+        if (result instanceof Phase1Result.Rejected rejected) {
+            assertEquals(hashBefore, engine.worldHash(),
+                    "rejected command mutated WorldState: " + rejected);
+            assertTrue(engine.drainEvents().isEmpty(),
+                    "rejected command emitted events: " + rejected);
+            if (rejections != null) {
+                rejections.add(rejected.errorCode());
             }
         }
     }
@@ -294,21 +345,34 @@ class WildsFuzzTest {
         return variant == 1 ? row.revision() : row.revision() + 99;
     }
 
-    private static void record(Set<ErrorCode> rejections, Phase1Result result) {
-        if (result instanceof Phase1Result.Rejected rejected) {
-            rejections.add(rejected.errorCode());
-        }
-    }
-
     private static void assertInvariants(WildsEngine engine, String at) {
         WorldView view = engine.view();
         for (ActorRow actor : view.actors()) {
-            assertTrue(actor.pendingQueue().size() <= 5,
+            assertTrue(actor.pendingQueue().size() <= ActorRow.MAX_PENDING_QUEUE,
                     "pending queue overflow at " + at + ": "
                             + actor.pendingQueue().size());
             long energy = actor.energyMilli().valueMilliAt(view.nowMs());
             assertTrue(energy >= 0 && energy <= 100_000,
                     "energy out of bounds at " + at + ": " + energy);
+        }
+    }
+
+    private static void assertFogInvariants(WildsEngine engine, String at) {
+        WorldView view = engine.view();
+        for (OwnerRow owner : view.owners()) {
+            OwnerObservation obs = ObservationProjector.projectOwner(view, owner.id(),
+                    StubDescriptionComposer.INSTANCE);
+            Set<PlaceId> discovered = new TreeSet<>(owner.discoveredPlaces());
+            assertEquals(view.actorsOwnedBy(owner.id()).size(), obs.actors().size(),
+                    "foreign actor leaked at " + at);
+            for (PlaceDto place : obs.places()) {
+                assertTrue(discovered.contains(place.id()),
+                        "undiscovered place leaked at " + at);
+                for (PlaceDto.EdgeDto edge : place.edges()) {
+                    assertTrue(discovered.contains(edge.to()),
+                            "undiscovered edge target leaked at " + at);
+                }
+            }
         }
     }
 }
