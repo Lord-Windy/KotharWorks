@@ -3,19 +3,21 @@ description: "Queensland-style ticket line: takes ready KOTHARWORKS tickets one
   at a time, gives each a git worktree and ql/<key> branch, has GLM-5.3 plan and
   review with GLM-5.3-Flash implementing, gates on the full mvnd test reactor
   (Java 25, -Werror) with one repair round per gate, then fast-forward merges to
-  main, pushes, marks the ticket done, and promotes backlog dependents whose
-  dependencies have all landed. Stops the line on failure, leaving the worktree
-  for inspection."
+  main, pushes to origin (GitHub) and the SourceHut mirror
+  (git@git.sr.ht:~lord_windy/KotharWorks), marks the ticket done, and promotes
+  backlog dependents whose dependencies have all landed. Stops the line on
+  failure, leaving the worktree for inspection."
 whenToUse: When you want to process the current KotharWorks ticket queue (the
   Phase 0 spine under tickets/, or any ready samtasker (st) tickets)
   Queensland-fashion — per-ticket git worktrees, ql/<key> branches, sequential
-  ff-merges to main with push, st done and dependent promotion.
+  ff-merges to main with push to both remotes (origin/GitHub + SourceHut), st
+  done and dependent promotion.
 args:
   label:
     type: string
-    description: Only process ready KOTHARWORKS tickets carrying this label;
-      empty means all labels (the Phase 0 chain mixes tech-wilds and tech-auth,
-      and filtering to one epic stalls cross-epic dependencies).
+    description: Only process ready KOTHARWORKS tickets carrying this label; empty
+      means all labels (the Phase 0 chain mixes tech-wilds and tech-auth, and
+      filtering to one epic stalls cross-epic dependencies).
     default: ""
   limit:
     type: number
@@ -386,11 +388,16 @@ for (let n = 0; n < limit && stopReason === null; n += 1) {
   }
   const push = await world.run("git", ["-C", REPO, "push", "origin", "main"], { timeoutMs: 300_000 });
   if (push.exitCode !== 0) {
-    stopReason = `${key}: merged into local main but the push failed: ${trim(push.stderr, 400)}. Push manually, then run: st status ${key} done`;
+    stopReason = `${key}: merged into local main but the push failed: ${trim(push.stderr, 400)}. Push both remotes manually (origin reaches GitHub only; SourceHut is git@git.sr.ht:~lord_windy/KotharWorks), then run: st status ${key} done`;
     findings.push({ where: REPO, what: "push to origin failed after a local ff-merge", evidence: push.stderr, status: "verified", severity: "high" });
     outcomes.push({ key, summary: shortSummary, status: "failed", note: "push failed — push manually then st done" });
     report({ key, summary: shortSummary, status: "failed", note: "push failed" }, "queue");
     break;
+  }
+  const pushSrht = await world.run("git", ["-C", REPO, "push", "git@git.sr.ht:~lord_windy/KotharWorks", "main"], { timeoutMs: 300_000 });
+  if (pushSrht.exitCode !== 0) {
+    log(`${key}: WARNING — origin push ok, but the SourceHut mirror push failed; SourceHut is behind until pushed by hand: ${trim(pushSrht.stderr, 200)}`);
+    findings.push({ where: REPO, what: `SourceHut mirror push failed after merging ${key} (origin/GitHub is current)`, evidence: pushSrht.stderr, status: "verified", severity: "medium" });
   }
   const head = await world.run("git", ["-C", REPO, "rev-parse", "--short", "HEAD"], { timeoutMs: 30_000 });
   const sha = head.stdout.trim();
@@ -411,7 +418,7 @@ for (let n = 0; n < limit && stopReason === null; n += 1) {
   await world.run("git", ["-C", REPO, "worktree", "remove", wt], { timeoutMs: 120_000 });
   await world.run("git", ["-C", REPO, "branch", "-d", branch], { timeoutMs: 60_000 });
   mergedCount += 1;
-  verified.push(`${key}: full mvnd test reactor green in a fresh worktree, diff reviewed on GLM-5.3${firstReview.approved ? "" : " (approved on second review after repairs)"}, ff-merged to main as ${sha} and pushed.`);
+  verified.push(`${key}: full mvnd test reactor green in a fresh worktree, diff reviewed on GLM-5.3${firstReview.approved ? "" : " (approved on second review after repairs)"}, ff-merged to main as ${sha} and pushed${pushSrht.exitCode === 0 ? " to both remotes (origin/GitHub + SourceHut)" : " to origin/GitHub (SourceHut push failed — see findings)"}.`);
   outcomes.push({ key, summary: shortSummary, status: "merged", note: sha });
   report({ key, summary: shortSummary, status: "merged", note: sha }, "queue");
   log(`${key}: merged as ${sha}, pushed, ticket done${promo.promoted.length > 0 ? `, promoted ${promo.promoted.join(", ")}` : ""}.`);
