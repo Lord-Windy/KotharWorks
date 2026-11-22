@@ -153,7 +153,7 @@ public final class PostgresAuthStore implements AuthStorePort {
                     UserId userId = new UserId(rs.getObject("user_id", UUID.class));
                     ExternalIdentity identity = new ExternalIdentity(rs.getString("issuer"),
                             rs.getString("subject"));
-                    Set<GlobalRole> roles = parseRoles(rs.getString("granted_roles"));
+                    Set<GlobalRole> roles = parseRoles(rs.getArray("granted_roles"));
                     return new SessionRecord(sha256, userId, identity,
                             rs.getString("display_name"), roles, rs.getString("csrf_token"),
                             instantOf(rs, "expires_at"));
@@ -234,13 +234,21 @@ public final class PostgresAuthStore implements AuthStorePort {
                 rs.getString("suspended_reason"));
     }
 
-    /** Rebuilds the granted-role set from the stored {@code text[]} literal. */
-    private static Set<GlobalRole> parseRoles(String csv) {
+    /**
+     * Rebuilds the granted-role set from the stored {@code text[]} column.
+     * Read via {@link java.sql.Array#getArray} (never {@code getString}, whose
+     * binary-protocol rendering quotes elements once pgjdbc switches the
+     * statement to server-side prepare after five executions).
+     */
+    private static Set<GlobalRole> parseRoles(java.sql.Array column) throws SQLException {
+        String[] names;
+        try {
+            names = (String[]) column.getArray();
+        } finally {
+            column.free();
+        }
         Set<GlobalRole> roles = new LinkedHashSet<>();
-        for (String name : csv.replace("{", "").replace("}", "").split(",")) {
-            if (name.isBlank()) {
-                continue;
-            }
+        for (String name : names) {
             try {
                 roles.add(GlobalRole.valueOf(name));
             } catch (IllegalArgumentException unknownRole) {

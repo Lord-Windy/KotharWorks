@@ -106,6 +106,15 @@ public final class InMemoryWorldStore implements WorldStorePort {
     }
 
     @Override
+    public List<SeatRecord> findAllSeats() {
+        synchronized (lock) {
+            return seatsById.values().stream()
+                    .sorted(Comparator.comparingLong(SeatRecord::seatId))
+                    .toList();
+        }
+    }
+
+    @Override
     public Optional<SeatRecord> findSeatById(long seatId) {
         synchronized (lock) {
             return Optional.ofNullable(seatsById.get(seatId));

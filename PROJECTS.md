@@ -98,7 +98,7 @@ accept signed decimal or full 64-bit unsigned `0x`/`0X` hex. Run via
 **Status:** in-development · **Artifact:** `com.kotharworks:wilds-server` ·
 **Package:** `com.kotharworks.wilds.server` · **Depends on:** `wilds`, `auth`
 
-Hexagonal runtime core of the Ironwood Wilds online server (Tickets 07+08), on
+Hexagonal runtime core of the Ironwood Wilds online server (Tickets 07-09), on
 Java 25 Virtual Threads with in-memory reference adapters (`adapters/memory/`) or
 production PostgreSQL persistence (`--storage=postgres` via HikariCP + JDBI3).
 `domain/WorldHost` is the single writer: a dedicated virtual thread drains a bounded
@@ -148,6 +148,28 @@ exclusively through `libs/auth`'s deny-by-default `AuthenticatedRouter`. CLI fla
 `--db-password`, `--checkpoint-interval-ms` (300000), OIDC endpoints, and per-seat
 rate limits. Run via
 `mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am`.
+Ticket 09 adds `adapters/web/` — an escape-by-default HTML builder (`Html`,
+`RawTrustedHtml` as the single explicit bypass, name-guarded tags/attrs) rendering
+the SSR structural console: `GET /play` (registered PUBLIC with HUMAN_ONLY
+enforced in-handler so anonymous browsers get the mandated 303 -> `/auth/login`
+instead of a bare 401; unseated users get a Claim Seat form, seated users the
+console — header bar, "While You Were Away" catch-up banner via `?since=`,
+fogged place & topology panel with [Examine] drawer, actor & task queue panel with
+integer-formatted energy/duration and `expectedRevision`-stamped controls routed
+strictly through `POST /api/v1/commands`, and an SSE-fed live event log) plus the
+public `GET /chronicle` observatory (world seed/version triple, logical clock,
+`ControllerKind` seat breakdown, publicSummary-only feed). Vanilla
+`/assets/wilds-ui.js` (< 200 LOC) + `wilds.css` drive it: native `EventSource`
+with `localStorage` cursor resume, `requestAnimationFrame` progress-bar
+interpolation from `(startedMs, dueMs, serverNowMs)` with zero polling, and
+non-destructive `409 STALE_STATE` refreshes. Supporting changes:
+`WorldStorePort.findAllSeats` (public roster), and `WorldHost`/`WildsServer`
+`closeWithoutCheckpoint()` — a deterministic in-process `kill -9` for the crash
+rig that skips the final anchor/checkpoint — all locked together by
+`FullSpineIntegrationTest` (Testcontainers PostgreSQL + loopback HTTP/SSE:
+auth/CSRF/XSS escaping E2E, two-user fog isolation with monotonic SSE cursors,
+mid-flight crash with `PAUSE_WHILE_DOWN` recovery and bit-for-bit
+`wilds-headless replay` `WorldHash` parity).
 
 ## External dependencies
 

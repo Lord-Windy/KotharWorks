@@ -97,10 +97,16 @@ public final class PostgresWorldStore implements WorldStorePort {
                         "SELECT seat_id, owner_user_id, seat_name, controller_kind"
                                 + " FROM wilds_meta.seats WHERE owner_user_id = ?"
                                 + " ORDER BY seat_id", owner.value())
-                .map((rs, ctx) -> new SeatRecord(rs.getLong("seat_id"),
-                        new UserId(rs.getObject("owner_user_id", java.util.UUID.class)),
-                        rs.getString("seat_name"),
-                        ControllerKind.valueOf(rs.getString("controller_kind"))))
+                .map((rs, ctx) -> seatRow(rs))
+                .list());
+    }
+
+    @Override
+    public List<SeatRecord> findAllSeats() {
+        return jdbi.withHandle(handle -> handle.select(
+                        "SELECT seat_id, owner_user_id, seat_name, controller_kind"
+                                + " FROM wilds_meta.seats ORDER BY seat_id")
+                .map((rs, ctx) -> seatRow(rs))
                 .list());
     }
 
@@ -109,11 +115,15 @@ public final class PostgresWorldStore implements WorldStorePort {
         return jdbi.withHandle(handle -> handle.select(
                         "SELECT seat_id, owner_user_id, seat_name, controller_kind"
                                 + " FROM wilds_meta.seats WHERE seat_id = ?", seatId)
-                .map((rs, ctx) -> new SeatRecord(rs.getLong("seat_id"),
-                        new UserId(rs.getObject("owner_user_id", java.util.UUID.class)),
-                        rs.getString("seat_name"),
-                        ControllerKind.valueOf(rs.getString("controller_kind"))))
+                .map((rs, ctx) -> seatRow(rs))
                 .findFirst());
+    }
+
+    private static SeatRecord seatRow(java.sql.ResultSet rs) throws SQLException {
+        return new SeatRecord(rs.getLong("seat_id"),
+                new UserId(rs.getObject("owner_user_id", java.util.UUID.class)),
+                rs.getString("seat_name"),
+                ControllerKind.valueOf(rs.getString("controller_kind")));
     }
 
     // ------------------------------------------------------------------ world metadata

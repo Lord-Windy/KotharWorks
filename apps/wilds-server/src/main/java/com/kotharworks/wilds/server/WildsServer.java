@@ -57,6 +57,9 @@ import com.kotharworks.wilds.server.adapters.postgres.SqlMigrator;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryWorldStore;
 import com.kotharworks.wilds.server.adapters.sse.SseRoutes;
+import com.kotharworks.wilds.server.adapters.web.AssetRoutes;
+import com.kotharworks.wilds.server.adapters.web.ChronicleRoutes;
+import com.kotharworks.wilds.server.adapters.web.PlayRoutes;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer;
 import com.kotharworks.wilds.server.domain.SeatRateLimiter;
 import com.kotharworks.wilds.server.domain.WorldHost;
@@ -195,6 +198,9 @@ public final class WildsServer implements AutoCloseable {
             new CommandRoutes(worldHost, seatAuthorizer).register(router);
             new SseRoutes(worldHost, this.worldStore, this.eventBus, seatAuthorizer)
                     .register(router);
+            new AssetRoutes().register(router);
+            new PlayRoutes(this.authStore, this.worldStore, worldHost, cookies).register(router);
+            new ChronicleRoutes(worldHost, this.worldStore).register(router);
         } catch (RuntimeException | IOException bootFailure) {
             if (openedHost != null) {
                 try {
@@ -267,6 +273,20 @@ public final class WildsServer implements AutoCloseable {
         pump.close();
         router.stop(0);
         worldHost.close();
+        if (ownedDataSource != null) {
+            ownedDataSource.close();
+        }
+    }
+
+    /**
+     * Abrupt abort for the crash-recovery rig: stops pump, HTTP server, and
+     * world host with NO shutdown anchor, NO checkpoint, and by design drops
+     * any deferred (unpersisted) events — the in-process {@code kill -9}.
+     */
+    public void closeWithoutCheckpoint() {
+        pump.close();
+        router.stop(0);
+        worldHost.closeWithoutCheckpoint();
         if (ownedDataSource != null) {
             ownedDataSource.close();
         }

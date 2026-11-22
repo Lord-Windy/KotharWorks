@@ -577,6 +577,11 @@ class CrashRecoveryTest {
         }
 
         @Override
+        public List<SeatRecord> findAllSeats() {
+            return delegate.findAllSeats();
+        }
+
+        @Override
         public java.util.Optional<SeatRecord> findSeatById(long seatId) {
             return delegate.findSeatById(seatId);
         }

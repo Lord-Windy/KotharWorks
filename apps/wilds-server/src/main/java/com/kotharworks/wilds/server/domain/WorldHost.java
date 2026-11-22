@@ -92,7 +92,7 @@ public final class WorldHost {
     private long lastCheckpointWallNanos;
 
     private sealed interface HostMessage
-            permits SubmitCommand, Tick, RequestCheckpoint, Shutdown {
+            permits SubmitCommand, Tick, RequestCheckpoint, Shutdown, Abort {
     }
 
     private record SubmitCommand(long seatId, UUID cmdId, WorldCommand command,
@@ -108,6 +108,10 @@ public final class WorldHost {
 
     private record Shutdown() implements HostMessage {
         static final Shutdown INSTANCE = new Shutdown();
+    }
+
+    private record Abort() implements HostMessage {
+        static final Abort INSTANCE = new Abort();
     }
 
     /** The caller-side synchronous reply latch (no futures anywhere). */
@@ -252,6 +256,30 @@ public final class WorldHost {
         eventBus.close();
     }
 
+    /**
+     * Abrupt in-process stand-in for a {@code kill -9} in the crash-recovery
+     * rig: stops accepting submissions and stops the writer without flushing
+     * deferred events, without the final shutdown clock anchor, and without a
+     * checkpoint — exactly the durable state a hard process death leaves
+     * behind. Unpersisted events are lost by design and re-derived from WAL
+     * replay on the next boot. Any in-flight tick or command is processed to
+     * completion first (mailbox messages never interrupt each other), so the
+     * abort point is deterministic.
+     */
+    public void closeWithoutCheckpoint() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        mailbox.offer(Abort.INSTANCE);
+        try {
+            writerThread.join(5_000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        eventBus.close();
+    }
+
     // ------------------------------------------------------------------ writer side
 
     private void runWriter() {
@@ -289,6 +317,9 @@ public final class WorldHost {
                     case Shutdown _ -> {
                         handleClose();
                         return;
+                    }
+                    case Abort _ -> {
+                        return; // kill -9 fidelity: no flush, no anchor, no checkpoint
                     }
                 }
             }
@@ -386,8 +417,12 @@ public final class WorldHost {
 
     private void handleTick() {
         long wallNow = System.nanoTime();
+        // Wall time accumulates since the last COMMITTED advance (not since the last
+        // tick message): resetting it per tick would cap target at one pump-step
+        // beyond nowMs, so any task due further out than
+        // pumpIntervalMs * timeScale (multi-second travels and waits) could never
+        // be reached and the live clock would wedge forever.
         long wallDeltaMs = Math.max(0L, (wallNow - lastTickWallNanos) / 1_000_000L);
-        lastTickWallNanos = wallNow;
         long target = engine.nowMs() + wallDeltaMs * timeScale;
         OptionalLong nextDue = engine.peekNextDueMs();
         boolean duePending = nextDue.isPresent() && nextDue.getAsLong() <= target;
@@ -402,7 +437,7 @@ public final class WorldHost {
             if (checkpointDue) {
                 writeCheckpointOnWriter();
             }
-            return; // zero idle WAL spam
+            return; // zero idle WAL spam; wall time keeps accumulating for the next tick
         }
         try {
             lastWalSeq = worldStore.appendClockAdvance(worldId, target, null);
@@ -415,6 +450,7 @@ public final class WorldHost {
         }
         engine.advanceTo(target);
         lastPersistedClockMs = engine.nowMs();
+        lastTickWallNanos = wallNow;
         List<StoredWorldEvent> emitted = drainEmitted();
         tryFlushPendingEvents("tick");
         eventBus.publish(worldId, emitted);

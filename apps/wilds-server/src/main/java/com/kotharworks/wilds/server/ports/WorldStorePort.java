@@ -55,6 +55,9 @@ public interface WorldStorePort {
     /** Every seat owned by {@code owner}, ascending by seat id. */
     List<SeatRecord> findSeatsByOwner(UserId owner);
 
+    /** Every seat in the world, ascending by seat id (public observatory roster). */
+    List<SeatRecord> findAllSeats();
+
     /** The seat with this id, or empty. */
     Optional<SeatRecord> findSeatById(long seatId);
 

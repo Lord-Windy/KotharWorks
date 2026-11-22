@@ -110,7 +110,7 @@ public final class QueryRoutes {
         }
         var observation = ObservationProjector.projectOwner(worldHost.view(), authorized.owner(),
                 StubDescriptionComposer.INSTANCE);
-        ctx.respondJson(200, ObservationJson.observation(observation));
+        ctx.respondJson(200, ObservationJson.observation(observation, worldHost.view().nowMs()));
     }
 
     private void examine(RouteContext ctx) throws IOException {

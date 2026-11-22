@@ -1,0 +1,121 @@
+/*
+ * Ironwood Wilds structural console (Phase 0) — minimal layout styles.
+ * Copyright 2026 Samuel "Lord-Windy" Brown. Apache License 2.0.
+ */
+
+:root {
+  --panel: #f7f5ef;
+  --ink: #2b2a26;
+  --accent: #7a5c2e;
+  --line: #d8d2c4;
+  --bar: #9dbf8e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: "Iowan Old Style", Georgia, serif;
+  color: var(--ink);
+  background: var(--panel);
+  margin: 0 auto;
+  max-width: 62rem;
+  padding: 1rem;
+}
+
+header.console-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: baseline;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+header.console-bar h1 { font-size: 1.15rem; margin: 0; }
+header.console-bar .meta { color: #6b675d; font-size: 0.85rem; }
+header.console-bar form { margin-left: auto; }
+
+.panel {
+  background: #fffdf8;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.panel h2 {
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 0.5rem;
+}
+
+button, .cmd {
+  font: inherit;
+  background: var(--accent);
+  color: #fffdf8;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.7rem;
+  margin: 0.15rem 0.3rem 0.15rem 0;
+  cursor: pointer;
+}
+
+button:hover { filter: brightness(1.1); }
+
+#task-progress {
+  height: 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #eee9dd;
+  margin: 0.4rem 0;
+  overflow: hidden;
+}
+
+#task-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--bar);
+  transition: none;
+}
+
+#event-log, #queue, #catch-up {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+#event-log li, #catch-up li {
+  border-bottom: 1px dotted var(--line);
+  padding: 0.15rem 0;
+  white-space: pre-wrap;
+}
+
+#drawer {
+  border-left: 3px solid var(--accent);
+  background: #f1ece0;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+#notice {
+  background: #fbe9c6;
+  border: 1px solid #d9b26a;
+  border-radius: 4px;
+  padding: 0.4rem 0.7rem;
+  margin-bottom: 0.75rem;
+}
+
+label { display: block; margin: 0.4rem 0; }
+input[type="text"] {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+dl.place-facts dt { font-weight: bold; }
+dl.place-facts dd { margin: 0 0 0.5rem; }

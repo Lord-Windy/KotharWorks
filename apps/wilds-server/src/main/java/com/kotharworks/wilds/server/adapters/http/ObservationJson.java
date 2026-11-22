@@ -39,10 +39,15 @@ public final class ObservationJson {
     private ObservationJson() {
     }
 
-    /** Serializes the complete owner observation (owner + actors + fogged places). */
-    public static String observation(OwnerObservation observation) {
+    /**
+     * Serializes the complete owner observation (owner + actors + fogged places)
+     * plus the view's logical clock, which browser consoles use to resync their
+     * task-progress interpolation against server time.
+     */
+    public static String observation(OwnerObservation observation, long nowMs) {
         Objects.requireNonNull(observation, "observation");
         List<JsonObj.Entry> entries = new ArrayList<>();
+        entries.add(JsonObj.entry("nowMs", ApiJson.num(nowMs)));
         entries.add(JsonObj.entry("owner", owner(observation.owner())));
         entries.add(JsonObj.entry("actors", new JsonCodec.JsonArr(observation.actors().stream()
                 .map(ObservationJson::actor)
