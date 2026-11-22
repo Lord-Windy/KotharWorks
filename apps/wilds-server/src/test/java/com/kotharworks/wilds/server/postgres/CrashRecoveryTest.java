@@ -16,9 +16,9 @@
 package com.kotharworks.wilds.server.postgres;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -199,6 +199,7 @@ class CrashRecoveryTest {
             long hashBefore = host.worldHash();
             dataSource.close(); // the broken connection
 
+            long startedNanos = System.nanoTime();
             CommandOutcome outcome = host.submit(seat.seatId(), UUID.randomUUID(),
                     new WorldCommand.EnqueueTasks(
                             host.view().findOwnerBySeatKey(seat.seatId()).orElseThrow().id(),
@@ -207,7 +208,15 @@ class CrashRecoveryTest {
                                             .orElseThrow().id()).get(0).id(),
                             null, List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(
                                     1_000L, 1))));
-            assertInstanceOf(CommandOutcome.StorageUnavailable.class, outcome);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+            CommandOutcome.StorageUnavailable unavailable = assertInstanceOf(
+                    CommandOutcome.StorageUnavailable.class, outcome);
+            assertFalse(unavailable.message().contains("did not reply within"),
+                    "writer must catch the dead pool directly instead of dying into a timeout: "
+                            + unavailable.message());
+            assertTrue(elapsedMs < 5_000L,
+                    "dead-pool reply must be immediate, not the 10s ReplySlot backstop: "
+                            + elapsedMs + "ms");
             assertEquals(hashBefore, host.worldHash(),
                     "RAM never advances ahead of the WAL on a dead pool");
             host.close();
@@ -218,6 +227,91 @@ class CrashRecoveryTest {
                 // first close already tore the pool down
             }
         }
+    }
+
+    @Test
+    void writerSurvivesEveryStoreCallOutageAndRecoversCleanly() throws Exception {
+        Jdbi jdbi = freshJdbi();
+        PostgresAuthStore auth = new PostgresAuthStore(jdbi, Clock.systemUTC(),
+                new SecureRandom());
+        PostgresWorldStore pg = new PostgresWorldStore(jdbi);
+        FaultyWorldStore store = new FaultyWorldStore(pg);
+        WorldHost host = new WorldHost(store, new InMemoryEventBus(), 1L, 20L,
+                WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE);
+        int worldId = host.worldId();
+        UserRecord user = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "resilient-writer"), "Sam");
+        SeatRecord seat = pg.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
+        host.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"));
+        OwnerId owner = host.view().findOwnerBySeatKey(seat.seatId()).orElseThrow().id();
+        ActorId actor = host.view().actorsOwnedBy(owner).get(0).id();
+
+        // (a) existsByCmdId fault: immediate StorageUnavailable, writer stays alive.
+        store.existsByCmdIdFault = new IllegalStateException("pool down on cmdId lookup");
+        CommandOutcome existsFaulted = host.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(1_000L, 1))));
+        CommandOutcome.StorageUnavailable existsUnavailable = assertInstanceOf(
+                CommandOutcome.StorageUnavailable.class, existsFaulted);
+        assertFalse(existsUnavailable.message().contains("did not reply within"),
+                existsUnavailable.message());
+        store.existsByCmdIdFault = null;
+
+        // Enqueue a short 1_000ms wait once the store is back.
+        assertInstanceOf(CommandOutcome.Ok.class, host.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(1_000L, 1)))));
+
+        // (b) appendClockAdvance fault: ticks stay paused at the last committed ms.
+        store.appendClockAdvanceFault = new IllegalStateException("pool down on clock advance");
+        long pausedAt = host.nowMs();
+        Thread.sleep(80);
+        host.tick();
+        Thread.sleep(50);
+        assertEquals(pausedAt, host.nowMs(),
+                "PAUSE_WHILE_DOWN: failed clock advance leaves logical time untouched");
+        store.appendClockAdvanceFault = null;
+
+        // (c) appendEvents fault: WAL-committed tick advances RAM without killing the
+        // writer, defers world_events persistence, and withholds checkpoints until flushed.
+        long eventsBefore = count(jdbi, "SELECT count(*) FROM wilds_world.world_events"
+                + " WHERE world_id = " + worldId);
+        store.appendEventsFault = new IllegalStateException("pool blip on event insert");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            host.tick();
+            Thread.sleep(50);
+            ActorRow snap = host.view().actor(actor).orElseThrow();
+            if (snap.activeTask() == null && snap.pendingQueue().isEmpty()) {
+                break;
+            }
+        }
+        assertTrue(host.view().actor(actor).orElseThrow().activeTask() == null,
+                "tick advanced the world once CLOCK_ADVANCE committed");
+        assertEquals(eventsBefore, count(jdbi, "SELECT count(*) FROM wilds_world.world_events"
+                        + " WHERE world_id = " + worldId),
+                "world_events has not received the deferred batch while appendEvents is faulted");
+        host.writeCheckpointNow();
+        assertEquals(0L, count(jdbi, "SELECT count(*) FROM wilds_world.world_checkpoints"
+                        + " WHERE world_id = " + worldId),
+                "checkpoint must not advance past WAL entries whose events are still unpersisted");
+
+        // Store recovers: checkpoint flushes deferred events first, then writes snapshot,
+        // and subsequent commands still succeed on the original writer thread.
+        store.appendEventsFault = null;
+        host.writeCheckpointNow();
+        assertTrue(count(jdbi, "SELECT count(*) FROM wilds_world.world_events"
+                        + " WHERE world_id = " + worldId) > eventsBefore,
+                "deferred events flushed idempotently on recovery");
+        assertEquals(1L, count(jdbi, "SELECT count(*) FROM wilds_world.world_checkpoints"
+                        + " WHERE world_id = " + worldId),
+                "checkpoint succeeds once deferred events are persisted");
+        assertInstanceOf(CommandOutcome.Ok.class, host.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(1_000L, 1)))),
+                "writer thread remained alive across every outage mode");
+        host.close();
     }
 
     // ------------------------------------------------------------------ (4) kill -9 recovery
@@ -457,13 +551,16 @@ class CrashRecoveryTest {
     }
 
     /**
-     * Delegating port wrapper with an armable {@code appendCommand} fault —
-     * the DB-side constraint/connection failure stand-in.
+     * Delegating port wrapper with armable store faults — the DB-side
+     * constraint/connection failure stand-in across every writer-thread call.
      */
     static final class FaultyWorldStore implements WorldStorePort {
 
         private final WorldStorePort delegate;
+        volatile RuntimeException existsByCmdIdFault;
+        volatile RuntimeException appendClockAdvanceFault;
         volatile RuntimeException appendCommandFault;
+        volatile RuntimeException appendEventsFault;
 
         FaultyWorldStore(WorldStorePort delegate) {
             this.delegate = delegate;
@@ -493,11 +590,19 @@ class CrashRecoveryTest {
 
         @Override
         public boolean existsByCmdId(int worldId, UUID cmdId) {
+            RuntimeException fault = existsByCmdIdFault;
+            if (fault != null) {
+                throw fault;
+            }
             return delegate.existsByCmdId(worldId, cmdId);
         }
 
         @Override
         public long appendClockAdvance(int worldId, long admittedMs, Long worldHash) {
+            RuntimeException fault = appendClockAdvanceFault;
+            if (fault != null) {
+                throw fault;
+            }
             return delegate.appendClockAdvance(worldId, admittedMs, worldHash);
         }
 
@@ -513,6 +618,10 @@ class CrashRecoveryTest {
 
         @Override
         public void appendEvents(int worldId, List<StoredWorldEvent> events) {
+            RuntimeException fault = appendEventsFault;
+            if (fault != null) {
+                throw fault;
+            }
             delegate.appendEvents(worldId, events);
         }
 

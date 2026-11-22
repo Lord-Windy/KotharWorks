@@ -25,7 +25,6 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Enumeration;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -65,6 +64,7 @@ public final class SqlMigrator {
         try (var handle = jdbi.open()) {
             handle.execute("SET lock_timeout = '10s'");
             handle.execute("SELECT pg_advisory_lock(?)", MIGRATION_LOCK_KEY);
+            Throwable primary = null;
             try {
                 handle.execute("CREATE TABLE IF NOT EXISTS public.schema_migrations ("
                         + "version INT PRIMARY KEY, filename TEXT NOT NULL, "
@@ -88,8 +88,19 @@ public final class SqlMigrator {
                     appliedNow++;
                 }
                 return appliedNow;
+            } catch (RuntimeException | Error failure) {
+                primary = failure;
+                throw failure;
             } finally {
-                handle.execute("SELECT pg_advisory_unlock(?)", MIGRATION_LOCK_KEY);
+                try {
+                    handle.execute("SELECT pg_advisory_unlock(?)", MIGRATION_LOCK_KEY);
+                } catch (RuntimeException unlockFailure) {
+                    if (primary != null) {
+                        primary.addSuppressed(unlockFailure);
+                    } else {
+                        throw unlockFailure;
+                    }
+                }
             }
         }
     }
@@ -176,10 +187,5 @@ public final class SqlMigrator {
         } catch (IOException e) {
             throw new UncheckedIOException("cannot read migration resource: " + path, e);
         }
-    }
-
-    /** Visible for tests: the fixed advisory-lock key this migrator serializes on. */
-    static Set<Integer> knownVersions(TreeMap<Integer, String> scripts) {
-        return Set.copyOf(scripts.keySet());
     }
 }

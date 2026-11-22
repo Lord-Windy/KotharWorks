@@ -107,83 +107,118 @@ public final class WildsServer implements AutoCloseable {
             throws IOException {
         this.config = Objects.requireNonNull(config, "config").validated();
         this.clock = Objects.requireNonNull(clock, "clock");
-        if (authStore == null && worldStore == null
-                && config.storage() == ServerConfig.StorageMode.POSTGRES) {
-            HikariConfig hikari = new HikariConfig();
-            hikari.setJdbcUrl(config.jdbcUrl());
-            if (config.dbUser() != null) {
-                hikari.setUsername(config.dbUser());
-            }
-            if (config.dbPassword() != null) {
-                hikari.setPassword(config.dbPassword());
-            }
-            hikari.setMaximumPoolSize(8);
-            hikari.setPoolName("wilds-server");
-            this.ownedDataSource = new HikariDataSource(hikari);
-            Jdbi jdbi = Jdbi.create(this.ownedDataSource);
-            new SqlMigrator(jdbi).migrate();
-            this.authStore = new PostgresAuthStore(jdbi, clock, new SecureRandom());
-            this.worldStore = new PostgresWorldStore(jdbi);
-        } else {
-            this.ownedDataSource = null;
-            this.authStore = authStore != null ? authStore : new InMemoryAuthStore(clock);
-            this.worldStore = worldStore != null ? worldStore : new InMemoryWorldStore();
-        }
-        this.eventBus = eventBus != null ? eventBus : new InMemoryEventBus();
         Objects.requireNonNull(apiTokenCodec, "apiTokenCodec");
+        HikariDataSource openedPool = null;
+        HttpServer openedServer = null;
+        WorldHost openedHost = null;
+        try {
+            if (authStore == null && worldStore == null
+                    && this.config.storage() == ServerConfig.StorageMode.POSTGRES) {
+                HikariConfig hikari = new HikariConfig();
+                hikari.setJdbcUrl(this.config.jdbcUrl());
+                if (this.config.dbUser() != null) {
+                    hikari.setUsername(this.config.dbUser());
+                }
+                if (this.config.dbPassword() != null) {
+                    hikari.setPassword(this.config.dbPassword());
+                }
+                hikari.setMaximumPoolSize(8);
+                hikari.setPoolName("wilds-server");
+                openedPool = new HikariDataSource(hikari);
+                Jdbi jdbi = Jdbi.create(openedPool);
+                new SqlMigrator(jdbi).migrate();
+                this.authStore = new PostgresAuthStore(jdbi, clock, new SecureRandom());
+                this.worldStore = new PostgresWorldStore(jdbi);
+            } else {
+                this.authStore = authStore != null ? authStore : new InMemoryAuthStore(clock);
+                this.worldStore = worldStore != null ? worldStore : new InMemoryWorldStore();
+            }
+            this.ownedDataSource = openedPool;
+            this.eventBus = eventBus != null ? eventBus : new InMemoryEventBus();
 
-        this.server = HttpServer.create(new InetSocketAddress(
-                InetAddress.getByName(config.bindAddress()), config.port()), 0);
-        LoopbackStartupFuse.verify(config.authMode(), server.getAddress());
-        CookieCodec cookies = CookieCodec.devLoopback();
+            openedServer = HttpServer.create(new InetSocketAddress(
+                    InetAddress.getByName(this.config.bindAddress()), this.config.port()), 0);
+            this.server = openedServer;
+            LoopbackStartupFuse.verify(this.config.authMode(), server.getAddress());
+            CookieCodec cookies = CookieCodec.devLoopback();
 
-        JwtClaimsVerifier verifier;
-        OidcAuthorizationCodeClient oidcClient;
-        OidcJwksAuthenticator oidcAuthenticator;
-        if (config.authMode() == AuthMode.OIDC) {
-            this.devIssuer = null;
-            this.oidcConfig = new OidcConfig(config.oidcIssuerUrl(), config.oidcClientId(),
-                    config.oidcClientSecret(), config.publicOrigin(),
-                    URI.create(config.oidcAuthorizationEndpoint()),
-                    URI.create(config.oidcTokenEndpoint()),
-                    URI.create(config.oidcJwksUri()));
-            oidcClient = new OidcAuthorizationCodeClient();
-            oidcAuthenticator = new OidcJwksAuthenticator(oidcConfig, clock);
-            verifier = oidcAuthenticator.jwtVerifier();
-        } else {
-            this.oidcConfig = null;
-            oidcClient = null;
-            oidcAuthenticator = null;
-            this.devIssuer = new DevLocalJwtIssuer(config.publicOrigin(), AUDIENCE, clock,
-                    this.authStore, this.authStore, cookies);
-            verifier = devIssuer.verifier();
+            JwtClaimsVerifier verifier;
+            OidcAuthorizationCodeClient oidcClient;
+            OidcJwksAuthenticator oidcAuthenticator;
+            if (this.config.authMode() == AuthMode.OIDC) {
+                this.devIssuer = null;
+                this.oidcConfig = new OidcConfig(this.config.oidcIssuerUrl(),
+                        this.config.oidcClientId(), this.config.oidcClientSecret(),
+                        this.config.publicOrigin(),
+                        URI.create(this.config.oidcAuthorizationEndpoint()),
+                        URI.create(this.config.oidcTokenEndpoint()),
+                        URI.create(this.config.oidcJwksUri()));
+                oidcClient = new OidcAuthorizationCodeClient();
+                oidcAuthenticator = new OidcJwksAuthenticator(oidcConfig, clock);
+                verifier = oidcAuthenticator.jwtVerifier();
+            } else {
+                this.oidcConfig = null;
+                oidcClient = null;
+                oidcAuthenticator = null;
+                this.devIssuer = new DevLocalJwtIssuer(this.config.publicOrigin(), AUDIENCE, clock,
+                        this.authStore, this.authStore, cookies);
+                verifier = devIssuer.verifier();
+            }
+
+            var apiTokens = new ScopedApiTokenAuthenticator(
+                    this.authStore::findActiveTokenBySha256);
+            var humans = new JwtHumanAuthenticator(verifier, this.config.oidcClientId(),
+                    this.authStore);
+            var cookieAuth = new SessionCookieAuthenticator(cookies, this.authStore, clock);
+            RequestAuthenticator authenticator = new SuspendedUserRejectingAuthenticator(
+                    RequestAuthenticator.bearerThenCookie(apiTokens, humans, cookieAuth),
+                    this.authStore);
+            CsrfGuard csrfGuard = new CsrfGuard(this.config.publicOrigin(),
+                    this.config.authMode(), () -> server.getAddress().getPort());
+            this.router = new AuthenticatedRouter(server, authenticator, csrfGuard);
+
+            openedHost = new WorldHost(this.worldStore, this.eventBus, this.config.worldSeed(),
+                    this.config.timeScale(), WorldHost.DEFAULT_QUIET_ADVANCE_MS,
+                    this.config.checkpointIntervalMs());
+            this.worldHost = openedHost;
+            this.pump = new ClockPump(worldHost, this.config.pumpIntervalMs());
+            SeatRateLimiter rateLimiter = new SeatRateLimiter(this.config.ratePerSec(),
+                    this.config.rateBurst());
+            this.seatAuthorizer = new SeatAuthorizer(this.authStore, this.worldStore, rateLimiter);
+
+            new AuthRoutes(this.config, this.authStore, this.worldStore, worldHost, cookies, clock,
+                    devIssuer, oidcClient, oidcConfig, oidcAuthenticator).register(router);
+            new SeatRoutes(this.authStore, this.worldStore, worldHost, seatAuthorizer,
+                    apiTokenCodec).register(router);
+            new QueryRoutes(worldHost, this.worldStore, seatAuthorizer, this.config)
+                    .register(router);
+            new CommandRoutes(worldHost, seatAuthorizer).register(router);
+            new SseRoutes(worldHost, this.worldStore, this.eventBus, seatAuthorizer)
+                    .register(router);
+        } catch (RuntimeException | IOException bootFailure) {
+            if (openedHost != null) {
+                try {
+                    openedHost.close();
+                } catch (RuntimeException suppressed) {
+                    bootFailure.addSuppressed(suppressed);
+                }
+            }
+            if (openedServer != null) {
+                try {
+                    openedServer.stop(0);
+                } catch (RuntimeException suppressed) {
+                    bootFailure.addSuppressed(suppressed);
+                }
+            }
+            if (openedPool != null) {
+                try {
+                    openedPool.close();
+                } catch (RuntimeException suppressed) {
+                    bootFailure.addSuppressed(suppressed);
+                }
+            }
+            throw bootFailure;
         }
-
-        var apiTokens = new ScopedApiTokenAuthenticator(this.authStore::findActiveTokenBySha256);
-        var humans = new JwtHumanAuthenticator(verifier, config.oidcClientId(), this.authStore);
-        var cookieAuth = new SessionCookieAuthenticator(cookies, this.authStore, clock);
-        RequestAuthenticator authenticator = new SuspendedUserRejectingAuthenticator(
-                RequestAuthenticator.bearerThenCookie(apiTokens, humans, cookieAuth),
-                this.authStore);
-        CsrfGuard csrfGuard = new CsrfGuard(config.publicOrigin(), config.authMode(),
-                () -> server.getAddress().getPort());
-        this.router = new AuthenticatedRouter(server, authenticator, csrfGuard);
-
-        this.worldHost = new WorldHost(this.worldStore, this.eventBus, config.worldSeed(),
-                config.timeScale(), WorldHost.DEFAULT_QUIET_ADVANCE_MS,
-                config.checkpointIntervalMs());
-        this.pump = new ClockPump(worldHost, config.pumpIntervalMs());
-        SeatRateLimiter rateLimiter = new SeatRateLimiter(config.ratePerSec(), config.rateBurst());
-        this.seatAuthorizer = new SeatAuthorizer(this.authStore, this.worldStore, rateLimiter);
-
-        new AuthRoutes(config, this.authStore, this.worldStore, worldHost, cookies, clock, devIssuer,
-                oidcClient, oidcConfig, oidcAuthenticator).register(router);
-        new SeatRoutes(this.authStore, this.worldStore, worldHost, seatAuthorizer, apiTokenCodec)
-                .register(router);
-        new QueryRoutes(worldHost, this.worldStore, seatAuthorizer, config).register(router);
-        new CommandRoutes(worldHost, seatAuthorizer).register(router);
-        new SseRoutes(worldHost, this.worldStore, this.eventBus, seatAuthorizer)
-                .register(router);
     }
 
     /** Starts the HTTP router and the live pump. */

@@ -15,6 +15,8 @@
  */
 package com.kotharworks.wilds.server;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 import com.kotharworks.auth.AuthMode;
@@ -91,13 +93,25 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
     }
 
     /**
-     * Parses CLI flags. Unknown flags, missing values, and non-integer numbers
-     * throw {@link IllegalArgumentException} (Main renders usage on stderr and
-     * exits 2).
+     * Parses CLI flags in either {@code --flag value} or {@code --flag=value}
+     * form. Unknown flags, missing values, and non-integer numbers throw
+     * {@link IllegalArgumentException} (Main renders usage on stderr and exits 2).
      *
-     * @param args raw {@code main} args, e.g. {@code --port 8080 --seed 7 --time-scale 20}
+     * @param rawArgs raw {@code main} args, e.g. {@code --port 8080 --seed=7 --time-scale=20}
      */
-    public static ServerConfig parse(String[] args) {
+    public static ServerConfig parse(String[] rawArgs) {
+        List<String> expanded = new ArrayList<>(rawArgs.length * 2);
+        for (String arg : rawArgs) {
+            int eq = arg.startsWith("--") ? arg.indexOf('=') : -1;
+            if (eq > 2) {
+                expanded.add(arg.substring(0, eq));
+                expanded.add(arg.substring(eq + 1));
+            } else {
+                expanded.add(arg);
+            }
+        }
+        String[] args = expanded.toArray(String[]::new);
+
         int port = 8080;
         long worldSeed = 1L;
         long timeScale = 1L;

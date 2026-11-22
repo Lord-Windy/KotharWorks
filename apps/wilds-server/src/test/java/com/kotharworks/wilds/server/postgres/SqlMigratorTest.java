@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -109,5 +111,46 @@ class SqlMigratorTest {
                 () -> new SqlMigrator(jdbi).migrate(), "an unknown future migration refuses boot");
         assertTrue(refused.getMessage().contains("999"),
                 "message names the offending version: " + refused.getMessage());
+    }
+
+    @Test
+    void deadConnectionDuringUnlockDoesNotMaskPrimaryMigrationFailure() throws SQLException {
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        Jdbi seedJdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+        assertEquals(3, new SqlMigrator(seedJdbi).migrate());
+        try (Connection connection = DriverManager.getConnection(db.jdbcUrl(), db.username(),
+                db.password());
+                PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO public.schema_migrations (version, filename)"
+                                + " VALUES (999, 'V999__future.sql')")) {
+            insert.executeUpdate();
+        }
+
+        Jdbi dyingUnlockJdbi = Jdbi.create(() -> {
+            Connection real = DriverManager.getConnection(db.jdbcUrl(), db.username(),
+                    db.password());
+            return (Connection) Proxy.newProxyInstance(
+                    Connection.class.getClassLoader(),
+                    new Class<?>[] {Connection.class},
+                    (_, method, args) -> {
+                        if (args != null && args.length > 0 && args[0] instanceof String sql
+                                && sql.contains("pg_advisory_unlock")) {
+                            real.close();
+                        }
+                        try {
+                            return method.invoke(real, args);
+                        } catch (InvocationTargetException e) {
+                            throw e.getTargetException();
+                        }
+                    });
+        });
+
+        IllegalStateException refused = assertThrows(IllegalStateException.class,
+                () -> new SqlMigrator(dyingUnlockJdbi).migrate(),
+                "pg_advisory_unlock failure on a dead session must not mask the primary error");
+        assertTrue(refused.getMessage().contains("999"),
+                "primary diagnostic preserved: " + refused.getMessage());
+        assertTrue(refused.getSuppressed().length >= 1,
+                "unlock failure attached as suppressed rather than silently dropped");
     }
 }

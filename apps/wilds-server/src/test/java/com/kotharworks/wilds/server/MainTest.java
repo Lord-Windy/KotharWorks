@@ -92,6 +92,24 @@ class MainTest {
     }
 
     @Test
+    void parseSupportsEqualsSeparatedFlags() {
+        ServerConfig config = ServerConfig.parse(new String[] {
+                "--bind=127.0.0.1", "--port=9090", "--time-scale=5",
+                "--storage=postgres",
+                "--jdbc-url=jdbc:postgresql://127.0.0.1:5432/wilds?sslmode=disable",
+                "--db-user=wilds", "--db-password=secret", "--auth-mode=dev-local"})
+                .validated();
+        assertEquals("127.0.0.1", config.bindAddress());
+        assertEquals(9090, config.port());
+        assertEquals(5L, config.timeScale());
+        assertEquals(ServerConfig.StorageMode.POSTGRES, config.storage());
+        assertEquals("jdbc:postgresql://127.0.0.1:5432/wilds?sslmode=disable", config.jdbcUrl());
+        assertEquals("wilds", config.dbUser());
+        assertEquals("secret", config.dbPassword());
+        assertEquals(AuthMode.DEV_LOCAL, config.authMode());
+    }
+
+    @Test
     void postgresStorageRequiresJdbcUrl() {
         ServerConfig partial = ServerConfig.parse(new String[] {"--storage", "postgres"});
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
