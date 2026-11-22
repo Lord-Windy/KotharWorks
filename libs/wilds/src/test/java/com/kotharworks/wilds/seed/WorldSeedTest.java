@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class WorldSeedTest {
 
@@ -31,6 +32,8 @@ class WorldSeedTest {
         assertEquals(2627039839922677832L, new WorldSeed(7L).stream("region", 5L, 0L).nextLong());
         assertEquals(-8646013877010162674L, new WorldSeed(0L).stream("region", 0L, 0L).nextLong());
         assertEquals(7047607545586884408L, new WorldSeed(42L).stream("region", 3L, -7L).nextLong());
+        assertEquals(-5927253998736498802L, new WorldSeed(42L).stream("biome:é-αβ", 1L, 2L).nextLong());
+        assertThrows(NullPointerException.class, () -> new WorldSeed(42L).stream(null, 0L, 0L));
     }
 
     @Test
@@ -73,9 +76,10 @@ class WorldSeedTest {
     @Test
     void regionHashIsPinnedAndDelegatesToRegionDomain() {
         WorldSeed seed = new WorldSeed(42L);
-        assertEquals(-7070544670930975340L, seed.regionHash(3, -7));
+        assertEquals(7047607545586884408L, seed.regionHash(3, -7));
         assertEquals(-4935739986633482719L, seed.regionHash(100, 200));
         assertEquals(6968173194758821256L, new WorldSeed(1001L).regionHash(0, 0));
-        assertEquals(seed.regionHash(0, 0), seed.stream("region", 0L, 0L).nextLong());
+        assertEquals(seed.stream("region", 0L, 0L).nextLong(), seed.regionHash(0, 0));
+        assertEquals(seed.stream("region", 3L, -7L).nextLong(), seed.regionHash(3, -7));
     }
 }

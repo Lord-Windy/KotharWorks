@@ -37,7 +37,7 @@ public record WorldSeed(long value) {
 
     /** Order-independent coordinate hash backed by the {@code "region"} domain stream. */
     public long regionHash(int x, int y) {
-        return stream("region", Integer.toUnsignedLong(x), Integer.toUnsignedLong(y)).nextLong();
+        return stream("region", x, y).nextLong();
     }
 
     private static long fnv1a64(String domain) {

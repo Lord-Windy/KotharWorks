@@ -90,16 +90,17 @@ public final class RuleRegistry {
      * and task kinds {@code wait}/{@code travel}.
      */
     public static RuleRegistry minimalDefault() {
-        return new RuleRegistry(
-                Map.of(
-                        new RuleId("camp"), new PlaceKindDef(new RuleId("camp"), "Camp"),
-                        new RuleId("trail"), new PlaceKindDef(new RuleId("trail"), "Trail"),
-                        new RuleId("landmark"), new PlaceKindDef(new RuleId("landmark"), "Landmark")),
-                Map.of(
-                        new RuleId("wait"),
-                        new TaskKindDef(new RuleId("wait"), "Wait", 1_000L, 3_600_000L, 10),
-                        new RuleId("travel"),
-                        new TaskKindDef(new RuleId("travel"), "Travel", 0L, Long.MAX_VALUE, 1)));
+        TreeMap<RuleId, PlaceKindDef> places = new TreeMap<>();
+        places.put(new RuleId("camp"), new PlaceKindDef(new RuleId("camp"), "Camp"));
+        places.put(new RuleId("trail"), new PlaceKindDef(new RuleId("trail"), "Trail"));
+        places.put(new RuleId("landmark"), new PlaceKindDef(new RuleId("landmark"), "Landmark"));
+
+        TreeMap<RuleId, TaskKindDef> tasks = new TreeMap<>();
+        tasks.put(new RuleId("wait"),
+                new TaskKindDef(new RuleId("wait"), "Wait", 1_000L, 3_600_000L, 10));
+        tasks.put(new RuleId("travel"),
+                new TaskKindDef(new RuleId("travel"), "Travel", 0L, Long.MAX_VALUE, 1));
+        return new RuleRegistry(places, tasks);
     }
 
     /** Place kinds in ascending {@link RuleId} order; unmodifiable view. */

@@ -16,6 +16,7 @@
 package com.kotharworks.wilds.seed;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Stateful SplitMix64 integer RNG scoped to a single local operation; never store
@@ -62,8 +63,9 @@ public final class SeededRng {
         return nextInt(10_000);
     }
 
-    /** Uniform element; rejects empty lists. */
+    /** Uniform element; rejects null or empty lists. */
     public <T> T pick(List<T> items) {
+        Objects.requireNonNull(items, "items");
         if (items.isEmpty()) {
             throw new IllegalArgumentException("items must not be empty");
         }

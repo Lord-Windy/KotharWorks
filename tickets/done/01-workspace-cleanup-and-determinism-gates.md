@@ -1,7 +1,7 @@
 # Ticket 01 — Workspace Cleanup, Seeded Streams & Determinism Architecture Gates
 
 - **`st` Key:** `4e263046` (`KOTHARWORKS` · `tech-wilds`)
-- **Status:** Ready
+- **Status:** Done
 - **Depends on:** None
 - **Modules touched:** Root `pom.xml`, `PROJECTS.md`, `libs/procgen` *(removed)*, `libs/wilds`, `apps/wilds-server` *(import update only)*
 
