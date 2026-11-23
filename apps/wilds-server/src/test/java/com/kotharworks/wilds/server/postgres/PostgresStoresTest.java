@@ -40,6 +40,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
@@ -103,22 +104,27 @@ class PostgresStoresTest {
                 "jit-concurrent-subject");
 
         int logins = 20;
+        CountDownLatch ready = new CountDownLatch(logins);
         CountDownLatch startGate = new CountDownLatch(1);
         List<Callable<UserRecord>> logins20 = new ArrayList<>(logins);
         for (int i = 0; i < logins; i++) {
             logins20.add(() -> {
+                ready.countDown();
                 startGate.await();
                 return auth.upsertUser(identity, "Sam");
             });
         }
-        List<Future<UserRecord>> futures;
-        startGate.countDown();
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            futures = executor.invokeAll(logins20);
-        }
         Set<UUID> minted = new java.util.HashSet<>();
-        for (Future<UserRecord> future : futures) {
-            minted.add(future.get().userId().value());
+        List<Future<UserRecord>> futures = new ArrayList<>(logins);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (Callable<UserRecord> login : logins20) {
+                futures.add(executor.submit(login));
+            }
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "all 20 logins parked at the gate");
+            startGate.countDown();
+            for (Future<UserRecord> future : futures) {
+                minted.add(future.get().userId().value());
+            }
         }
         assertEquals(1, minted.size(), "every concurrent login lands on the same user id");
 

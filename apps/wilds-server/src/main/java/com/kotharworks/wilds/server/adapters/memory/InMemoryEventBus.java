@@ -27,9 +27,9 @@ import com.kotharworks.wilds.server.ports.StoredWorldEvent;
 /**
  * In-memory {@link EventBusPort}: copy-on-write subscriber list, one bounded
  * queue per subscriber, seat-scoped delivery. On queue saturation an
- * {@link #OVERFLOW} marker replaces buffered items so the SSE reader re-replays
+ * {@link EventBusPort#OVERFLOW} marker replaces buffered items so the SSE reader re-replays
  * from the durable/host event log without dropping cursors. {@link #close}
- * clears each queue and pushes {@link #CLOSED} so blocking SSE pollers wake
+ * clears each queue and pushes {@link EventBusPort#CLOSED} so blocking SSE pollers wake
  * immediately and exit — server shutdown never hangs a reader even if its
  * queue was full.
  */
@@ -37,14 +37,6 @@ public final class InMemoryEventBus implements EventBusPort {
 
     /** Capacity of each subscriber queue. */
     public static final int QUEUE_CAPACITY = 1024;
-
-    /** Poison marker enqueued on {@link #close}; cursor {@code 0} is never a real event. */
-    public static final StoredWorldEvent CLOSED = new StoredWorldEvent(0, 0, "__closed__", null,
-            null, null, null);
-
-    /** Overflow marker prompting SSE readers to catch up from the event store. */
-    public static final StoredWorldEvent OVERFLOW = new StoredWorldEvent(0, 0, "__overflow__",
-            null, null, null, null);
 
     private record Subscriber(int worldId, long seatId, BlockingQueue<StoredWorldEvent> queue) {
     }

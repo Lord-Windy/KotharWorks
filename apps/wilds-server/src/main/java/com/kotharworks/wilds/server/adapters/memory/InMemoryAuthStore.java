@@ -66,6 +66,9 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     private final Map<String, SessionRecord> sessionsByDigest = new ConcurrentHashMap<>();
     private final Map<String, TokenRow> tokensByDigest = new ConcurrentHashMap<>();
 
+    /** Test fault injection: when non-null, every write path throws it. */
+    private volatile RuntimeException writeFault;
+
     private record TokenRow(long tokenId, UserId ownerUserId, String resourceNamespace,
             long scopedResourceId, String prefix, String label, AtomicBoolean revoked) {
     }
@@ -81,10 +84,23 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
         this(clock, new SecureRandom());
     }
 
+    /** Test hook: arms every write path to throw {@code fault}; {@code null} clears it. */
+    public void setWriteFault(RuntimeException fault) {
+        this.writeFault = fault;
+    }
+
+    private void checkWriteFault() {
+        RuntimeException fault = writeFault;
+        if (fault != null) {
+            throw fault;
+        }
+    }
+
     // ------------------------------------------------------------------ users
 
     @Override
     public UserRecord upsertUser(ExternalIdentity identity, String displayName) {
+        checkWriteFault();
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(displayName, "displayName");
         UUID uuid = userIdsByIdentity.computeIfAbsent(identity, _ -> UUID.randomUUID());
@@ -114,6 +130,7 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
 
     @Override
     public void suspendUser(UserId userId, String reason) {
+        checkWriteFault();
         Objects.requireNonNull(userId, "userId");
         UserRecord current = usersById.get(userId.value());
         if (current == null) {
@@ -134,6 +151,7 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     @Override
     public CreatedSession createSession(UserId userId, ExternalIdentity externalId,
             String displayName, Set<GlobalRole> grantedRoles, Instant expiresAt) {
+        checkWriteFault();
         Objects.requireNonNull(userId, "userId");
         UserRecord user = usersById.get(userId.value());
         if (user != null && user.suspendedAt() != null) {
@@ -160,6 +178,7 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
 
     @Override
     public void revokeByDigest(byte[] sha256Digest) {
+        checkWriteFault();
         sessionsByDigest.remove(B64.encodeToString(sha256Digest));
     }
 
@@ -173,6 +192,7 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     @Override
     public CreatedToken createToken(UserId owner, String resourceNamespace, long scopedResourceId,
             String label, String rawToken, String prefix, byte[] sha256) {
+        checkWriteFault();
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(resourceNamespace, "resourceNamespace");
         Objects.requireNonNull(rawToken, "rawToken");
@@ -200,6 +220,7 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     @Override
     public boolean revokeToken(UserId owner, String resourceNamespace, long scopedResourceId,
             long tokenId) {
+        checkWriteFault();
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(resourceNamespace, "resourceNamespace");
         boolean matched = false;

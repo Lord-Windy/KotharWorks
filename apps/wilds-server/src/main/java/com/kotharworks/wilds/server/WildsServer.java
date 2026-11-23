@@ -24,6 +24,7 @@ import java.io.Writer;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.util.Objects;
+import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -119,6 +120,18 @@ public final class WildsServer implements AutoCloseable {
         try {
             if (authStore == null && worldStore == null
                     && this.config.storage() == ServerConfig.StorageMode.POSTGRES) {
+                // Migrations bypass the runtime pool's 5s socketTimeout: SqlMigrator waits
+                // up to lock_timeout (10s) on the advisory lock and DDL may run arbitrarily long.
+                Properties migrationProps = new Properties();
+                if (this.config.dbUser() != null) {
+                    migrationProps.setProperty("user", this.config.dbUser());
+                }
+                if (this.config.dbPassword() != null) {
+                    migrationProps.setProperty("password", this.config.dbPassword());
+                }
+                migrationProps.setProperty("connectTimeout", "3");
+                migrationProps.setProperty("socketTimeout", "0");
+                new SqlMigrator(Jdbi.create(this.config.jdbcUrl(), migrationProps)).migrate();
                 HikariConfig hikari = new HikariConfig();
                 hikari.setJdbcUrl(this.config.jdbcUrl());
                 if (this.config.dbUser() != null) {
@@ -135,7 +148,6 @@ public final class WildsServer implements AutoCloseable {
                 hikari.setPoolName("wilds-server");
                 openedPool = new HikariDataSource(hikari);
                 Jdbi jdbi = Jdbi.create(openedPool);
-                new SqlMigrator(jdbi).migrate();
                 this.authStore = new PostgresAuthStore(jdbi, clock, new SecureRandom());
                 this.worldStore = new PostgresWorldStore(jdbi);
             } else {

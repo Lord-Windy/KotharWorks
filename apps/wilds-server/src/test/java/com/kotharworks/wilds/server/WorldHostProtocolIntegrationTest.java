@@ -205,6 +205,44 @@ class WorldHostProtocolIntegrationTest {
         assertEquals(1, startedCount, "exactly one task_started event stored");
     }
 
+    @Test
+    void duplicateCmdIdTenConcurrentHttpPostsReturnIdenticalReceipts() throws Exception {
+        rig(60_000L, 1L);
+        JsonObj seat = charter();
+        String actor = strField(seat, "actorId");
+        UUID cmdId = UUID.randomUUID();
+        String body = "{\"cmdId\":\"" + cmdId + "\",\"type\":\"enqueue\",\"targetActor\":\""
+                + actor + "\",\"tasks\":[" + waitTask(1_000) + "]}";
+
+        List<Callable<HttpResponse<String>>> posts = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            posts.add(() -> post("/api/v1/commands", body, sam));
+        }
+        List<Future<HttpResponse<String>>> futures;
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            futures = executor.invokeAll(posts);
+        }
+        String reference = null;
+        for (Future<HttpResponse<String>> future : futures) {
+            HttpResponse<String> response = future.get();
+            assertEquals(200, response.statusCode(), response.body());
+            String receipt = JsonCodec.write(json(response.body()).getOrNull("receipt"));
+            if (reference == null) {
+                reference = receipt;
+            } else {
+                assertEquals(reference, receipt, "duplicate POSTs must return identical receipts");
+            }
+        }
+
+        long commandRows = wal().stream()
+                .filter(record -> record instanceof WalRecord.CommandEntry entry
+                        && entry.cmdId().equals(cmdId.toString()))
+                .count();
+        assertEquals(1, commandRows, "exactly one WAL row for the cmdId");
+        assertEquals(2, server.worldHost().view().actor(ActorId.parse(actor)).orElseThrow()
+                .revision(), "actor revision advanced exactly once");
+    }
+
     // ------------------------------------------------------------------ (b) stale revision
 
     @Test
@@ -248,6 +286,11 @@ class WorldHostProtocolIntegrationTest {
                 "RAM world hash untouched by the failed commit");
         assertEquals(hashBefore, server.worldHost().view().worldHash(),
                 "published WorldView untouched by the failed commit");
+        server.worldHost().writeCheckpointNow();
+        assertEquals(hashBefore,
+                store.loadLatestCheckpoint(server.worldHost().worldId()).orElseThrow().worldHash(),
+                "engine.worldHash() (persisted by an on-writer checkpoint) untouched by the "
+                        + "failed commit");
         assertEquals(walBefore, wal().size(), "no WAL row for the failed commit");
 
         store.setAppendCommandFault(null);
@@ -358,6 +401,23 @@ class WorldHostProtocolIntegrationTest {
                 "subscriber queue must receive the wake marker");
     }
 
+    @Test
+    void currentLogicalNowMsExtrapolatesBeyondPublishedViewWithoutAdvancingIt() {
+        for (long scale : new long[] {1L, 10L}) {
+            long[] wallNanos = new long[] {1_000_000_000L};
+            WorldHost host = new WorldHost(new InMemoryWorldStore(), new InMemoryEventBus(),
+                    () -> wallNanos[0], 1L, scale, 3_600_000L, Long.MAX_VALUE);
+            try {
+                long base = host.view().nowMs();
+                wallNanos[0] += java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+                assertEquals(base, host.view().nowMs());
+                assertEquals(base + 2_000L * scale, host.currentLogicalNowMs());
+            } finally {
+                host.close();
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ Pass 07 regressions
 
     @Test
@@ -417,6 +477,60 @@ class WorldHostProtocolIntegrationTest {
         } finally {
             host.close();
         }
+    }
+
+    @Test
+    void pumpWritesClockAdvanceOnlyWhenDueOrQuietThresholdCrossed() {
+        long[] wallNanos = new long[] {1_000_000_000L};
+        InMemoryWorldStore memStore = new InMemoryWorldStore();
+        WorldHost host = new WorldHost(memStore, new InMemoryEventBus(), () -> wallNanos[0],
+                1L, 1L, 60_000L, Long.MAX_VALUE);
+        try {
+            assertInstanceOf(CommandOutcome.Ok.class, host.submit(1L, UUID.randomUUID(),
+                    new WorldCommand.RegisterOwner(1L, "Alice", "Alice Actor")));
+            OwnerId owner = host.view().findOwnerBySeatKey(1L).orElseThrow().id();
+            ActorId actor = host.view().actorsOwnedBy(owner).getFirst().id();
+            int worldId = host.worldId();
+            long base = clockRows(memStore, worldId);
+
+            wallNanos[0] += java.util.concurrent.TimeUnit.SECONDS.toNanos(45);
+            host.tick();
+            host.writeCheckpointNow();
+            assertEquals(base, clockRows(memStore, worldId), "idle ticks below 60s write nothing");
+
+            wallNanos[0] += java.util.concurrent.TimeUnit.SECONDS.toNanos(16);
+            host.tick();
+            host.writeCheckpointNow();
+            assertEquals(base + 1, clockRows(memStore, worldId),
+                    "crossing the 60s quiet threshold writes one CLOCK_ADVANCE");
+            WalRecord.ClockAdvance quiet = (WalRecord.ClockAdvance) memStore
+                    .loadWalAfter(worldId, 0).stream()
+                    .filter(r -> r instanceof WalRecord.ClockAdvance).reduce((_, b) -> b)
+                    .orElseThrow();
+            assertTrue(quiet.admittedMs() >= 60_000L, "anchor at " + quiet.admittedMs());
+
+            assertInstanceOf(CommandOutcome.Ok.class, host.submit(1L, UUID.randomUUID(),
+                    new WorldCommand.EnqueueTasks(owner, actor, null,
+                            List.of(new TaskSpec.Wait(1_000L, 1)))));
+            wallNanos[0] += java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            assertInstanceOf(CommandOutcome.Ok.class, host.submit(1L, UUID.randomUUID(),
+                    new WorldCommand.EnqueueTasks(owner, actor, null,
+                            List.of(new TaskSpec.Wait(1_000L, 1)))));
+            List<WalRecord> records = memStore.loadWalAfter(worldId, 0);
+            WalRecord last = records.getLast();
+            WalRecord.CommandEntry second = assertInstanceOf(WalRecord.CommandEntry.class, last);
+            WalRecord.ClockAdvance anchor = assertInstanceOf(WalRecord.ClockAdvance.class,
+                    records.get(records.size() - 2),
+                    "due events are anchored by a CLOCK_ADVANCE before the command");
+            assertEquals(second.admittedMs(), anchor.admittedMs());
+        } finally {
+            host.close();
+        }
+    }
+
+    private static long clockRows(InMemoryWorldStore s, int worldId) {
+        return s.loadWalAfter(worldId, 0).stream()
+                .filter(r -> r instanceof WalRecord.ClockAdvance).count();
     }
 
     @Test

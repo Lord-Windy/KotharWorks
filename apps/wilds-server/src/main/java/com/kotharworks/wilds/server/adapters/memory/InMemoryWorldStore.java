@@ -37,8 +37,8 @@ import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.replay.CommandCodec;
 import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
-import com.kotharworks.wilds.server.adapters.http.ApiJson;
 import com.kotharworks.wilds.server.domain.ControllerKind;
+import com.kotharworks.wilds.server.domain.PrintableText;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
@@ -74,7 +74,7 @@ public final class InMemoryWorldStore implements WorldStorePort {
     public SeatRecord createSeat(UserId owner, String seatName, ControllerKind kind) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(kind, "kind");
-        String trimmed = ApiJson.validatePrintable(seatName, "seatName", 3, 40);
+        String trimmed = PrintableText.validateSeatName(seatName);
         synchronized (lock) {
             if (!seatNames.add(trimmed)) {
                 throw new IllegalArgumentException("DUPLICATE_SEAT: \"" + trimmed

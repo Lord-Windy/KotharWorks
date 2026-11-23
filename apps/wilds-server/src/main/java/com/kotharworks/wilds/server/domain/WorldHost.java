@@ -104,7 +104,13 @@ public final class WorldHost {
     private long lastWalSeq;
     private long lastPersistedClockMs;
     private long lastTickWallNanos;
+    private volatile ClockAnchor clockAnchor;
     private long lastCheckpointWallNanos;
+    private boolean walPositionUncertain;
+
+    /** Engine clock paired with the wall instant it was reached, for lock-free extrapolation. */
+    private record ClockAnchor(long engineNowMs, long wallNanos) {
+    }
 
     private sealed interface HostMessage
             permits SubmitCommand, Tick, RequestCheckpoint, Shutdown, Abort {
@@ -190,6 +196,7 @@ public final class WorldHost {
         this.lastTickWallNanos = clockPort.nanoTime();
         this.lastCheckpointWallNanos = lastTickWallNanos;
         this.view = engine.view();
+        publishClockAnchor();
         this.writerThread = Thread.ofVirtual().name("wilds-world-host").start(this::runWriter);
     }
 
@@ -373,6 +380,11 @@ public final class WorldHost {
     }
 
     private void handleSubmit(SubmitCommand submit) {
+        if (!reconcileWalTail()) {
+            submit.replySlot().complete(new CommandOutcome.StorageUnavailable(
+                    "store unavailable; WAL position unconfirmed"));
+            return;
+        }
         UUID cmdId = submit.cmdId();
         // (1) Seat-scoped idempotency: bounded cache first, then store lookup.
         CachedReceipt cached = receiptCache.get(cmdId);
@@ -423,6 +435,7 @@ public final class WorldHost {
             try {
                 lastWalSeq = worldStore.appendClockAdvance(worldId, admittedMs, null);
             } catch (RuntimeException storeFailure) {
+                walPositionUncertain = true;
                 LOG.log(System.Logger.Level.WARNING,
                         "world {0} store refused clock anchor at {1}ms: {2}",
                         worldId, admittedMs, storeFailure.getMessage());
@@ -433,6 +446,7 @@ public final class WorldHost {
             engine.advanceTo(admittedMs);
             lastPersistedClockMs = engine.nowMs();
             lastTickWallNanos = wallNow;
+            publishClockAnchor();
             List<StoredWorldEvent> anchored = drainEmitted();
             boolean flushed = tryFlushPendingEvents("clock-anchor");
             eventBus.publish(worldId, anchored);
@@ -455,6 +469,7 @@ public final class WorldHost {
             walSeq = worldStore.appendCommand(worldId, admittedMs, submit.seatId(), cmdId,
                     submit.command(), null);
         } catch (RuntimeException storeFailure) {
+            walPositionUncertain = true;
             LOG.log(System.Logger.Level.WARNING,
                     "world {0} store refused command commit for {1}: {2}",
                     worldId, cmdId, storeFailure.getMessage());
@@ -469,6 +484,7 @@ public final class WorldHost {
         }
         lastPersistedClockMs = engine.nowMs();
         lastTickWallNanos = wallNow;
+        publishClockAnchor();
         Phase1Result applied = engine.apply(submit.command());
         if (applied instanceof Phase1Result.Rejected bugGuard) {
             throw new IllegalStateException("WAL-committed command rejected at apply: " + cmdId
@@ -484,6 +500,9 @@ public final class WorldHost {
     }
 
     private void handleTick() {
+        if (!reconcileWalTail()) {
+            return;
+        }
         long wallNow = clockPort.nanoTime();
         long target = currentLogicalMs(wallNow);
         OptionalLong nextDue = engine.peekNextDueMs();
@@ -504,6 +523,7 @@ public final class WorldHost {
         try {
             lastWalSeq = worldStore.appendClockAdvance(worldId, target, null);
         } catch (RuntimeException storeFailure) {
+            walPositionUncertain = true;
             // Stay paused at the last committed millisecond; retry on the next tick.
             LOG.log(System.Logger.Level.WARNING,
                     "world {0} paused tick at {1}ms (store unavailable): {2}",
@@ -513,12 +533,27 @@ public final class WorldHost {
         engine.advanceTo(target);
         lastPersistedClockMs = engine.nowMs();
         lastTickWallNanos = wallNow;
+        publishClockAnchor();
         List<StoredWorldEvent> emitted = drainEmitted();
         tryFlushPendingEvents("tick");
         eventBus.publish(worldId, emitted);
         if (checkpointDue) {
             writeCheckpointOnWriter();
         }
+    }
+
+    private void publishClockAnchor() {
+        clockAnchor = new ClockAnchor(engine.nowMs(), lastTickWallNanos);
+    }
+
+    /** Extrapolated current logical time for display (lock-free; never below the published view). */
+    public long currentLogicalNowMs() {
+        ClockAnchor a = clockAnchor;
+        long wallDeltaMs = Math.max(0L, (clockPort.nanoTime() - a.wallNanos()) / 1_000_000L);
+        long headroom = Math.max(0L, Long.MAX_VALUE - a.engineNowMs());
+        long maxUnscaled = Long.MAX_VALUE / timeScale;
+        long scaled = wallDeltaMs >= maxUnscaled ? headroom : wallDeltaMs * timeScale;
+        return Math.max(view.nowMs(), a.engineNowMs() + Math.min(scaled, headroom));
     }
 
     private long currentLogicalMs(long wallNowNanos) {
@@ -557,6 +592,9 @@ public final class WorldHost {
     }
 
     private void writeCheckpointOnWriter() {
+        if (!reconcileWalTail()) {
+            return;
+        }
         try {
             flushPendingEvents();
             worldStore.saveCheckpoint(worldId, lastWalSeq, engine.nowMs(), engine.worldHash(),
@@ -571,6 +609,9 @@ public final class WorldHost {
     }
 
     private void handleClose() {
+        if (!reconcileWalTail()) {
+            return;
+        }
         try {
             flushPendingEvents();
             // Graceful SIGTERM anchor: commit CLOCK_ADVANCE(currentLogicalMs) and
@@ -586,16 +627,82 @@ public final class WorldHost {
                 engine.advanceTo(targetMs);
                 lastPersistedClockMs = engine.nowMs();
                 lastTickWallNanos = wallNow;
+                publishClockAnchor();
                 drainEmitted();
                 flushPendingEvents();
             }
         } catch (RuntimeException storeFailure) {
+            walPositionUncertain = true;
             // Best effort on shutdown; the WAL tail recovers the difference.
             LOG.log(System.Logger.Level.WARNING,
                     "world {0} shutdown anchor skipped: {1}",
                     worldId, storeFailure.getMessage());
         }
         writeCheckpointOnWriter();
+    }
+
+    /**
+     * Re-synchronises RAM with {@code command_wal} after an append whose outcome
+     * is unknown (the commit may have landed although the acknowledgement was
+     * lost): applies every row past {@code lastWalSeq} exactly as boot replay
+     * would, but fans the resulting events out through the live path. Until it
+     * succeeds the writer refuses commands, appends and checkpoints so no later
+     * row or {@code up_to_wal_seq} can be written over an unknown tail.
+     *
+     * @return {@code false} while the store still cannot confirm the WAL tail
+     */
+    private boolean reconcileWalTail() {
+        if (!walPositionUncertain) {
+            return true;
+        }
+        List<WalRecord> tail;
+        try {
+            tail = worldStore.loadWalAfter(worldId, lastWalSeq);
+        } catch (RuntimeException storeFailure) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "world {0} cannot confirm WAL tail after seq {1}: {2}",
+                    worldId, lastWalSeq, storeFailure.getMessage());
+            return false;
+        }
+        long logicalBefore = engine.nowMs();
+        for (WalRecord record : tail) {
+            switch (record) {
+                case WalRecord.ClockAdvance advance -> {
+                    engine.advanceTo(advance.admittedMs());
+                    lastWalSeq = advance.walSeq();
+                }
+                case WalRecord.CommandEntry entry -> {
+                    UUID cmdId = UUID.fromString(entry.cmdId());
+                    if (!receiptCache.containsKey(cmdId)) {
+                        engine.advanceTo(entry.admittedMs());
+                        Phase1Result applied = engine.apply(entry.command());
+                        if (applied instanceof Phase1Result.Rejected rejected) {
+                            throw new IllegalStateException("WAL reconcile rejected committed"
+                                    + " command " + entry.cmdId() + ": " + rejected.errorCode());
+                        }
+                        CommandReceipt receipt = new CommandReceipt(cmdId, entry.admittedMs(),
+                                entry.walSeq(), revisionFor(entry.command(), engine.view()));
+                        receiptCache.put(cmdId, new CachedReceipt(entry.seatId(), receipt));
+                    }
+                    lastWalSeq = entry.walSeq();
+                }
+            }
+            List<StoredWorldEvent> drained = drainEmitted();
+            tryFlushPendingEvents("reconcile");
+            eventBus.publish(worldId, drained);
+        }
+        long consumedMs = engine.nowMs() - logicalBefore;
+        if (consumedMs > 0L) {
+            long consumedWallNanos = consumedMs >= Long.MAX_VALUE / 1_000_000L
+                    ? Long.MAX_VALUE
+                    : consumedMs * 1_000_000L / timeScale;
+            lastTickWallNanos += Math.min(clockPort.nanoTime() - lastTickWallNanos,
+                    consumedWallNanos);
+        }
+        lastPersistedClockMs = engine.nowMs();
+        publishClockAnchor();
+        walPositionUncertain = false;
+        return true;
     }
 
     /**

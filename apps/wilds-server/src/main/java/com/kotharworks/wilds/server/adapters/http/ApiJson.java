@@ -29,6 +29,7 @@ import com.kotharworks.wilds.replay.JsonCodec;
 import com.kotharworks.wilds.replay.JsonCodec.JsonInt;
 import com.kotharworks.wilds.replay.JsonCodec.JsonObj;
 import com.kotharworks.wilds.replay.JsonCodec.JsonStr;
+import com.kotharworks.wilds.server.domain.PrintableText;
 
 /**
  * Wire-layer JSON helpers over {@link JsonCodec}: canonical escaping (a seat
@@ -94,30 +95,7 @@ public final class ApiJson {
      * points, no ISO control chars, no unpaired UTF-16 surrogates).
      */
     public static String validatePrintable(String raw, String field, int minLen, int maxLen) {
-        String trimmed = raw == null ? "" : raw.trim();
-        for (int i = 0; i < trimmed.length(); i++) {
-            char c = trimmed.charAt(i);
-            if (Character.isISOControl(c)) {
-                throw new IllegalArgumentException(
-                        "field \"" + field + "\" must not contain ISO control characters");
-            }
-            if (Character.isHighSurrogate(c)) {
-                if (i + 1 >= trimmed.length() || !Character.isLowSurrogate(trimmed.charAt(i + 1))) {
-                    throw new IllegalArgumentException(
-                            "field \"" + field + "\" contains an unpaired UTF-16 surrogate");
-                }
-                i++;
-            } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException(
-                        "field \"" + field + "\" contains an unpaired UTF-16 surrogate");
-            }
-        }
-        int codePoints = trimmed.codePointCount(0, trimmed.length());
-        if (codePoints < minLen || codePoints > maxLen) {
-            throw new IllegalArgumentException("field \"" + field + "\" must be " + minLen + ".."
-                    + maxLen + " characters after trim");
-        }
-        return trimmed;
+        return PrintableText.validate(raw, field, minLen, maxLen);
     }
 
     /** Required string field ({@link IllegalArgumentException} when absent/wrong type). */

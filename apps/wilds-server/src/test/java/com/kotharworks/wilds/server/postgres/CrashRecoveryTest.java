@@ -317,6 +317,127 @@ class CrashRecoveryTest {
         host.close();
     }
 
+    @Test
+    void lostCommitAckIsReconciledFromTheWalOnRetryAndSurvivesReboot() {
+        Jdbi jdbi = freshJdbi();
+        PostgresAuthStore auth = new PostgresAuthStore(jdbi, Clock.systemUTC(),
+                new SecureRandom());
+        PostgresWorldStore pg = new PostgresWorldStore(jdbi);
+        FaultyWorldStore store = new FaultyWorldStore(pg);
+        long[] wallNanos = new long[] {1_000_000_000L};
+        WorldHost host = new WorldHost(store, new InMemoryEventBus(), () -> wallNanos[0],
+                1L, 1L, WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE);
+        int worldId = host.worldId();
+        UserRecord user = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "lost-ack-retry"), "Sam");
+        SeatRecord seat = pg.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
+        host.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"));
+        OwnerId owner = host.view().findOwnerBySeatKey(seat.seatId()).orElseThrow().id();
+        ActorId actor = host.view().actorsOwnedBy(owner).getFirst().id();
+        long hashBefore = host.worldHash();
+        long walBefore = count(jdbi, "SELECT count(*) FROM wilds_world.command_wal"
+                + " WHERE world_id = " + worldId);
+
+        UUID lostAck = UUID.randomUUID();
+        WorldCommand enqueue = new WorldCommand.EnqueueTasks(owner, actor, null,
+                List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(1_000L, 1)));
+        store.appendCommandCommitThenThrow = true;
+        assertInstanceOf(CommandOutcome.StorageUnavailable.class,
+                host.submit(seat.seatId(), lostAck, enqueue),
+                "a lost commit acknowledgement reads back as STORAGE_UNAVAILABLE");
+        assertEquals(hashBefore, host.worldHash(), "RAM never runs ahead of the WAL");
+        store.appendCommandCommitThenThrow = false;
+        long committedSeq = pg.findCommandByCmdId(worldId, lostAck).orElseThrow().walSeq();
+
+        CommandOutcome.Ok retried = assertInstanceOf(CommandOutcome.Ok.class,
+                host.submit(seat.seatId(), lostAck, enqueue));
+        assertEquals(committedSeq, retried.receipt().walSeq(),
+                "the retry acknowledges the WAL row that already landed");
+        assertNotEquals(hashBefore, host.worldHash(), "the landed command is now applied");
+        ActorRow afterRetry = host.view().actor(actor).orElseThrow();
+        assertTrue(afterRetry.activeTask() != null && afterRetry.pendingQueue().isEmpty(),
+                "the landed command is applied exactly once");
+        assertEquals(walBefore + 1, count(jdbi, "SELECT count(*) FROM wilds_world.command_wal"
+                + " WHERE world_id = " + worldId), "the retry writes no second WAL row");
+
+        wallNanos[0] += TimeUnit.MILLISECONDS.toNanos(100);
+        assertInstanceOf(CommandOutcome.Ok.class, host.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.EnqueueTasks(owner, actor, null,
+                        List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(1_000L, 1)))));
+        host.writeCheckpointNow();
+        long finalHash = host.worldHash();
+        host.closeWithoutCheckpoint();
+
+        WorldHost rebooted = new WorldHost(pg, new InMemoryEventBus(), () -> wallNanos[0],
+                1L, 1L, WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE);
+        try {
+            assertEquals(finalHash, rebooted.worldHash(),
+                    "the checkpoint over the reconciled tail reboots to the identical world");
+        } finally {
+            rebooted.closeWithoutCheckpoint();
+        }
+        assertDenseWalContains(pg, worldId, lostAck, committedSeq);
+    }
+
+    @Test
+    void lostCommitAckIsReconciledBeforeTheNextTickOrCheckpoint() {
+        Jdbi jdbi = freshJdbi();
+        PostgresAuthStore auth = new PostgresAuthStore(jdbi, Clock.systemUTC(),
+                new SecureRandom());
+        PostgresWorldStore pg = new PostgresWorldStore(jdbi);
+        FaultyWorldStore store = new FaultyWorldStore(pg);
+        long[] wallNanos = new long[] {1_000_000_000L};
+        WorldHost host = new WorldHost(store, new InMemoryEventBus(), () -> wallNanos[0],
+                1L, 1L, WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE);
+        int worldId = host.worldId();
+        UserRecord user = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "lost-ack-tick"), "Sam");
+        SeatRecord seat = pg.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
+        host.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"));
+        OwnerId owner = host.view().findOwnerBySeatKey(seat.seatId()).orElseThrow().id();
+        ActorId actor = host.view().actorsOwnedBy(owner).getFirst().id();
+        long hashBefore = host.worldHash();
+
+        UUID lostAck = UUID.randomUUID();
+        WorldCommand enqueue = new WorldCommand.EnqueueTasks(owner, actor, null,
+                List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(1_000L, 1)));
+        store.appendCommandCommitThenThrow = true;
+        assertInstanceOf(CommandOutcome.StorageUnavailable.class,
+                host.submit(seat.seatId(), lostAck, enqueue));
+        store.appendCommandCommitThenThrow = false;
+        long committedSeq = pg.findCommandByCmdId(worldId, lostAck).orElseThrow().walSeq();
+
+        host.tick();
+        host.writeCheckpointNow();
+        StoredCheckpoint checkpoint = pg.loadLatestCheckpoint(worldId).orElseThrow();
+        assertTrue(checkpoint.upToWalSeq() >= committedSeq,
+                "the checkpoint watermark covers the landed command");
+        assertEquals(host.worldHash(), checkpoint.worldHash(),
+                "the checkpoint snapshot is the reconciled world");
+        assertNotEquals(hashBefore, host.worldHash(), "the world reflects the landed command");
+        assertTrue(host.view().actor(actor).orElseThrow().activeTask() != null,
+                "the landed command's task is live");
+
+        long reconciledHash = host.worldHash();
+        CommandOutcome.Ok retried = assertInstanceOf(CommandOutcome.Ok.class,
+                host.submit(seat.seatId(), lostAck, enqueue));
+        assertEquals(committedSeq, retried.receipt().walSeq());
+        assertEquals(reconciledHash, host.worldHash(), "the retry never re-executes");
+        host.closeWithoutCheckpoint();
+
+        WorldHost rebooted = new WorldHost(pg, new InMemoryEventBus(), () -> wallNanos[0],
+                1L, 1L, WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE);
+        try {
+            assertEquals(reconciledHash, rebooted.worldHash(),
+                    "boot from the reconciled checkpoint reproduces the identical world");
+        } finally {
+            rebooted.closeWithoutCheckpoint();
+        }
+        assertDenseWalContains(pg, worldId, lostAck, committedSeq);
+    }
+
     // ------------------------------------------------------------------ (4) kill -9 recovery
 
     @Test
@@ -410,6 +531,76 @@ class CrashRecoveryTest {
                 case WalRecord.CommandEntry entry -> entry.walSeq();
             };
             assertEquals(expectedSeq++, seq, "exported WAL stays dense for headless replay");
+        }
+    }
+
+    @Test
+    void kill9BetweenWalCommitAndEventFlushRebackfillsMissingEvents() throws Exception {
+        Jdbi jdbi = freshJdbi();
+        PostgresAuthStore auth = new PostgresAuthStore(jdbi, Clock.systemUTC(),
+                new SecureRandom());
+        PostgresWorldStore pg = new PostgresWorldStore(jdbi);
+        UserRecord user = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "rebackfill"), "Sam");
+        SeatRecord seat = pg.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
+
+        WorldHost host1 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L,
+                Long.MAX_VALUE);
+        int worldId = host1.worldId();
+        host1.submit(seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"));
+        host1.writeCheckpointNow();
+        long cursorAtCheckpoint = count(jdbi, "SELECT coalesce(max(event_cursor), 0)"
+                + " FROM wilds_world.world_events WHERE world_id = " + worldId);
+
+        OwnerId owner = host1.view().findOwnerBySeatKey(seat.seatId()).orElseThrow().id();
+        ActorId actor = host1.view().actorsOwnedBy(owner).getFirst().id();
+        PlaceId destination = host1.view().place(WildsEngine.HOME_PLACE_ID).orElseThrow()
+                .edges().get(0).to();
+        host1.submit(seat.seatId(), UUID.randomUUID(), new WorldCommand.EnqueueTasks(owner,
+                actor, null, List.of(new com.kotharworks.wilds.state.TaskSpec.Travel(destination),
+                        new com.kotharworks.wilds.state.TaskSpec.Wait(2_000L, 1))));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        boolean idle = false;
+        while (System.nanoTime() < deadline) {
+            host1.tick();
+            Thread.sleep(50);
+            ActorRow snapshot = host1.view().actor(actor).orElseThrow();
+            if (snapshot.activeTask() == null && snapshot.pendingQueue().isEmpty()) {
+                idle = true;
+                break;
+            }
+        }
+        assertTrue(idle, "travel+wait completed within the drain deadline at timeScale 20");
+
+        long hashBefore = host1.worldHash();
+        long eventCountBefore = count(jdbi, "SELECT count(*) FROM wilds_world.world_events"
+                + " WHERE world_id = " + worldId);
+        long maxCursorBefore = count(jdbi, "SELECT coalesce(max(event_cursor), 0)"
+                + " FROM wilds_world.world_events WHERE world_id = " + worldId);
+        List<String> tailBefore = eventRowsAfter(jdbi, worldId, cursorAtCheckpoint);
+        assertFalse(tailBefore.isEmpty(), "the drain emitted events past the checkpoint");
+        host1.closeWithoutCheckpoint();
+
+        jdbi.useHandle(handle -> handle.execute("DELETE FROM wilds_world.world_events"
+                + " WHERE world_id = ? AND event_cursor > ?", worldId, cursorAtCheckpoint));
+        assertTrue(eventRowsAfter(jdbi, worldId, cursorAtCheckpoint).isEmpty(),
+                "the crash window lost every event row past the checkpoint");
+
+        WorldHost host2 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L,
+                Long.MAX_VALUE);
+        try {
+            assertEquals(hashBefore, host2.worldHash(), "recovered world hash identical");
+            assertEquals(eventCountBefore, count(jdbi, "SELECT count(*)"
+                    + " FROM wilds_world.world_events WHERE world_id = " + worldId),
+                    "boot replay re-creates every missing event row");
+            assertEquals(maxCursorBefore, count(jdbi, "SELECT coalesce(max(event_cursor), 0)"
+                    + " FROM wilds_world.world_events WHERE world_id = " + worldId),
+                    "zero SSE cursor rewind after the re-backfill");
+            assertEquals(tailBefore, eventRowsAfter(jdbi, worldId, cursorAtCheckpoint),
+                    "re-backfilled rows match the lost rows field-for-field");
+        } finally {
+            host2.close();
         }
     }
 
@@ -643,6 +834,50 @@ class CrashRecoveryTest {
         }
     }
 
+    private static List<String> eventRowsAfter(Jdbi jdbi, int worldId, long afterCursor) {
+        try (Handle handle = jdbi.open()) {
+            return handle.select("SELECT event_cursor, occurred_ms, kind, seat_id,"
+                            + " public_summary, private_summary, payload_json::text AS payload"
+                            + " FROM wilds_world.world_events"
+                            + " WHERE world_id = ? AND event_cursor > ? ORDER BY event_cursor",
+                            worldId, afterCursor)
+                    .map((rs, _) -> rs.getLong("event_cursor") + "|" + rs.getLong("occurred_ms")
+                            + "|" + rs.getString("kind") + "|" + rs.getObject("seat_id")
+                            + "|" + rs.getString("public_summary")
+                            + "|" + rs.getString("private_summary")
+                            + "|" + rs.getString("payload"))
+                    .list();
+        }
+    }
+
+    private static void assertDenseWalContains(PostgresWorldStore pg, int worldId, UUID cmdId,
+            long walSeq) {
+        StringWriter out = new StringWriter();
+        try {
+            pg.exportWalJsonl(worldId, out);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        List<String> lines = out.toString().lines().toList();
+        long expectedSeq = 1L;
+        boolean found = false;
+        for (int i = 1; i < lines.size(); i++) {
+            WalRecord record = CommandCodec.decodeWal(lines.get(i));
+            long seq = switch (record) {
+                case WalRecord.ClockAdvance advance -> advance.walSeq();
+                case WalRecord.CommandEntry entry -> {
+                    if (entry.cmdId().equals(cmdId.toString())) {
+                        assertEquals(walSeq, entry.walSeq());
+                        found = true;
+                    }
+                    yield entry.walSeq();
+                }
+            };
+            assertEquals(expectedSeq++, seq, "exported WAL stays dense for headless replay");
+        }
+        assertTrue(found, "exported WAL carries the landed command " + cmdId);
+    }
+
     private static HttpRequest post(String url, String body, String bearer) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .header("Content-Type", "application/json")
@@ -672,6 +907,7 @@ class CrashRecoveryTest {
         volatile RuntimeException appendClockAdvanceFault;
         volatile RuntimeException appendCommandFault;
         volatile RuntimeException appendEventsFault;
+        volatile boolean appendCommandCommitThenThrow;
 
         FaultyWorldStore(WorldStorePort delegate) {
             this.delegate = delegate;
@@ -739,7 +975,12 @@ class CrashRecoveryTest {
             if (fault != null) {
                 throw fault;
             }
-            return delegate.appendCommand(worldId, admittedMs, seatId, cmdId, cmd, worldHash);
+            long walSeq = delegate.appendCommand(worldId, admittedMs, seatId, cmdId, cmd,
+                    worldHash);
+            if (appendCommandCommitThenThrow) {
+                throw new IllegalStateException("ack lost after commit of wal_seq " + walSeq);
+            }
+            return walSeq;
         }
 
         @Override

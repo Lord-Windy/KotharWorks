@@ -30,7 +30,6 @@ import com.kotharworks.auth.http.AuthenticatedRouter.RouteContext;
 import com.kotharworks.wilds.server.adapters.http.ApiJson;
 import com.kotharworks.wilds.server.adapters.http.EventCodec;
 import com.kotharworks.wilds.server.adapters.http.RouteGuard;
-import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer.AuthorizedSeat;
 import com.kotharworks.wilds.server.domain.WorldHost;
@@ -128,11 +127,11 @@ public final class SseRoutes {
                         out.flush();
                         continue;
                     }
-                    if (InMemoryEventBus.OVERFLOW.kind().equals(event.kind())) {
+                    if (EventBusPort.isOverflow(event)) {
                         lastSent = catchUp(out, seatId, lastSent);
                         continue;
                     }
-                    if (event.cursor() < 1) {
+                    if (EventBusPort.isClosed(event)) {
                         return; // poison marker: the event bus closed (server shutdown)
                     }
                     if (event.cursor() <= lastSent) {

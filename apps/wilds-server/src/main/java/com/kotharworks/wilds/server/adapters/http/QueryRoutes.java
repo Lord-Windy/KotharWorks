@@ -88,7 +88,7 @@ public final class QueryRoutes {
         WorldView view = worldHost.view();
         ctx.respondJson(200, JsonCodec.write(new JsonCodec.JsonObj(List.of(
                 JsonCodec.JsonObj.entry("worldId", ApiJson.num(world.worldId())),
-                JsonCodec.JsonObj.entry("nowMs", ApiJson.num(view.nowMs())),
+                JsonCodec.JsonObj.entry("nowMs", ApiJson.num(worldHost.currentLogicalNowMs())),
                 JsonCodec.JsonObj.entry("worldSeed", ApiJson.num(world.worldSeed())),
                 JsonCodec.JsonObj.entry("rulesVersion", ApiJson.num(world.rulesVersion())),
                 JsonCodec.JsonObj.entry("engineVersion", ApiJson.num(world.engineVersion())),
@@ -111,7 +111,7 @@ public final class QueryRoutes {
         }
         var observation = ObservationProjector.projectOwner(view, authorized.owner(),
                 StubDescriptionComposer.INSTANCE);
-        ctx.respondJson(200, ObservationJson.observation(observation, view.nowMs()));
+        ctx.respondJson(200, ObservationJson.observation(observation, worldHost.currentLogicalNowMs()));
     }
 
     private void examine(RouteContext ctx) throws IOException {

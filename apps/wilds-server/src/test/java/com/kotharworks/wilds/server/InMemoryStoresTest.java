@@ -318,6 +318,25 @@ class InMemoryStoresTest {
     }
 
     @Test
+    void authStoreWriteFaultInjection() {
+        InMemoryAuthStore store = new InMemoryAuthStore(CLOCK);
+        UserId owner = store.upsertUser(new ExternalIdentity("https://dev.local", "dev-sam"),
+                "Sam").userId();
+        int liveBefore = store.liveTokenCount();
+        store.setWriteFault(new IllegalStateException("auth down"));
+        assertThrows(IllegalStateException.class, () -> store.createToken(owner, "wilds:seat",
+                3L, "label", "iw_bot_pref_s3cret", "pref", "digest".getBytes()));
+        assertThrows(IllegalStateException.class, () -> store.suspendUser(owner, "down"));
+        assertEquals(liveBefore, store.liveTokenCount());
+        assertNull(store.findUser(owner).orElseThrow().suspendedAt());
+
+        store.setWriteFault(null);
+        store.createToken(owner, "wilds:seat", 3L, "label", "iw_bot_pref_s3cret", "pref",
+                "digest".getBytes());
+        assertEquals(liveBefore + 1, store.liveTokenCount());
+    }
+
+    @Test
     void sessionCreateFindRevokeAndExpiryRoundTrip() {
         InMemoryAuthStore store = new InMemoryAuthStore(CLOCK);
         ExternalIdentity identity = new ExternalIdentity("https://dev.local", "dev-alice");

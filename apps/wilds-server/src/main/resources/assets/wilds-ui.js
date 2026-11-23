@@ -18,6 +18,7 @@ if (seatId) {
     if (stored && Number.isFinite(stored.cursor) && stored.cursor > 0) storedCursor = stored.cursor;
   } catch (ignored) { /* fresh start */ }
 }
+if (storedCursor > ssrCursor) storedCursor = 0;
 let cursor = Math.max(ssrCursor, storedCursor), refreshing = false, refreshQueued = false;
 const logicalNow = () => anchorLogical + (Date.now() - anchorWall) * timeScale;
 const withSeat = (url) => !seatId ? url : url + (url.includes('?') ? '&' : '?') + 'seatId=' + encodeURIComponent(seatId);
@@ -167,7 +168,7 @@ function wireButtons() {
   if (claim) {
     claim.addEventListener('submit', async (ev) => {
       ev.preventDefault();
-      const res = await api('/api/v1/seats', { seatName: $('seat-name').value, controllerKind: 'HUMAN' });
+      const res = await api('/api/v1/seats', { seatName: $('seat-name').value, controllerKind: ($('controller-kind') || { value: 'HUMAN' }).value });
       if (res.ok) window.location.reload();
     });
   }

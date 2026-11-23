@@ -49,6 +49,7 @@ import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 
 import com.kotharworks.auth.AuthMode;
+import com.kotharworks.auth.principal.UserId;
 import com.kotharworks.wilds.WildsEngine;
 import com.kotharworks.wilds.headless.HeadlessMain;
 import com.kotharworks.wilds.replay.CommandCodec;
@@ -58,6 +59,7 @@ import com.kotharworks.wilds.rules.RuleRegistry;
 import com.kotharworks.wilds.server.ServerConfig;
 import com.kotharworks.wilds.server.WildsServer;
 import com.kotharworks.wilds.server.adapters.postgres.PostgresWorldStore;
+import com.kotharworks.wilds.server.domain.ControllerKind;
 
 /**
  * Ticket 09: the full Phase-0 structural spine, end to end over real
@@ -207,6 +209,39 @@ class FullSpineIntegrationTest {
                     "the raw payload must not survive /chronicle");
             assertTrue(chronicle.body().contains("HUMAN: 1"),
                     "seat roster must break down by controller kind:\n" + chronicle.body());
+        } finally {
+            server.close();
+        }
+    }
+
+    @Test
+    void orphanSeatWithoutOwnerOffersRetryAndRecoversThroughIdempotentCharter() throws Exception {
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        WildsServer server = boot(db);
+        server.start();
+        try {
+            String base = base(server);
+            String alice = login(base, "dev-alice");
+            assertEquals(200, http.send(get(base + "/play", alice), ofString()).statusCode());
+            Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+            UUID userId = jdbi.withHandle(h -> h.createQuery("SELECT user_id FROM auth.users")
+                    .mapTo(UUID.class).one());
+            new PostgresWorldStore(jdbi).createSeat(new UserId(userId), "Orphan Seat",
+                    ControllerKind.HUMAN);
+
+            HttpResponse<String> stuck = http.send(get(base + "/play", alice), ofString());
+            assertEquals(200, stuck.statusCode(), stuck.body());
+            assertTrue(stuck.body().contains("id=\"claim-seat-form\""), stuck.body());
+            assertTrue(stuck.body().contains("name=\"seatName\" value=\"Orphan Seat\""),
+                    stuck.body());
+            assertTrue(stuck.body().contains("value=\"HUMAN\""), stuck.body());
+
+            HttpResponse<String> retried = http.send(postJson(base + "/api/v1/seats",
+                    "{\"seatName\":\"Orphan Seat\",\"controllerKind\":\"HUMAN\"}", alice,
+                    null), ofString());
+            assertEquals(200, retried.statusCode(), retried.body());
+            HttpResponse<String> console = http.send(get(base + "/play", alice), ofString());
+            assertTrue(console.body().contains("id=\"event-log\""), console.body());
         } finally {
             server.close();
         }

@@ -382,6 +382,20 @@ class AuthSecurityGateTest {
         assertEquals(200, get("/api/v1/observation", samBotToken).statusCode(),
                 "victim bot token must still work after IDOR attempts");
 
+        HttpRequest ownerRevokeRequest = HttpRequest.newBuilder(
+                        URI.create(base + "/api/v1/seats/" + samBotSeat + "/tokens/" + samTokenId))
+                .header("Authorization", "Bearer " + sam)
+                .DELETE().build();
+        HttpResponse<String> ownerRevoke = http.send(ownerRevokeRequest,
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, ownerRevoke.statusCode(), ownerRevoke.body());
+        assertTrue(ownerRevoke.body().contains("\"revoked\":true"), ownerRevoke.body());
+        HttpResponse<String> afterRevoke = get("/api/v1/observation", samBotToken);
+        assertEquals(401, afterRevoke.statusCode());
+        assertEquals("INVALID_TOKEN", strField(json(afterRevoke.body()), "errorCode"));
+        assertEquals(200, http.send(ownerRevokeRequest, HttpResponse.BodyHandlers.ofString())
+                .statusCode(), "repeat revoke is idempotent");
+
         // (b) Multi-seat human omitting ?seatId= gets 400 SEAT_REQUIRED; explicit ?seatId= works.
         HttpResponse<String> ambiguous = get("/api/v1/observation", sam);
         assertEquals(400, ambiguous.statusCode());

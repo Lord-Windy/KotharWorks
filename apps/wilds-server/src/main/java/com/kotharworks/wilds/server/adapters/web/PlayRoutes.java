@@ -294,6 +294,21 @@ public final class PlayRoutes {
                 .open("p").text("Seat \"" + seat.seatName()
                         + "\" is entering the world — this page refreshes itself.")
                 .close("p")
+                .open("p").text("If this takes more than a few seconds, retry registration.")
+                .close("p")
+                .open("form", new Html.Attr("id", "claim-seat-form"),
+                        new Html.Attr("method", "post"),
+                        new Html.Attr("action", "/play"))
+                .voidTag("input", new Html.Attr("type", "hidden"), new Html.Attr("id", "seat-name"),
+                        new Html.Attr("name", "seatName"),
+                        new Html.Attr("value", seat.seatName()))
+                .voidTag("input", new Html.Attr("type", "hidden"),
+                        new Html.Attr("id", "controller-kind"),
+                        new Html.Attr("name", "controllerKind"),
+                        new Html.Attr("value", seat.controllerKind().name()))
+                .voidTag("input", new Html.Attr("type", "submit"),
+                        new Html.Attr("value", "Retry registration"))
+                .close("form")
                 .close("div")
                 .close("body")
                 .close("html");
@@ -312,6 +327,7 @@ public final class PlayRoutes {
             placeLabels.put(place.id().toWire(), place.label());
         }
 
+        long logicalNowMs = worldHost.currentLogicalNowMs();
         Html html = head(seat.seatName(), csrfToken, false)
                 .open("body", new Html.Attr("class", "console"),
                         new Html.Attr("data-world-id", String.valueOf(worldHost.worldId())),
@@ -319,9 +335,9 @@ public final class PlayRoutes {
                         new Html.Attr("data-actor-id", actor.id().toWire()),
                         new Html.Attr("data-expected-revision", String.valueOf(actor.revision())),
                         new Html.Attr("data-place-id", actor.placeId().toWire()),
-                        new Html.Attr("data-server-now-ms", String.valueOf(view.nowMs())),
+                        new Html.Attr("data-server-now-ms", String.valueOf(logicalNowMs)),
                         new Html.Attr("data-time-scale", String.valueOf(timeScale)));
-        headerBar(html, human, seat, seats, view, csrfToken);
+        headerBar(html, human, seat, seats, view, logicalNowMs, csrfToken);
         noticeArea(html);
         catchUpBanner(html, seat, seats.size() > 1, since);
         html.open("div", new Html.Attr("class", "panel"), new Html.Attr("id", "away-panel"),
@@ -330,7 +346,7 @@ public final class PlayRoutes {
                 .open("ul", new Html.Attr("id", "away-list")).close("ul")
                 .close("div");
         placePanel(html, actor, observation, placeLabels);
-        actorPanel(html, actor, view.nowMs());
+        actorPanel(html, actor, logicalNowMs);
         eventLogPanel(html, seat);
         return html.open("div", new Html.Attr("id", "drawer"), new Html.Attr("hidden", "hidden"))
                 .open("pre", new Html.Attr("id", "drawer-text")).close("pre")
@@ -344,7 +360,7 @@ public final class PlayRoutes {
     }
 
     private void headerBar(Html html, Principal.HumanPrincipal human, SeatRecord seat,
-            List<SeatRecord> seats, WorldView view, String csrfToken) {
+            List<SeatRecord> seats, WorldView view, long nowMs, String csrfToken) {
         // No title concept exists on WorldRecord (seed + version triple only), so the
         // header line carries world id/seed/clock instead of inventing a new field.
         html.open("header", new Html.Attr("class", "console-bar"))
@@ -354,7 +370,7 @@ public final class PlayRoutes {
                 .text(" — world " + worldHost.worldId() + ", seed " + view.seed().value()
                         + ", nowMs ")
                 .open("span", new Html.Attr("id", "now-ms"))
-                .text(String.valueOf(view.nowMs()))
+                .text(String.valueOf(nowMs))
                 .close("span")
                 .text(" — " + human.displayName())
                 .close("span");

@@ -19,9 +19,10 @@ commands, and the `st` agent workflow, see [AGENTS.md](AGENTS.md).
 
 Headless, deterministic Java 25 simulation core for **Ironwood Wilds**: pure
 logical-millisecond clock, integer-only state, zero I/O, zero wall-clock calls,
-command dispatch. Holds the `WildsEngine` scaffold (`API_VERSION = 1`) pinned by
-`WildsEngineTest`, the domain-separated seeded RNG primitives `WorldSeed`
-(FNV-1a + SplitMix64) and integer-only `SeededRng` in `com.kotharworks.wilds.seed`,
+command dispatch. Holds the `WildsEngine` deterministic engine facade
+(`API_VERSION = 1`) pinned by `WildsEngineTest`, the domain-separated seeded RNG
+primitives `WorldSeed` (FNV-1a + SplitMix64) and integer-only `SeededRng` in
+`com.kotharworks.wilds.seed`,
 and the JDK 25 `java.lang.classfile` bytecode & reflection purity gate
 (`WildsArchitectureGateTest`). Ticket 02 adds the generational wire IDs
 `OwnerId`/`ActorId`/`PlaceId` + `RuleId` with parse/round-trip validation in
@@ -111,7 +112,9 @@ production PostgreSQL persistence (`--storage=postgres` via HikariCP + JDBI3).
 `ArrayBlockingQueue` mailbox over an injectable `ClockPort` enforcing **strict
 Commit-Before-Mutate** WAL ordering (pure Phase-1 validation first,
 `WorldStorePort.appendCommand` at `currentLogicalMs` before any state mutation,
-`503 STORAGE_UNAVAILABLE` with untouched RAM on store failure), seat-scoped `cmdId`
+`503 STORAGE_UNAVAILABLE` with untouched RAM on store failure; an append whose
+outcome is unknown — commit landed, ack lost — is reconciled from the WAL tail before
+any further command, append or checkpoint), seat-scoped `cmdId`
 UUID idempotency with bounded LRU receipt caching and WAL-backed pre-checkpoint
 reconstruction, pre-mutation `CLOCK_ADVANCE` anchors plus a quiet `ClockPump`
 adapter, and lock-free volatile `WorldView` MVCC reads with
@@ -125,7 +128,8 @@ to the exact shutdown hash.
 `V003__wilds_world.sql` — gameplay-neutral `auth`/`wilds_meta` schemas and a
 100% append-only `wilds_world` (`command_wal` with dense per-world `wal_seq`,
 `world_checkpoints`, indexed `world_events`), `pg_advisory_lock` serialized with
-pooled-session cleanup, one transaction per script, refuses to boot on a newer
+pooled-session cleanup, run at boot on a dedicated connection without the runtime
+pool's socket timeout, one transaction per script, refuses to boot on a newer
 database or duplicate/out-of-order scripts), `PostgresAuthStore` (JIT provisioning
 under `pg_advisory_xact_lock(hashtextextended(...))` — zero orphan users, zero
 23505 races; SHA-256-only session/token credentials), `PostgresWorldStore`
