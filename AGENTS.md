@@ -196,6 +196,38 @@ Batch caveats:
 - **A reported-failed item may still have been created** if only dependency
   linking failed. Run `st list --project KOTHARWORKS --json` before retrying.
 
+### Ticket specs & Review Focus
+
+Any ticket bigger than a one-line fix gets a spec file `tickets/NN-<slug>.md`
+with these sections: header (`st` key, status, depends on, modules touched),
+`1. Objective`, `2. Explicit Non-Goals`, `3. Deliverables`,
+`4. Tests & Acceptance Criteria`, and **`5. Review Focus`**. The `st`
+description is `Spec file: tickets/NN-<slug>.md (see also tickets/README.md)`
+followed by the full spec text. Whenever the spec file changes, re-sync it with
+`st edit <KEY> --description ...`, because the pipeline only sees the `st`
+description.
+
+**Review Focus** is written by whoever writes the ticket, at the moment they
+know best where it's risky. It lists the specific ways this ticket is most
+likely to be wrong, so the reviewers (`prompts/review.md` in the pipeline,
+`prompts/deep-review.md` for the human-gated pass) check those first instead of
+reviewing generically. Good items are:
+
+- **Specific and falsifiable:** a concrete failure scenario a reviewer can prove
+  or rule out with a test, command, or trace (e.g. "server dies between the
+  `ARCHIVED` update and the new-world insert: are both worlds archived?").
+  Avoid "check error handling" or "make sure it's secure".
+- **Pointed at the seams:** failure ordering (Commit-Before-Mutate), concurrency
+  and boot/shutdown races, determinism and rules-version bumps, fog-of-war leaks,
+  auth/CSRF/XSS, backward compatibility of wire/WAL/SQL formats, and whether the
+  tests would still pass with the feature deleted.
+- **About 5–10 items.** Include anything the spec deliberately left to the
+  implementer's judgement.
+
+Implementers treat Review Focus items as risk areas to cover with tests. When
+the review finds a bug the focus list missed, add that class of mistake to
+future tickets' focus lists.
+
 ## Working on & completing tickets
 
 1. Find ready work:
@@ -216,3 +248,8 @@ Batch caveats:
    git push
    st status <KEY> done
    ```
+5. **Deep review before dependents start.** Run the human-gated review in
+   [`prompts/deep-review.md`](prompts/deep-review.md) (`TICKET: <KEY>`,
+   `ACTION: report-only`) and fix the confirmed `[HIGH]` findings before any
+   ticket that depends on this one begins. Don't let Phase 0's mistake repeat:
+   reviewing nine stacked tickets after the fact made the fixes cascade.

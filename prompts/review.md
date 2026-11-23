@@ -18,13 +18,20 @@ Verify every requirement from the description is actually implemented. Run
 `st show {{ticket.id}} --json` if you need the full ticket payload. If the
 description references a spec file under `tickets/`, read it.
 
-### 2. Duplicated effort
+### 2. Review Focus
+The spec's **`Review Focus`** section lists the specific ways the ticket author
+expected this ticket to go wrong. Work through **every** item: either point to
+a test that proves it is handled, or fix it and add that test. Then keep looking
+past the list. If the spec has no `Review Focus` section, note it in your
+commit message.
+
+### 3. Duplicated effort
 Search the codebase for records, interfaces, or helpers that overlap with what
 this ticket added. KotharWorks keeps its engine primitives in `libs/` (see
 `PROJECTS.md`). If the new code reimplements something that exists, replace
 the duplicate with the existing API.
 
-### 3. File and module structure
+### 4. File and module structure
 Confirm the change respects KotharWorks' layout (see `AGENTS.md`):
 - Library code lives in `libs/<name>/`, applications in `apps/<name>/`.
 - New modules are registered in the root `pom.xml` (`<modules>`, plus
@@ -40,15 +47,29 @@ Confirm the change respects KotharWorks' layout (see `AGENTS.md`):
   no mutable object references across entities.
 - No Kotlin, Lombok, Spring, Hibernate, or annotation processors anywhere.
 
-### 4. Code quality
+### 5. Code quality
 - Tests exist for the new behaviour and pass.
 - No dead code, no commented-out blocks, no comments narrating what code does.
 - No error handling for impossible cases; no premature abstraction.
 - No unrelated cleanup mixed into the ticket.
 
-### 5. Edge cases
+### 6. Edge cases
 Look for inputs the implementation didn't account for: empty inputs, large
 inputs, null/absent optionals, repeated commands, generation-wrap on typed IDs.
+
+### 7. Architecture gates
+- **Rules versioning:** any rule/mechanic change bumps `WILDS_RULES_VERSION` and
+  re-blesses golden hashes (`-DblessGolden=true`).
+- **Commit-Before-Mutate (`apps/wilds-server`):** the WAL commits before any
+  `WorldState` mutation or SSE emit, at every failure point; every world
+  mutation goes through `WorldHost` (no UI-private paths); no `UPDATE`s in
+  `wilds_world`.
+- **Fog-of-war:** clients only ever see `ObservationProjector` DTOs, never
+  `*Row`s, undiscovered places/edges, foreign actors, or private event text.
+- **Security:** every route has an explicit `AccessPolicy`; output is escaped
+  by default; request bodies are bounded.
+- **Test rigor:** would the tests still pass if the feature were deleted? Bug
+  fixes get a regression test (see `AGENTS.md` → System test suite).
 
 ## Severity and action
 
@@ -65,4 +86,7 @@ inputs, null/absent optionals, repeated commands, generation-wrap on typed IDs.
 2. Run the checks above.
 3. Fix everything you found.
 4. `mvnd test` to verify — it must pass with zero warnings.
-5. Commit and push if you changed anything.
+5. `./systest.sh` (Docker) when the ticket changes server, API, or UI
+   behaviour. If Docker isn't available, say so in the commit message rather
+   than skipping silently.
+6. Commit and push if you changed anything.

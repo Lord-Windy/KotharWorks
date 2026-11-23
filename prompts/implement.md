@@ -49,10 +49,15 @@ reuse it instead of duplicating.
 If the ticket description references a spec file under `tickets/` or
 `planning/`, read it — the description is usually an excerpt of a longer spec.
 
+The spec's **`Review Focus`** section lists where reviewers will look hardest.
+Treat each item as a risk to cover with a test while you implement, not
+something to leave for the review to find.
+
 ## Your task
 
 1. Search for related/overlapping code so you don't duplicate effort.
 2. Implement the change, scoped tightly to this ticket.
 3. Add or update tests in the relevant module's `src/test`.
-4. Run `mvnd test` and make it pass with zero warnings.
+4. Run `mvnd test` and make it pass with zero warnings, then `./systest.sh`
+   (Docker) for server, API, or UI changes.
 5. Commit and push when green.
