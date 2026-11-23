@@ -340,14 +340,15 @@ ${SPLIT_RULES}`, `check (${purpose})`, phaseName, 'medium')
 
 async function runGate(t, withSystest, tag) {
   const steps = []
-  if (t.dirty || !withSystest) steps.push(`\`${MVND} -f ${t.wt}/pom.xml test\` — the full reactor: compile with -Werror plus every module's tests`)
-  if (withSystest) steps.push(`\`cd ${t.wt} && ./systest.sh\` — Docker: unit + integration + live bot/human suite; can take 20+ minutes`)
+  if (t.dirty || !withSystest) steps.push(`\`${MVND} -f ${t.wt}/pom.xml test\` — the full reactor: compile with -Werror plus every module's tests (~2-5 min). Run it in the FOREGROUND (run_in_background false) with the Bash timeout set to 600000.`)
+  if (withSystest) steps.push(`\`cd ${t.wt} && ./systest.sh\` — Docker: unit + integration + live bot/human suite; can take 20+ minutes. Too long for one foreground call, and Monitor/run_in_background do NOT keep you alive (your turn ending kills them) — do not use either for this step. Instead: (a) start it DETACHED in a normal foreground Bash call: \`setsid nohup bash -c '( cd ${t.wt} && ./systest.sh ) > <log> 2>&1; echo "GATE_EXIT=$?" >> <log>' > /dev/null 2>&1 < /dev/null &\`; (b) then block in FOREGROUND Bash calls (timeout 600000), each running \`timeout 570 grep -m1 GATE_EXIT <(tail -n +1 -F <log>); grep GATE_EXIT <log> || { pgrep -f '[s]ystest.sh' > /dev/null && echo STILL_RUNNING; }\`, repeating that call back to back until the log has GATE_EXIT (if it prints neither GATE_EXIT nor STILL_RUNNING, systest died: report it).`)
   const logBase = `${REPORTS}/${t.key}-gate-${tag}`
   const g = await ops(`Run the build gate for ticket ${t.key} in worktree ${t.wt}. Do not edit or fix anything; only run and report.
 First \`mkdir -p ${REPORTS}\`. Then run these steps in order, stopping at the first that fails:
 ${steps.map((s, i) => `${i + 1}. ${s}\n   Log: ${logBase}-${i + 1}.log`).join('\n')}
 
-Run each step with the Bash tool in the background, as \`( <command> ) > <log> 2>&1; echo "GATE_EXIT=$?" >> <log>\`, and wait for its completion notification (if none arrives, use the Monitor tool to wait until the log contains GATE_EXIT). Never use sleep loops. A step passes only if GATE_EXIT=0.
+Run each step with the Bash tool as \`( <command> ) > <log> 2>&1; echo "GATE_EXIT=$?" >> <log>\`, in the mode given for that step. A step passes only if GATE_EXIT=0.
+You MUST NOT return until every step you started has written its GATE_EXIT line: ending your turn kills any still-running build and wastes the run. "Not finished yet" is never a valid result — keep waiting. Only if a foreground call hits its timeout without GATE_EXIT, check whether the process is still running (pgrep -f) and, if so, keep waiting on the log with Monitor as above; if it died without GATE_EXIT, report pass=false with failures explaining it was killed.
 Return pass, failedStep ("mvnd" or "systest", "" on pass), logPath of the failing (or last) log, and failures: on failure, an excerpt of at most 12000 characters with the failing test names, assertion messages, stack-trace heads, and compiler errors/warnings — the lines someone fixing it needs, not the whole log.`, GATE, `${t.key} gate ${tag}${withSystest ? ' +systest' : ''}`, 'Gate')
   if (!g) stop(`gate runner died (${tag})`)
   return g
