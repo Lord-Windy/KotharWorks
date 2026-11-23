@@ -2,7 +2,33 @@
 
 > **Planning & Review Lead:** Gemini 4 Carbon (`google/gemini-4-carbon`)  
 > **Target Repository:** `kotharworks` (Pure Java 25 LTS modular monorepo)  
-> **Role of This Suite:** Normative specification for `st` ticket decomposition (`KOTHARWORKS`), implementation handoffs, deterministic golden tests, and post-implementation code reviews.
+> **Role of This Suite:** Normative specification of design intent for `st` ticket decomposition (`KOTHARWORKS`), implementation handoffs, deterministic golden tests, and post-implementation code reviews. For what *exists today*, the code, [`tickets/README.md`](../../tickets/README.md) and the SQL migration files are authoritative; see [Current Status](#current-status).
+
+---
+
+## Current Status
+
+- **Phase 0 — "The Bare Engine Spine": complete.** Tickets and index live in [`tickets/done/`](../../tickets/done/) ([`PHASE0-README.md`](../../tickets/done/PHASE0-README.md)).
+- **Phase 1 — "Slice 0 Gameplay": in progress.** See the Phase 1 index in [`tickets/README.md`](../../tickets/README.md). Execution order is M0 -> M4 -> (M1-M3).
+- **Definition-of-done gate:** the one-command `./systest.sh` (Docker; black-box bot + emulated-human live suites over HTTP/SSE). See [`systest/README.md`](../../systest/README.md).
+- Planning prose below describes design intent. Where it disagrees with the code or the migrations, the code and migrations win.
+
+---
+
+## Engine Primitives vs. Gameplay Nouns
+
+The design docs speak in gameplay nouns; the code uses neutral engine primitives.
+
+| Gameplay noun (design docs) | Engine primitive (code) | Notes |
+| :--- | :--- | :--- |
+| Household / House | `Owner` (`OwnerId`, `OwnerRow`) | One permanent seat (`wilds_meta.seats`) charters exactly one Owner per world. |
+| Settler / Character | `Actor` (`ActorId`, `ActorRow`) | Generational ID; a dead settler's slot generation is retired, stale IDs reject. |
+| Site / Waypoint / Region node | `Place` (`PlaceId`, `PlaceRow`, `PlaceEdge`) | Travel graph edges carry `travelDurationMs`. |
+| Hold, Party, Stockpile, Tech unlocks | *(new tables keyed by `OwnerId` / `ActorId`)* | Added in Phase 1 tickets; never as object references. |
+| Item / Skill / Tech / Building kinds | `RuleRegistry` families keyed by `RuleId` | Added in Phase 1; versioned by `WILDS_RULES_VERSION` (Ticket `11`). |
+| `CharacterId`, `HouseholdId`, `SiteId`, `HoldId` | — | **Historical names only.** Do not introduce these types. |
+
+Neutral engine IDs are permanent. `OwnerId`, `ActorId` and `PlaceId` (generational `(index, generation)` records in `com.kotharworks.wilds.id`) are baked into the WAL, the wire format, `EventPayloadCodec` and SQL, and are never renamed. Gameplay concepts are layered on as state tables, `RuleRegistry` families and DTO fields keyed by those IDs. `CharacterId`, `HouseholdId`, `SiteId` and `HoldId` are historical names only.
 
 ---
 
@@ -26,20 +52,26 @@ Every boundary in this suite is anchored directly to **three core project constr
 ```text
 kotharworks/  (Maven reactor: com.kotharworks)
 ├── libs/
-│   ├── procgen/                           Zero-dep seeded spatial math, NameGrammar, Personas & Prose
-│   ├── samsim/           (optional later) Generic discrete-event min-heap, integer LazyGauge & tables
-│   ├── wilds/                             Pure deterministic Ironwood Wilds engine (zero I/O, zero floats, zero Auth)
-│   ├── auth/                              Modular AuthN & HTTP security (OIDC/Keycloak + Dev-Local JWT + Scoped Keys)
-│   ├── samvm/            (Phase 2 - GA)   Register VM port (8-byte instructions, deterministic math)
-│   └── samgenai/         (Phase 2 - GA)   LGP population/tournament/crossover trainer over headless sims
-└── apps/
-    ├── wilds-headless/                    CLI rig: fast-forward runs, log replay + WorldHash, ASCII gallery
-    ├── wilds-server/                      Hexagonal host: Virtual-Thread HTTP/SSE + WildsAuthorizer + SSR UI + Postgres
-    ├── wilds-bot/                         Reference heuristic bot & soak-test client (HTTP/SSE only; Doctrine seam)
-    └── wilds-arena/      (Phase 2 - GA)   Parallel batch evolution + telemetry exporter for content/plots
+│   ├── wilds/        Pure deterministic Ironwood Wilds engine (zero I/O, zero floats, zero Auth)
+│   └── auth/         Modular AuthN & HTTP security (OIDC code + Dev-Local JWT + Scoped Keys)
+├── apps/
+│   ├── wilds-headless/   CLI rig: run, replay (--hash), inspect
+│   └── wilds-server/     Hexagonal host: Virtual-Thread HTTP/SSE + SeatAuthorizer + SSR UI + Postgres
+└── systest/          (opt-in: -Psystest) Black-box bot + emulated-human live suites; run via ./systest.sh
 ```
 
-> **Module Discipline:** Start directly inside the existing `libs/procgen`, `libs/wilds`, and `apps/wilds-server` modules plus `apps/wilds-headless` (in M0), `libs/auth` (in M4), and `apps/wilds-bot` (in M5). Keep `com.kotharworks.wilds.sim` as a clean internal package inside `libs/wilds` until a second simulation project warrants extracting `libs/samsim`.
+**Planned modules (not yet in the reactor):**
+
+| Module | Status | Introduced by |
+| :--- | :--- | :--- |
+| `libs/procgen` | *planned* | Phase 1 Ticket 14 (`NameGrammar` + `PersonaGenerator`) |
+| `apps/wilds-bot` | *planned* | Phase 1 Ticket 24 (M5a) |
+| `libs/samsim` | *planned, optional later* | No ticket |
+| `libs/samvm` | *planned* | Phase 2 (GA) |
+| `libs/samgenai` | *planned* | Phase 2 (GA) |
+| `apps/wilds-arena` | *planned* | Phase 2 (GA) |
+
+> **Module Discipline:** `libs/procgen` returns when the first real generator lands (planned: Phase 1 Ticket 14, `NameGrammar` + `PersonaGenerator`), absorbing `WorldSeed`/`SeededRng` from `com.kotharworks.wilds.seed`. Until then the `com.kotharworks.wilds.worldgen` seams (`WorldTopologyBootstrap`, `DescriptionComposer`) are the only procgen surface; the seed primitives live in `libs/wilds` only temporarily. Keep `com.kotharworks.wilds.sim` as a clean internal package inside `libs/wilds` until a second simulation project warrants extracting `libs/samsim`.
 
 ---
 
@@ -73,7 +105,7 @@ Open [`prototype/index.html`](prototype/index.html) in any browser to click thro
 │           └──────────────────────┼───────────┬────────────┘             │        │
 │                                  ▼           │ Lock-Free WorldView      │        │
 │                   ┌──────────────────────────┴──┐                       │        │
-│                   │ libs/auth + WildsAuthorizer │───► Postgres: `auth`  │        │
+│                   │ libs/auth + SeatAuthorizer  │───► Postgres: `auth`  │        │
 │                   │ (OIDC/Dev JWT + iw_bot_ Key)│     (0 Passwords!)    │        │
 │                   └──────────────┬──────────────┘                       │        │
 │                                  ▼                                      │        │
@@ -96,8 +128,8 @@ Open [`prototype/index.html`](prototype/index.html) in any browser to click thro
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│ libs/procgen  (100% Pure Seeded World, Persona & Prose Engine — Zero Runtime Deps)      │
-│                                                                                         │
+│ libs/procgen  *planned (Phase 1)* — Pure Seeded World, Persona & Prose Engine           │
+│ (today the seed primitives live in libs/wilds: com.kotharworks.wilds.seed)              │
 │  • Domain-Separated `WorldSeed` Streams -> Elevation, Hydrology, Biomes & Waypoint Map  │
 │  • Chronicle Myth Flags + True Ironwood Scarcity (`<= 2` Groves per Continent)          │
 │  • Phonotactic `NameGrammar` + `PersonaGenerator` + First-Person `JournalComposer`      │
@@ -105,18 +137,20 @@ Open [`prototype/index.html`](prototype/index.html) in any browser to click thro
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+`systest/` (`./systest.sh`) sits outside this diagram as the definition-of-done gate: black-box bot + emulated-human live suites driving `apps/wilds-server` over HTTP/SSE.
+
 ---
 
 ## 4. Key Architectural Decisions Digest
 
 | ID | Area | Normative Decision | Why It Fits |
 | :--- | :--- | :--- | :--- |
-| **AR-1** | **Determinism & State** | **Dense Array Entity Tables** keyed by generational `record CharacterId(int index, int generation)`, **100% integer/permille math** (zero `float`/`double` in `WorldState`), verified by `WorldHash` golden replays. | Eliminates pointer spaghetti, stale-handle bugs, hash-order nondeterminism, and float drift across replays and GA forks. |
+| **AR-1** | **Determinism & State** | **Dense Array Entity Tables** keyed by the generational `ActorId` / `OwnerId` / `PlaceId` records (`index, generation`; see [Engine Primitives vs. Gameplay Nouns](#engine-primitives-vs-gameplay-nouns)), **100% integer/permille math** (zero `float`/`double` in `WorldState`), verified by `WorldHash` golden replays. | Eliminates pointer spaghetti, stale-handle bugs, hash-order nondeterminism, and float drift across replays and GA forks. |
 | **AR-2** | **Lazy Time & Heap** | **Integer `LazyGauge` interpolation + `(dueAtMs, seq)` Min-Heap + 1 Hz live pump** (`PAUSE_WHILE_DOWN` on server maintenance). | O(1) idle world cost, instant headless fast-forward (`advanceToNextEvent`), exact shared-resource causality, and 4-line O(1) `heapTicket` cancellation. |
 | **GP-1** | **"Patient Hands, Living People"** | **Zero behavioral idle autonomy** (`IDLE_PATIENT` when queue empties), **rich procedural `CharacterPersona`** (origins, temperaments, scars, first-person journals). | Humans, bots, and GAs stay 100% in command of workshop scheduling, while settlers feel like memorable mortal people rather than numbered drones. |
 | **GP-2** | **World & Stakes** | **Unresolved Rival Mystery + Chronicle Myth Flags**, **True Ironwood scarcity (`≤2` groves)**, **Scheduled Homeland Tithe Ship**, **non-lethal 3-Ring Hold Raids**, and **lethal PvM Party Expeditions**. **Zero PvP.** | Creates interlocking economic/military trade-offs, dramatic public/fogged Chronicle rumors, and walk-away safety. |
 | **CM-1** | **Unified Wire API** | **Single mutation endpoint (`POST /api/v1/commands`)** with UUIDv7 `cmdId` idempotency + optional **`expectedRevision` (`409 STALE_STATE`)**, validated synchronously inside `WorldHost`, paired with **SSE (`GET /api/v1/stream?since=cursor`)**. | Zero UI-private endpoints, safe bot retries, ETag-equivalent lost-update protection across tabs, and ~25-line Virtual-Thread SSE push. |
-| **AU-1** | **Modular Auth (`libs/auth`)** | **Zero passwords in game DB:** **Nimbus JOSE+JWT** OIDC verification (**Roles on JWT + JIT `(iss, sub) -> UserId` UUID**), loopback-fused `dev-local` -> drop-in **Keycloak** (`--auth-mode=oidc`), BFF cookie + CSRF, and House-scoped `iw_bot_...` keys. | Separates AuthN from AuthZ, tests the exact Keycloak JWT path from Day 1 with zero Docker, and enforces 12 mechanical `AuthSecurityGateTest` invariants. |
+| **AU-1** | **Modular Auth (`libs/auth`)** | **Zero passwords in game DB:** **Nimbus JOSE+JWT** OIDC verification (**Roles on JWT + JIT `(iss, sub) -> UserId` UUID**), loopback-fused `dev-local` -> drop-in **Keycloak** (`--auth-mode=oidc`), BFF cookie + CSRF, and seat-scoped `iw_bot_...` keys. | Separates AuthN from AuthZ, tests the exact Keycloak JWT path from Day 1 with zero Docker, and is enforced by the mechanical `AuthSecurityGateTest` suites. |
 | **PS-1** | **Persistence** | **100% Append-Only `wilds_world` (`command_wal` + `CLOCK_ADVANCE` + Snapshots, zero `UPDATE` tables)** with **Commit-Before-Mutate** discipline across **3 Postgres schemas** (`auth`, `wilds_meta`, `wilds_world`) via JDBI + ~100-line SQL migrator. | Eliminates async entity-sync races, split-brain RAM/DB drift on `SQLException`, and SSE cursor time-rewinds on `kill -9`. |
 
 ---
@@ -134,11 +168,11 @@ Open [`prototype/index.html`](prototype/index.html) in any browser to click thro
 5. **[04-WebInterfaceAndProtocols.md](04-WebInterfaceAndProtocols.md)**  
    Unified REST + SSE client contract, fog-of-war projections & fogged public rumors, the server-rendered Multi-Tab Character Deck (`prototype/index.html`, **"While You Were Away"** digest, Character Journal pane, client-side 60fps countdowns), and the public **`/chronicle` Observatory**.
 6. **[05-AccountsAndPersistenceSchemas.md](05-AccountsAndPersistenceSchemas.md)**  
-   Three-schema PostgreSQL DDL (`auth` zero-password OIDC links & scoped `iw_bot_...` keys, `wilds_meta` `UserId`-owned Houses & replay version-triple, 100% append-only `wilds_world` `command_wal` + `CLOCK_ADVANCE` + snapshots), forward SQL migrations, and zero-rewind `PAUSE_WHILE_DOWN` restart semantics.
+   Three-schema PostgreSQL DDL (`auth` zero-password OIDC links & scoped `iw_bot_...` keys, seat-centric `wilds_meta` (one permanent seat charters one Owner per world) & replay version-triple, 100% append-only `wilds_world` `command_wal` + `CLOCK_ADVANCE` + snapshots), forward SQL migrations, and zero-rewind `PAUSE_WHILE_DOWN` restart semantics. The migrations (`V001`-`V003`) are authoritative where the DDL differs.
 7. **[06-VerticalSliceAndRoadmap.md](06-VerticalSliceAndRoadmap.md)**  
-   Slice 0 (*"Hearth, Iron, and the Palisade"*), worked transcript ending in `wilds-headless replay --hash`, exact Java package skeleton, Milestones **M0–M5**, the **`st` ticket backlog**, **post-implementation code-review checklist**, and Phase 2 `SamVM` + `SamGenAI` integration.
+   Slice 0 (*"Hearth, Iron, and the Palisade"*), worked transcript ending in `wilds-headless replay --hash`, the actual Phase 0 package skeleton plus planned Phase 1 additions, Milestones **M0–M5** with a Status column, a pointer to the ticket backlog in [`tickets/README.md`](../../tickets/README.md), **post-implementation code-review checklist**, Phase 2 `SamVM` + `SamGenAI` integration, and `systest/` + `./systest.sh` as the definition-of-done gate.
 8. **[07-AuthAndSecurityArchitecture.md](07-AuthAndSecurityArchitecture.md)**  
-   Standalone **`libs/auth`** (`com.kotharworks:auth`), 3-layer AuthN vs. AuthZ boundary, JWT roles + JIT `UserId` linking, loopback-fused `dev-local` -> drop-in **Keycloak** OIDC, BFF `__Host-kw_session` CSRF guards, House-scoped Bot keys, and the 12-point **`AuthSecurityGateTest`** verification suite.
+   Standalone **`libs/auth`** (`com.kotharworks:auth`), 3-layer AuthN vs. AuthZ boundary, JWT roles + JIT `UserId` linking, loopback-fused `dev-local` -> drop-in **Keycloak** OIDC, BFF `__Host-kw_session` CSRF guards, seat-scoped Bot keys, and the **`AuthSecurityGateTest`** verification suites.
 
 ### Visual Artifacts Index
 - **Graphviz `.dot` Sources + Compiled `.svg` & `.png` Graphs (`diagrams/`):**

@@ -1,5 +1,19 @@
 # 05 — Accounts, Scoped Bot Keys & Three-Schema Persistence
 
+> **Phase 0 reality note.** The three schemas (`auth`, `wilds_meta`, `wilds_world`) are implemented with `SqlMigrator`, JDBI adapters and crash recovery ([Ticket 08](../../tickets/done/08-postgres-schemas-migrator-and-jdbi-adapters.md)); the account and seat paths are used by the server ([Ticket 07](../../tickets/done/07-server-worldhost-rest-and-sse-inmemory.md)). Gameplay-bearing tables shown below (houses, chronicle standings, doctrine blueprints, battle chronicles) are planned. See the [engine noun mapping](README.md#engine-primitives-vs-gameplay-nouns) and [Current Status](README.md#current-status).
+>
+> **Migration files are authoritative.** The DDL below is the original design; `apps/wilds-server/src/main/resources/db/V001__auth.sql`, `V002__wilds_meta.sql` and `V003__wilds_world.sql` are the truth. Material differences:
+>
+> - `auth.users`: `max_seats_override` replaces `max_houses_override`.
+> - `auth.web_sessions`: no `active_house_id` column.
+> - `auth.api_tokens`: `resource_namespace` defaults to `'wilds:seat'`, not `'wilds:house'`; `scoped_resource_id` locks a token to one seat.
+> - `wilds_meta` is seat-centric, not `UserId`-owned Houses: `wilds_meta.seats` (`seat_id`, `owner_user_id`, `seat_name`, `controller_kind`, `created_at`) replaces `wilds_meta.houses` and has no `motto`, `lifetime_favor` or `chronicles_run`.
+> - `wilds_meta.worlds` (`world_id`, `title`, `world_seed`, `rules_version`, `engine_version`, `protocol_version`, `jvm_version`, `config_json`, `status`, `started_at`, `ended_at`) replaces `wilds_meta.chronicles`; it has no `myth_flags_json` or `war_outcome`, and a partial unique index `uq_worlds_one_active` allows at most one `ACTIVE` world.
+> - `wilds_meta.chronicle_standings` and `wilds_meta.doctrine_blueprints` do not exist yet.
+> - `wilds_world.command_wal`, `world_checkpoints`: keyed by `world_id` (not `chronicle_id`) and `seat_id` (not `house_id`); `wal_seq` is a plain `BIGINT CHECK (wal_seq >= 1)` supplied by the writer, not an identity column.
+> - `wilds_world.world_events` (`event_cursor`, `seat_id`, `public_summary`, `private_summary`, `payload_json`, plus per-seat and public-cursor indexes) replaces `chronicle_events` (`house_id`, `public_rumor`, `private_prose`).
+> - `wilds_world.battle_chronicles` does not exist yet.
+
 Persistence in **Ironwood Wilds** solves three distinct problems simultaneously:
 1. **Replay-Grade World Truth:** `(world_seed, rules_version, command_wal)` is the mathematical definition of the timeline; snapshots and live SQL tables are fast-start caches and projections.
 2. **Seamless Maintenance Restarts (`PAUSE_WHILE_DOWN`):** Deploying a patch or surviving `kill -9` recovers to the exact logical millisecond with zero lost timers and zero unmonitored offline raids.

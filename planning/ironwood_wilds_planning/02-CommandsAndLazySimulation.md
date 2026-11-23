@@ -1,5 +1,7 @@
 # 02 — Commands, Action Queues & Hybrid Lazy Simulation
 
+> **Phase 0 reality note.** See the [engine noun mapping](README.md#engine-primitives-vs-gameplay-nouns) for the neutral engine names (`OwnerId`, `ActorId`, `PlaceId`) behind the historical names in the samples below, and [Current Status](README.md#current-status) for overall progress. **Implemented:** the `WorldCommand` envelope, the two-phase fail-soft `Wait` and `Travel` task queues (the only stock tasks) and `heapTicket` ordering ([Ticket 04](../../tickets/done/04-commands-task-queues-events-and-projections.md)); `POST /api/v1/commands` with `cmdId` + `expectedRevision`, `CLOCK_ADVANCE` and SSE ([Ticket 07](../../tickets/done/07-server-worldhost-rest-and-sse-inmemory.md)); the durable command WAL ([Ticket 08](../../tickets/done/08-postgres-schemas-migrator-and-jdbi-adapters.md)). **Planned:** Gather, Craft, party muster and `RaidStrike` payloads (Phase 1 Tickets 13, 19, 22 and 21; see the [Phase 1 index](../../tickets/README.md)).
+
 Ironwood Wilds combines **multi-minute timed actions across short per-character queues** with **lazy evaluation** so idle worlds cost zero CPU and headless runs fast-forward in milliseconds—while guaranteeing **100% deterministic shared-world causality**.
 
 ---

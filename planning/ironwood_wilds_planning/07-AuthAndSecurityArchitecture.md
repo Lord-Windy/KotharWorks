@@ -1,5 +1,7 @@
 # 07 — Modular Authentication, Authorization & Keycloak Path (`libs/auth`)
 
+> **Phase 0 reality note.** See the [engine noun mapping](README.md#engine-primitives-vs-gameplay-nouns) and [Current Status](README.md#current-status). **Implemented:** `libs/auth` ([Ticket 06](../../tickets/done/06-modular-auth-and-http-security-library.md)), including the BFF cookie path and `CsrfGuard`; server authorization via `SeatAuthorizer` (the design's `WildsAuthorizer`), `SeatRateLimiter` and the HTTP adapters ([Ticket 07](../../tickets/done/07-server-worldhost-rest-and-sse-inmemory.md)). The OIDC classes exist in `libs/auth/oidc` but there is no live OIDC path. **Planned:** the Keycloak `deploy/` compose and live OIDC path (infra ticket in the [Phase 1 index](../../tickets/README.md)). The current schema is seat-centric (`wilds_meta.seats`, scoped tokens in the `wilds:seat` namespace), so statements below about `wilds_meta.houses`, House-scoped tokens and `HouseholdId` describe the original design; see the migration notes in [05](05-AccountsAndPersistenceSchemas.md).
+
 This document defines **Authentication (`AuthN`)** and **Authorization (`AuthZ`)** across `kotharworks` and **Ironwood Wilds** with three non-negotiable goals:
 
 1. **Clean Separation & Reusability (`libs/auth`):** Authentication (*"Who is calling, and how did we verify it?"*) lives in a standalone, game-agnostic module (`com.kotharworks:auth`) completely separated from Authorization (*"What is this caller allowed to touch?"*) and from the pure simulation engine (`libs/wilds`, which knows **zero** about JWTs, cookies, users, or Keycloak).
@@ -237,7 +239,7 @@ Once `WildsAuthorizer` resolves the caller's single authorized `HouseholdId` in 
 
 ## 7. "Don't Trust Me — Verify Mechanically" (`AuthSecurityGateTest`)
 
-You never have to guess whether Auth was implemented safely. Every ticket touching `libs/auth` or `apps/wilds-server` is gated on these **12 automated JUnit security checks**:
+You never have to guess whether Auth was implemented safely. Every ticket touching `libs/auth` or `apps/wilds-server` is gated on the automated `AuthSecurityGateTest` JUnit suites (`libs/auth`, plus the server-level suite in `apps/wilds-server`). The table lists the original 12 design scenarios; the test classes are the authoritative list:
 
 | # | Attack / Failure Scenario Tested | Required Mechanical Outcome |
 | :---: | :--- | :--- |

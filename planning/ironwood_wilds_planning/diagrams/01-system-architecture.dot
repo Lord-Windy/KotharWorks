@@ -48,7 +48,7 @@ digraph SystemArchitecture {
         rest_sse_bot [
             fillcolor="#1f2937",
             color="#58a6ff",
-            label=<<b>apps/wilds-bot &amp; External Bots</b><br/><font point-size="9" color="#9ca3af">GET /api/v1/rules + Doctrine Seam<br/>POST /api/v1/commands (cmdId) + SSE</font>>
+            label=<<b>apps/wilds-bot (planned · Ticket 24) &amp; External Bots</b><br/><font point-size="9" color="#9ca3af">GET /api/v1/rules + Doctrine Seam<br/>POST /api/v1/commands (cmdId) + SSE</font>>
         ];
         headless_cli [
             fillcolor="#1c261e",
@@ -58,7 +58,7 @@ digraph SystemArchitecture {
         ga_arena [
             fillcolor="#281c33",
             color="#bc8cff",
-            label=<<b>apps/wilds-arena (Phase 2 GA)</b><br/><font point-size="9" color="#d2a8ff">libs/samvm + libs/samgenai<br/>10,000x Headless Evolution</font>>
+            label=<<b>apps/wilds-arena (Phase 2)</b><br/><font point-size="9" color="#d2a8ff">libs/samvm + libs/samgenai<br/>10,000x Headless Evolution</font>>
         ];
     }
 
@@ -85,7 +85,7 @@ digraph SystemArchitecture {
         auth_guard [
             fillcolor="#1b2738",
             color="#388bfd",
-            label=<<b>libs/auth + WildsAuthorizer + Rate Guard</b><br/><font point-size="9" color="#9ca3af">OIDC JWT (Keycloak / Dev-Local) or Scoped iw_bot_ Key<br/>-&gt; Principal(UserId, Roles) -&gt; Authorized HouseholdId</font>>
+            label=<<b>libs/auth + SeatAuthorizer + Rate Guard</b><br/><font point-size="9" color="#9ca3af">OIDC JWT (Keycloak / Dev-Local) or Scoped iw_bot_ Key<br/>-&gt; Principal(UserId, Roles) -&gt; Authorized OwnerId (seat)</font>>
         ];
 
         mailbox [
@@ -119,7 +119,7 @@ digraph SystemArchitecture {
         world_state [
             fillcolor="#16241a",
             color="#2ea043",
-            label=<<b>Dense EntityTables (index, gen)</b><br/><font point-size="9" color="#9ca3af">Households · Characters (+Personas)<br/>Holds · Buildings · Parties · SiteDeltas</font>>
+            label=<<b>Dense EntityTables (index, gen)</b><br/><font point-size="9" color="#9ca3af">Owners · Actors · Places (today)<br/>planned: Personas · Holds · Buildings · Parties</font>>
         ];
 
         due_heap [
@@ -141,9 +141,11 @@ digraph SystemArchitecture {
 
         procgen [
             fillcolor="#1c2128",
-            color="#f0883e",
+            color="#6e7681",
+            fontcolor="#8b949e",
+            style="rounded,filled,dashed",
             penwidth=1.6,
-            label=<<b>libs/procgen (Zero Runtime Deps, Zero I/O)</b><br/><font point-size="9" color="#ffa657">WorldSeed Streams · Region Passes &amp; Waypoints · MythFlags<br/>NameGrammar · Persona &amp; JournalComposer · glance/look/examine Prose</font>>
+            label=<<b>libs/procgen (planned · Phase 1)</b><br/><font point-size="9" color="#ffa657">(seed primitives live in libs/wilds today) · WorldSeed Streams · Region Passes &amp; Waypoints · MythFlags<br/>NameGrammar · Persona &amp; JournalComposer · glance/look/examine Prose</font>>
         ];
 
         postgres [
@@ -151,9 +153,17 @@ digraph SystemArchitecture {
             fillcolor="#1a2230",
             color="#58a6ff",
             penwidth=1.6,
-            label=<<b>PostgreSQL (JDBI + ~100 LOC Migrator)</b><br/><font point-size="9" color="#79c0ff">Schema 1: auth (Users UUID, OIDC Links, Bot Keys — 0 Passwords)<br/>Schema 2: wilds_meta (Houses by UserId, Replay Triple, Legacy)<br/>Schema 3: wilds_world (command_wal Truth + Snapshots)</font>>
+            label=<<b>PostgreSQL (JDBI + ~100 LOC Migrator)</b><br/><font point-size="9" color="#79c0ff">Schema 1: auth (Users UUID, OIDC Links, Bot Keys — 0 Passwords)<br/>Schema 2: wilds_meta (Seats, Worlds &amp; Replay Triple)<br/>Schema 3: wilds_world (command_wal Truth + Snapshots)</font>>
         ];
     }
+
+    systest [
+        fillcolor="#1c2128",
+        color="#3fb950",
+        label=<<b>systest/ · ./systest.sh</b><br/><font point-size="9" color="#7ee787">bot + human live suites (definition-of-done gate)</font>>
+    ];
+    systest -> http_rest [color="#3fb950", label=" HTTP", style=dashed];
+    systest -> sse_adapter [color="#3fb950", label=" SSE", style=dashed];
 
     human_browser -> http_ui [color="#d29922"];
     human_browser -> http_rest [color="#d29922"];
@@ -180,6 +190,6 @@ digraph SystemArchitecture {
     engine_facade -> due_heap;
     engine_facade -> strategies;
 
-    world_state -> procgen [color="#f0883e"];
-    strategies -> procgen [color="#f0883e"];
+    world_state -> procgen [color="#6e7681", style=dashed];
+    strategies -> procgen [color="#6e7681", style=dashed];
 }

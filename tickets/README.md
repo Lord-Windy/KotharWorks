@@ -1,108 +1,122 @@
-# KotharWorks — Phase 0 Base Structure Tickets ("The Bare Engine Spine")
+# KotharWorks — Phase 1 Slice 0 Gameplay Tickets ("Hearth, Iron, and the Palisade")
 
-This folder tracks the initial ticket set to stand up the **gameplay-neutral engine and server spine** for **Ironwood Wilds** inside `kotharworks`.
+This folder tracks the Phase 1 ticket set that layers the first playable **Ironwood Wilds** gameplay slice on top of the neutral engine and server spine built in Phase 0.
 
-When a ticket is implemented, verified (`mvnd test` passing with zero warnings), and committed, move its markdown file from `tickets/` into [`tickets/done/`](done/).
-
----
-
-## 1. Guiding Philosophy ("The Stock DikuMUD Principle")
-
-Think of this phase like downloading a clean MUD codebase (`DikuMUD` / `CircleMUD`) with only its 3-room `limbo` test zone attached: **the engine, loop, networking, auth, persistence, console, and replay rig all run end-to-end, while the actual game rules have not been written yet.**
-
-1. **Zero Premature Gameplay Lock-In:**
-   - Core state uses neutral structural primitives: **`Owner`** (`OwnerId`), **`Actor`** (`ActorId`), **`Place`** (`PlaceId`), **`RuleId`**, **`LazyGauge`**, and **`TaskSpec`** (with only two stock structural tasks: `Wait` and `Travel`).
-   - **Explicitly excluded from this phase:** Holds, 3-Ring fortifications, Raids, PvM Expeditions, Parties, Skills/XP curves, Tech Trees, Items/Inventories, Tithe Ships, and Character Personas/Journals. Gameplay will evolve cleanly on top of these tables, command switches, strategy seams, and forward SQL migrations once finalized.
-2. **Procgen Considered at the Seams — Zero `libs/procgen` Module:**
-   - The scaffold `libs/procgen` module is **removed** in Ticket `01`.
-   - `libs/wilds` defines `WorldSeed` + domain-separated integer `SeededRng` (`com.kotharworks.wilds.seed`) and explicit strategy interfaces (`WorldTopologyBootstrap` and `DescriptionComposer` in `com.kotharworks.wilds.worldgen`) backed by minimal deterministic 3-place stubs. This proves *where and how* procedural generation is called (world/sector bootstrap, lazy place materialization, and read-time `glance`/`look`/`examine` rendering) without prematurely building a procgen library.
-3. **Bots Considered at the Contract Boundary — Zero Bot Implementation:**
-   - `apps/wilds-bot` is **not** created in this phase.
-   - Bot compatibility is preserved structurally by having **one canonical mutation endpoint** (`POST /api/v1/commands` with `cmdId` idempotency + `expectedRevision` optimistic concurrency), self-describing `GET /api/v1/rules`, SSE `/api/v1/stream`, and `Principal.ScopedTokenPrincipal` (`iw_bot_...`) + `controller_kind` support in `libs/auth` and `wilds_meta.seats`.
-4. **Production-Grade Architectural Invariants From Day 1:**
-   - **100% Pure & Deterministic `libs/wilds`:** Zero runtime dependencies, zero I/O, zero wall-clock calls, zero `float`/`double` in `WorldState`, zero `HashMap`/`HashSet` state iteration, enforced mechanically via JDK 25 `java.lang.classfile` bytecode scanning (`WildsArchitectureGateTest`).
-   - **Hybrid Lazy Simulation:** Integer milli-unit `LazyGauge` + `(dueAtMs, seq)` `DueEventHeap` + O(1) `heapTicket` cancellation.
-   - **Single-Writer `WorldHost` + Lock-Free `WorldView` MVCC + Commit-Before-Mutate WAL:** Pure read-only Phase-1 validation (`409 STALE_STATE` on `expectedRevision` mismatch) runs inside `WorldHost`; Postgres `command_wal` (`WorldCommand` and `CLOCK_ADVANCE`) commits *before* `WorldState` mutates or SSE emits.
-   - **Modular Zero-Password Auth (`libs/auth`):** Nimbus JOSE+JWT asymmetric verification, loopback-fused `dev-local` JWT persona switcher (`127.0.0.1` only) ready to flip to Keycloak `--auth-mode=oidc`, BFF session cookie + `CsrfGuard`, enforced by `AuthSecurityGateTest`.
+When a ticket is implemented, verified and committed, move its markdown file from `tickets/` into `tickets/done/`. The Phase 0 index is archived at [`done/PHASE0-README.md`](done/PHASE0-README.md). The planning suite lives at [`../planning/ironwood_wilds_planning/README.md`](../planning/ironwood_wilds_planning/README.md).
 
 ---
 
-## 2. Target Module Topology After Ticket 09
+## 1. Guiding Philosophy
+
+Gameplay now lands *on top of* the neutral spine (mapping table: [Engine Primitives vs. Gameplay Nouns](../planning/ironwood_wilds_planning/README.md#engine-primitives-vs-gameplay-nouns)). Every gameplay ticket is a vertical brick: engine → wire / `/api/v1/rules` → `/play` where user-visible → live `systest`.
+
+Two decisions are fixed for the whole phase:
+
+- **D1:** Neutral engine IDs are permanent. `OwnerId`, `ActorId` and `PlaceId` (generational `(index, generation)` records in `com.kotharworks.wilds.id`) are baked into the WAL, the wire format, `EventPayloadCodec` and SQL, and are never renamed. Gameplay concepts are layered on as state tables, `RuleRegistry` families and DTO fields keyed by those IDs. `CharacterId`, `HouseholdId`, `SiteId` and `HoldId` are historical names only.
+- **D2:** `libs/procgen` returns when the first real generator lands (planned: Phase 1 Ticket 14, `NameGrammar` + `PersonaGenerator`), absorbing `WorldSeed`/`SeededRng` from `com.kotharworks.wilds.seed`. Until then the `com.kotharworks.wilds.worldgen` seams (`WorldTopologyBootstrap`, `DescriptionComposer`) are the only procgen surface; the seed primitives live in `libs/wilds` only temporarily.
+
+---
+
+## 2. Build Order & Dependency Graph
 
 ```text
-kotharworks/  (com.kotharworks:kotharworks-parent · Pure Java 25 LTS · -Werror)
-├── libs/
-│   ├── wilds/               0 external runtime deps · Pure deterministic engine, state, queues, codecs & WorldHash
-│   └── auth/                Reusable AuthN & HTTP security (`nimbus-jose-jwt` only · injectable `java.time.Clock`)
-└── apps/
-    ├── wilds-headless/      CLI rig (`run`, `replay --hash`, `inspect`) — depends ONLY on `libs/wilds`
-    └── wilds-server/        Hexagonal host: Virtual-Thread HTTP/SSE + `WorldHost` + SSR `/play` console + Postgres
+  [10 Planning reconciliation & Phase 1 index]
+     │
+     ├──► [11 Rules-version gate]
+     │       └──► [12 Items, stockpiles, carry & Deposit]
+     │               └──► [13 Resource nodes, Gather & DEPLETED]
+     │
+     └──► [14 libs/procgen: NameGrammar, PersonaGenerator]
+             └──► [15 3x3 region geography]
+
+  Later tickets (each starts once every listed dependency is done):
+
+   13 + 14 ──► [16 ProseComposer & JournalComposer]
+   13 + 16 ──► [17 /play Character Deck]
+   13 + 14 ──► [18 Skills, XP & stamina]
+        18 ──► [19 Craft, Research & Construct]
+        19 ──► [20 Tithe Ship, Favor, RecruitSettler]
+        19 ──► [21 Hold rings, raid rumor, RaidResolver]
+   15 + 18 ──► [22 Parties, lairs, muster, CombatDoctrine]
+        22 ──► [23 ExpeditionResolver, permadeath, Cairn]
+   20 + 21 ──► [24 apps/wilds-bot soak]
+
+  [infra Keycloak deploy/ compose + live OIDC systest]  (independent)
 ```
 
+| # | Ticket | Depends on | Milestone | Key (`st`) |
+| :---: | :--- | :---: | :---: | :---: |
+| 10 | Planning reconciliation & Phase 1 index *(this ticket)* — `done/10-planning-reconciliation-and-phase1-index.md` | — | — | `0fac031c` |
+| 11 | Rules-version gate: `RulesFingerprint` pin, clean boot refusal & world rollover — [`11-rules-version-gate-and-world-rollover.md`](11-rules-version-gate-and-world-rollover.md) | 10 | M2 prep | `181c8f17` |
+| 12 | Items, stockpiles, carry & `Deposit` | 11 | M1b | *planned* |
+| 13 | Resource nodes, `Gather` ×N & fail-soft `DEPLETED` | 12 | M1b | *planned* |
+| 14 | Restore `libs/procgen`: `NameGrammar`, `PersonaGenerator`, 3-settler charter | 10 | M1b | *planned* |
+| 15 | Bounded 3×3 region geography, `WaypointGraph` & `headless gallery` | 14 | M1a | *planned* |
+| 16 | `ProseComposer` (`glance`/`look`/`examine`) & `JournalComposer` | 13, 14 | M1b | *planned* |
+| 17 | `/play` multi-tab Character Deck (persona, journal, stockpile, queue builder) | 13, 16 | M4b | *planned* |
+| 18 | Skills, XP curve & stamina modifiers | 13, 14 | M2 | *planned* |
+| 19 | Craft, Research & Construct (4 techs, 5 buildings) | 18 | M2 | *planned* |
+| 20 | Tithe Ship heartbeat, Favor & `RecruitSettler` | 19 | M2 gate | *planned* |
+| 21 | Hold rings, raid rumor & non-lethal `RaidResolver` | 19 | M3 | *planned* |
+| 22 | Parties, `LairGraphGenerator`, lazy muster & `CombatDoctrine` | 15, 18 | M3 | *planned* |
+| 23 | `ExpeditionResolver`, permadeath, scars & Memorial Cairn | 22 | M3 gate | *planned* |
+| 24 | `apps/wilds-bot` `GreedyFrontierDoctrine` & 3-day soak | 20, 21 | M5a gate | *planned* |
+| infra | Keycloak `deploy/` compose + live OIDC `systest` path | — | M4c | *planned* |
+
+Only `10` and `11` carry `st` keys at this point; the rest are marked *planned*.
+
 ---
 
-## 3. Build Order & Dependency Graph
+## 3. Ticket Spec Template (tickets 12+)
 
-```text
-  [01 Workspace Cleanup, WorldSeed/SeededRng & JDK 25 Bytecode Gate]
-                 │                                       │
-                 ▼                                       ▼
-  [02 Generational IDs, EntityTable,            [06 Modular libs/auth +
-      LazyGauge & DueEventHeap]                     AuthSecurityGateTest]
-                 │                                       │
-                 ▼                                       │
-  [03 Neutral WorldState, RuleRegistry,                  │
-      Procgen Seams, JsonCodec & WorldHash]              │
-                 │                                       │
-                 ▼                                       │
-  [04 Commands, Two-Phase Task Queues,                   │
-      Events, Fog Projector & Golden Harness]            │
-          │                      │                       │
-          ▼                      └───────────┬───────────┘
-  [05 apps/wilds-headless                    ▼
-      CLI & WAL Replay Rig]     [07 apps/wilds-server Core: WorldHost,
-          │                         SeatAuthorizer, REST + SSE (InMemory)]
-          │                                  │
-          │                                  ▼
-          │                     [08 PostgreSQL 3-Schema Migrator, JDBI
-          │                         Adapters & Crash/Pause Recovery]
-          │                                  │
-          └──────────────┬───────────────────┘
-                         ▼
-          [09 Minimal SSR `/play` Console &
-              Full-Stack End-to-End Integration Suite]
+Each spec lives at `tickets/NN-<slug>.md`. The `st` description is `Spec file: tickets/NN-<slug>.md (see also tickets/README.md)` followed by the full spec, re-synced with `st edit` whenever the spec changes.
+
+```markdown
+# Ticket NN — <Title>
+
+- **`st` key:** `<key>`
+- **Status:** planned | in progress | done
+- **Depends on:** <ticket numbers>
+- **Modules touched:** <modules>
+
+## 1. Objective
+## 2. Explicit Non-Goals
+## 3. Deliverables
+## 4. Tests & Acceptance Criteria
+## 5. Review Focus
 ```
 
-| Order | `st` Key | Ticket File | Module(s) | Primary Deliverable |
-| :---: | :---: | :--- | :--- | :--- |
-| **1** | `4e263046` | [`01-workspace-cleanup-and-determinism-gates.md`](01-workspace-cleanup-and-determinism-gates.md) | root, `libs/wilds` | Remove `libs/procgen`; add `WorldSeed`, `SeededRng`, and JDK 25 `ClassFile` purity/no-float gate. |
-| **2** | `29b0e00a` | [`02-generational-tables-gauges-and-event-heap.md`](02-generational-tables-gauges-and-event-heap.md) | `libs/wilds` | `OwnerId`/`ActorId`/`PlaceId`/`RuleId`, dense `EntityTable`, integer `LazyGauge`, `DueEventHeap` + `heapTicket`. |
-| **3** | `0aaf30bb` | [`03-neutral-world-state-rules-and-procgen-seams.md`](03-neutral-world-state-rules-and-procgen-seams.md) | `libs/wilds` | `WorldState`, `RuleRegistry`, `WorldTopologyBootstrap` & `DescriptionComposer` seams, `JsonCodec`, `SnapshotCodec`, `WorldHash`. |
-| **4** | `d8ed0e93` | [`04-commands-task-queues-events-and-projections.md`](04-commands-task-queues-events-and-projections.md) | `libs/wilds` | `WorldCommand`, two-phase `Wait` & `Travel` queues, fail-soft policy, `EventOutbox`, fogged `ObservationProjector`, golden replay test. |
-| **5** | `aee4bb00` | [`05-headless-cli-and-wal-replay-rig.md`](05-headless-cli-and-wal-replay-rig.md) | `apps/wilds-headless` | Headless CLI (`run`, `replay --hash`, `inspect`) over `.jsonl` WAL streams. |
-| **6** | `bbc37528` | [`06-modular-auth-and-http-security-library.md`](06-modular-auth-and-http-security-library.md) | `libs/auth` | `Principal`, Nimbus `JwtClaimsVerifier`, loopback-fused `DevLocalJwtIssuer`, OIDC PKCE/JWKS, `iw_bot_` codec, `AuthenticatedRouter`, `CsrfGuard`, `AuthSecurityGateTest`. |
-| **7** | `9ba362ce` | [`07-server-worldhost-rest-and-sse-inmemory.md`](07-server-worldhost-rest-and-sse-inmemory.md) | `apps/wilds-server` | `SeatAuthorizer`, single-writer `WorldHost` (Commit-Before-Mutate + `CLOCK_ADVANCE`), REST `/api/v1/*`, `POST /api/v1/commands`, SSE `/api/v1/stream` over `InMemory*Store`. |
-| **8** | `08da943e` | [`08-postgres-schemas-migrator-and-jdbi-adapters.md`](08-postgres-schemas-migrator-and-jdbi-adapters.md) | `apps/wilds-server` | `SqlMigrator`, neutral `auth` / `wilds_meta` / append-only `wilds_world` DDL, JDBI adapters, `PAUSE_WHILE_DOWN` crash recovery, Testcontainers ITs. |
-| **9** | `128ef171` | [`09-minimal-ssr-console-and-end-to-end-system-tests.md`](09-minimal-ssr-console-and-end-to-end-system-tests.md) | `apps/wilds-server`, `apps/wilds-headless` | Escape-by-default SSR `/play` & `/chronicle` console + `wilds-ui.js` + `FullSpineIntegrationTest` (Browser/Auth/SSE -> Postgres crash recovery -> Headless `WorldHash` parity). |
+Review Focus items are specific and falsifiable (about 5-10 items), and point at the seams where bugs are most likely to hide. See [`../AGENTS.md`](../AGENTS.md) (*Ticket specs & Review Focus*) and [`../prompts/deep-review.md`](../prompts/deep-review.md).
 
 ---
 
-## 4. Testing Pyramid Across the Suite
+## 4. Testing Pyramid
 
-1. **Bytecode & Reflection Architecture Gates (`Ticket 01`, enforced on every build):** Mechanical verification of zero I/O, zero wall-clock, zero unseeded RNG, zero `float`/`double` in `WorldState`, and zero `HashMap`/`HashSet` state fields.
-2. **Deterministic Unit, Property & Fuzz Tests (`Tickets 01–06`):** Equal-`dueAtMs` heap tie-breaking, slot generation recycling, Phase-1 pure non-mutation guarantees, 5,000-command randomized fuzz invariants, and golden `WorldHash` locks.
-3. **Security Negative Gate (`Tickets 06–07`):** All 12 `AuthSecurityGateTest` scenarios (unannotated routes, non-loopback `dev-local` fuse, JWT `alg:none`/`HS256`/tamper/expiry/issuer checks, CSRF rejection, cross-seat spoofing, lateral bot-token escape, instant suspension).
-4. **In-Memory Loopback Protocol ITs (`Ticket 07`):** Sub-second real-socket HTTP + SSE tests verifying `cmdId` idempotency, `409 STALE_STATE` optimistic concurrency, Commit-Before-Mutate store failure rollback, and `?since=cursor` SSE catch-up.
-5. **PostgreSQL Persistence & Crash Recovery ITs (`Ticket 08`):** Singleton Testcontainers `postgres:17-alpine` verifying forward migrations, JIT OIDC user linking, `SQLException` split-brain immunity, and `kill -9` recovery with zero SSE cursor rewind.
-6. **Full-Stack End-to-End Spine IT (`Ticket 09`):** Live `wilds-server` + real PostgreSQL + `dev-local` login + CSRF + SSR `/play` + live SSE + mid-run crash & restart + WAL export replayed through `apps/wilds-headless replay --hash` proving bit-for-bit `WorldHash` identity.
+Phase 0 layers remain in force:
+
+1. **Architecture gates:** bytecode and reflection checks for purity, no-float and no unordered state iteration, on every build.
+2. **Deterministic unit/property tests:** heap ordering, generation recycling, pure validation, randomized fuzz and golden `WorldHash` locks.
+3. **Security gate:** `AuthSecurityGateTest` negative scenarios for routes, JWT, CSRF, seat spoofing and bot tokens.
+4. **Loopback protocol ITs:** real-socket HTTP + SSE for idempotency, `409 STALE_STATE` and cursor catch-up.
+5. **Postgres ITs:** Testcontainers migrations, OIDC linking and crash recovery.
+6. **Full-spine E2E:** live server + Postgres + `/play` + SSE + crash/restart + headless `WorldHash` parity.
+
+Phase 1 adds:
+
+7. **Story tests:** headless scripted scenarios exercising a mechanic end to end.
+8. **Conservation/invariant fuzz:** randomized command streams asserting that items and resources are conserved and invariants hold.
+9. **Golden `WorldHash` + rules-version pin (Ticket 11):** any rule change must re-bless the hash and bump `WILDS_RULES_VERSION`.
+10. **Live bot/human `systest`:** `./systest.sh` suites in the matching `systest/` package, in bot and emulated-human modes.
 
 ---
 
-## 5. Non-Negotiable Definition of Done (Every Ticket)
+## 5. Definition of Done (Every Phase 1 Ticket)
 
-- [ ] `~/.sdkman/candidates/mvnd/current/bin/mvnd test` passes cleanly across the entire reactor with **zero compiler warnings** (`-Xlint:all,-serial -Werror`).
-- [ ] `./systest.sh` passes (Docker: unit + integration + live bot/human suite); bug fixes add a regression test.
-- [ ] Every new `.java` and `pom.xml` file carries the **Apache License 2.0** header (`Copyright 2026 Samuel "Lord-Windy" Brown`).
-- [ ] `PROJECTS.md` is updated whenever a module is added, removed, or promoted from `scaffold` to `in-development`.
-- [ ] Zero gameplay-specific nouns (no Holds, Raids, Skills, Techs, Items, Parties, or Tithe Ships) leak into engine state, wire endpoints, or SQL migrations.
-- [ ] Completed ticket file is moved from `tickets/<NN>-....md` to `tickets/done/<NN>-....md`, committed, pushed, and marked `done` in `st` (`st status <KEY> done`).
+- [ ] `mvnd test` (`~/.sdkman/candidates/mvnd/current/bin/mvnd test`, `-Xlint:all,-serial -Werror`) passes with zero warnings; `./systest.sh` passes.
+- [ ] Apache 2.0 headers on new `.java`/`pom.xml`; `PROJECTS.md` updated for module/feature changes.
+- [ ] Engine IDs stay neutral (`OwnerId`/`ActorId`/`PlaceId`); gameplay nouns are allowed in rule families, state tables keyed by those IDs, events, DTOs, UI and SQL.
+- [ ] Any rule/mechanic change re-blesses the golden hash and bumps `WILDS_RULES_VERSION` (enforced by Ticket `11` once landed).
+- [ ] New gameplay/API behaviour has a live test in the matching `systest/` package; user-visible features have a human-mode test; bug fixes have a regression test.
+- [ ] Client responses go only through `ObservationProjector` DTOs (no `*Row` serialization); purity/no-float gates stay green.
+- [ ] The spec has a `Review Focus` section, and a deep review (`prompts/deep-review.md`) has run before any dependent ticket starts; confirmed `[HIGH]` findings are fixed.
+- [ ] Completed ticket moved to `tickets/done/`, committed, pushed, `st status <KEY> done`.

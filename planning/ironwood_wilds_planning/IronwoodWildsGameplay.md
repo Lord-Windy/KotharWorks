@@ -1,5 +1,7 @@
 # Ironwood Wilds — Game, Worldbuilding & Simulation Brief
 
+*Implementation status: see [Current Status](README.md#current-status) and the [engine noun mapping](README.md#engine-primitives-vs-gameplay-nouns). References to `libs/procgen` describe the planned module (returns in Phase 1 Ticket 14).*
+
 ## 1. High Concept & Worldbuilding
 
 **Ironwood Wilds** is a persistent, online, text-based frontier colonization simulation played over an HTTP + SSE API by humans, scripted bots, and (in Phase 2) evolved genetic agents alike. Its aesthetic is **grounded, rain-soaked low fantasy**—mud, wet slate, hemlock palisades, charcoal pit-kilns, bog-iron, scarred men-at-arms, and half-sunken First-Age barrows beneath ancient trees.

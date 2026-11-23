@@ -5,7 +5,7 @@ digraph MilestoneRoadmap {
         fontname="Liberation Sans",
         fontsize=14,
         fontcolor="#e6edf3",
-        label=<<b>Milestones M0–M5 Execution Roadmap — Ticketed &amp; Review-Gated</b><br/><font point-size="11" color="#8b949e">Every ticket gated by mvnd test (-Werror), zero-float WorldState purity, and WorldHash parity</font>>,
+        label=<<b>Milestones M0–M5 Execution Roadmap — Ticketed &amp; Review-Gated</b><br/><font point-size="11" color="#8b949e">Status as of Phase 0 complete. Every ticket gated by mvnd test (-Werror), zero-float WorldState purity, and WorldHash parity</font>>,
         labelloc=t,
         pad="0.38",
         nodesep="0.38",
@@ -29,20 +29,22 @@ digraph MilestoneRoadmap {
         arrowsize=0.72
     ];
 
-    m0  [fillcolor="#132419", color="#3fb950", label=<<b>M0: Kernel &amp; Hash</b><br/><font point-size="8.5" color="#7ee787">EntityTable · Int LazyGauge<br/>DueEventHeap · wilds-headless</font>>];
-    m1a [fillcolor="#261d14", color="#f0883e", label=<<b>M1a: World &amp; Myth</b><br/><font point-size="8.5" color="#ffa657">Region Passes · Waypoint Map<br/>MythFlags · ASCII Gallery</font>>];
-    m1b [fillcolor="#261d14", color="#f0883e", label=<<b>M1b: Personas &amp; Prose</b><br/><font point-size="8.5" color="#ffa657">NameGrammar · Personas/Journals<br/>glance/look/examine + Gather</font>>];
-    m2  [fillcolor="#132419", color="#3fb950", label=<<b>M2: Economy Loop</b><br/><font point-size="8.5" color="#7ee787">Skills · Tech · Craft/Build<br/>Tithe Ship -&gt; Favor -&gt; Recruit</font>>];
+    m0 [style="solid,filled,rounded", fillcolor="#132419", color="#3fb950", label=<<b>M0: Kernel &amp; Hash</b> <font point-size="8.5">(done)</font><br/><font point-size="8.5" color="#7ee787">EntityTable · Int LazyGauge<br/>DueEventHeap · wilds-headless</font>>];
+    m1a [style="rounded,filled", fillcolor="#21262d", color="#6e7681", label=<<b>M1a: World &amp; Myth</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#ffa657">Region Passes · Waypoint Map<br/>MythFlags · ASCII Gallery</font>>];
+    m1b [style="rounded,filled", fillcolor="#21262d", color="#6e7681", label=<<b>M1b: Personas &amp; Prose</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#ffa657">NameGrammar · Personas/Journals<br/>glance/look/examine + Gather</font>>];
+    m2 [style="rounded,filled", fillcolor="#21262d", color="#6e7681", label=<<b>M2: Economy Loop</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#7ee787">Skills · Tech · Craft/Build<br/>Tithe Ship -&gt; Favor -&gt; Recruit</font>>];
 
-    m3  [fillcolor="#132419", color="#3fb950", label=<<b>M3: Raids &amp; PvM</b><br/><font point-size="8.5" color="#7ee787">3-Ring Hold (0 Raid Deaths)<br/>Lethal Delves · Scars &amp; Cairn</font>>];
-    m4a [fillcolor="#142030", color="#58a6ff", label=<<b>M4a: Auth + HTTP + SSE</b><br/><font point-size="8.5" color="#79c0ff">libs/auth (Dev JWT + Bot Keys)<br/>WorldHost + POST /commands + SSE</font>>];
-    m4b [fillcolor="#261f12", color="#d29922", label=<<b>M4b: /play Multi-Tab</b><br/><font point-size="8.5" color="#f2cc60">Away Digest · Persona/Journal<br/>60fps Local Timers · Doctrines</font>>];
-    m4c [fillcolor="#142030", color="#58a6ff", label=<<b>M4c: Postgres &amp; OIDC</b><br/><font point-size="8.5" color="#79c0ff">auth · wilds_meta · wilds_world<br/>Keycloak OIDC + Replay Parity!</font>>];
+    m3 [style="rounded,filled", fillcolor="#21262d", color="#6e7681", label=<<b>M3: Raids &amp; PvM</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#7ee787">3-Ring Hold (0 Raid Deaths)<br/>Lethal Delves · Scars &amp; Cairn</font>>];
+    m4a [style="solid,filled,rounded", fillcolor="#132419", color="#3fb950", label=<<b>M4a: Auth + HTTP + SSE</b> <font point-size="8.5">(done)</font><br/><font point-size="8.5" color="#79c0ff">libs/auth (Dev JWT + Bot Keys)<br/>WorldHost + POST /commands + SSE</font>>];
+    m4b [style="dashed,filled,rounded", fillcolor="#3a2e10", color="#d29922", penwidth=1.7, label=<<b>M4b: /play Multi-Tab</b> <font point-size="8.5">(partial)</font><br/><font point-size="8.5" color="#f2cc60">Away Digest · Persona/Journal<br/>60fps Local Timers · Doctrines</font>>];
+    m4c [style="dashed,filled,rounded", fillcolor="#3a2e10", color="#d29922", penwidth=1.7, label=<<b>M4c: Postgres &amp; OIDC</b> <font point-size="8.5">(partial)</font><br/><font point-size="8.5" color="#79c0ff">auth · wilds_meta · wilds_world<br/>Keycloak OIDC + Replay Parity!</font>>];
 
-    m5a [fillcolor="#142030", color="#58a6ff", label=<<b>M5a: wilds-bot</b><br/><font point-size="8.5" color="#79c0ff">Doctrine Seam over HTTP/SSE<br/>10-Bot Headless CI Soak</font>>];
-    m5b [fillcolor="#261f12", color="#d29922", label=<<b>M5b: Observatory</b><br/><font point-size="8.5" color="#f2cc60">Public /chronicle + Rumors<br/>Human vs Bot Telemetry</font>>];
-    m5c [fillcolor="#132419", color="#3fb950", label=<<b>M5c: Stone &amp; Ironwood</b><br/><font point-size="8.5" color="#7ee787">Tier III/IV Keeps · True Ironwood<br/>Season Archive &amp; Epitaphs</font>>];
-    m5d [fillcolor="#211830", color="#bc8cff", penwidth=1.7, label=<<b>M5d: Chronicle I + GA</b><br/><font point-size="8.5" color="#d2a8ff">Live VPS Launch + Ready<br/>for SamVM / SamGenAI!</font>>];
+    m5a [style="rounded,filled", fillcolor="#21262d", color="#6e7681", label=<<b>M5a: wilds-bot</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#79c0ff">Doctrine Seam over HTTP/SSE<br/>10-Bot Headless CI Soak</font>>];
+    m5b [style="rounded,filled", fillcolor="#21262d", color="#6e7681", label=<<b>M5b: Observatory</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#f2cc60">Public /chronicle + Rumors<br/>Human vs Bot Telemetry</font>>];
+    m5c [style="rounded,filled", fillcolor="#21262d", color="#6e7681", label=<<b>M5c: Stone &amp; Ironwood</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#7ee787">Tier III/IV Keeps · True Ironwood<br/>Season Archive &amp; Epitaphs</font>>];
+    m5d [style="rounded,filled", fillcolor="#21262d", color="#6e7681", penwidth=1.7, label=<<b>M5d: Chronicle I + GA</b> <font point-size="8.5">(not started)</font><br/><font point-size="8.5" color="#d2a8ff">Live VPS Launch + Ready<br/>for SamVM / SamGenAI!</font>>];
+
+    legend [shape=box, style="rounded,filled", fillcolor="#161b22", color="#30363d", label=<<b>Status legend</b><br/><font point-size="8.5" color="#7ee787">green solid: done</font><br/><font point-size="8.5" color="#f2cc60">amber dashed: partial</font><br/><font point-size="8.5" color="#8b949e">grey: not started</font>>];
 
     m0 -> m1a -> m1b -> m2 -> m3 -> m4a;
     m4a -> m4b -> m5b;

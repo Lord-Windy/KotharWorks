@@ -1,9 +1,13 @@
 # 06 — Prototype Slice, Milestones (`st` Backlog), Review Gates & GA Bridge
 
+> **Phase 0 reality note.** Phase 0 is complete (tickets `01`–`09`), and the code it produced uses neutral engine IDs, not the gameplay nouns this document was first written with. See the [Engine Primitives vs. Gameplay Nouns](README.md#engine-primitives-vs-gameplay-nouns) mapping table and [Current Status](README.md#current-status). Sections 1–2 (Slice 0 scope and the worked transcript) describe the **target** slice and keep the historical names (Household, Character, Site, Hold); read them through the mapping. Sections 3–4 show what exists today and what is planned. Neutral engine IDs are permanent. `OwnerId`, `ActorId` and `PlaceId` (generational `(index, generation)` records in `com.kotharworks.wilds.id`) are baked into the WAL, the wire format, `EventPayloadCodec` and SQL, and are never renamed. Gameplay concepts are layered on as state tables, `RuleRegistry` families and DTO fields keyed by those IDs. `CharacterId`, `HouseholdId`, `SiteId` and `HoldId` are historical names only.
+>
+> `libs/procgen` returns when the first real generator lands (planned: Phase 1 Ticket 14, `NameGrammar` + `PersonaGenerator`), absorbing `WorldSeed`/`SeededRng` from `com.kotharworks.wilds.seed`. Until then the `com.kotharworks.wilds.worldgen` seams (`WorldTopologyBootstrap`, `DescriptionComposer`) are the only procgen surface; the seed primitives live in `libs/wilds` only temporarily.
+
 This document turns the architecture into an **actionable project-management & implementation plan**:
 1. **Slice 0 (*"Hearth, Iron, and the Palisade"*):** Thin horizontal content, 100% permanent vertical spine.
 2. **Worked Session Transcript:** Ending in bit-for-bit `wilds-headless replay --hash` parity.
-3. **Exact Java 25 Package Skeleton:** Zero guesswork on where files belong.
+3. **Java 25 Package Skeleton:** The packages that exist after Phase 0, plus the planned Phase 1 additions.
 4. **Milestones `M0–M5` Execution Roadmap + `st` Ticket Backlog (`KOTHARWORKS`) + Post-Implementation Review Checklist.**
 5. **Phase 2 Bridge (`SamVM` + `SamGenAI`):** How evolved genomes plug straight into `WildsEngine` and `Doctrine`.
 
@@ -53,66 +57,70 @@ Everything exotic (births/lineage, multi-biome roads, full 50-node tech tree) is
 
 ---
 
-## 3. Exact Monorepo Package Skeleton
+## 3. Monorepo Package Skeleton
+
+### 3.1 What exists after Phase 0
 
 ```text
 kotharworks/
 ├── libs/
-│   ├── procgen/                             (Zero external deps, zero I/O)
-│   │   └── com.kotharworks.procgen
-│   │       ├── WorldSeed, SeededRng
-│   │       ├── noise/                       (OpenSimplex2S, PoissonDisc)
-│   │       ├── geography/                   (BiomeType, RegionPassPipeline, WaypointGraph, MythGenerator)
-│   │       ├── delves/                      (LairGraphGenerator)
-│   │       ├── persona/                     (NameGrammar, PersonaGenerator, JournalComposer)
-│   │       └── prose/                       (ProseCatalog, ProseContext, ProseComposer, Grammar)
-│   │
-│   ├── wilds/                               (Depends ONLY on procgen; zero I/O, zero floats, zero Auth)
+│   ├── wilds/                               (Pure deterministic engine: zero I/O, zero floats, zero Auth)
 │   │   └── com.kotharworks.wilds
-│   │       ├── WildsEngine                  (Public facade: apply, advanceTo, advanceToNextEvent, worldHash)
-│   │       ├── id/                          (HouseholdId, CharacterId, HoldId, BuildingId, SiteId, PartyId, RuleId)
-│   │       ├── sim/                         (LazyGauge [integer milli], ScheduledEvent, DueEventHeap, EntityTable)
-│   │       ├── state/                       (WorldState, CharacterRow, CharacterPersona, HoldRow, PartyRow, SiteDeltaRow)
-│   │       ├── rules/                       (RuleRegistry, WILDS_RULES_VERSION, *Def records, SkillFormulaStrategy)
-│   │       ├── command/                     (sealed WorldCommand, CommandDispatcher, CommandReceipt, ErrorCode)
-│   │       ├── action/                      (ActionSpec, ActionMechanic<P> Strategy + Gather/Craft/Build/Travel/Research)
-│   │       ├── combat/                      (HoldDefenseDoctrine, RaidResolver, CombatDoctrine, ExpeditionResolver)
-│   │       ├── economy/                     (TitheShipSystem, FavorLedger)
-│   │       ├── event/                       (sealed WorldEvent, EventOutbox)
-│   │       ├── observe/                     (ObservationProjector -> HouseholdObservation & FoggedRumors)
-│   │       └── replay/                      (WorldHash, SnapshotCodec)
+│   │       ├── WildsEngine                  (Public facade)
+│   │       ├── id/                          (OwnerId, ActorId, PlaceId, RuleId, EntityId, EntityIds)
+│   │       ├── sim/                         (LazyGauge, ScheduledEvent, DueEventHeap, DuePayload, EntityTable)
+│   │       ├── state/                       (WorldState, OwnerRow, ActorRow, PlaceRow, PlaceEdge, TaskSpec, ActiveTask, QueueFailurePolicy)
+│   │       ├── rules/                       (RuleRegistry)
+│   │       ├── command/                     (WorldCommand, Phase1Validator, Phase1Result, ErrorCode)
+│   │       ├── task/                        (TaskMechanic, TaskQueueRunner, TaskContext, WaitMechanic, TravelMechanic)
+│   │       ├── event/                       (WorldEvent, EventOutbox)
+│   │       ├── observe/                     (ObservationProjector, WorldView, OwnerObservation, OwnerDto, ActorDto, PlaceDto)
+│   │       ├── replay/                      (WorldHash, SnapshotCodec, EventPayloadCodec, CommandCodec, JsonCodec, WalHeader, WalRecord)
+│   │       ├── seed/                        (WorldSeed, SeededRng; temporary home, see the procgen decision below)
+│   │       └── worldgen/                    (WorldTopologyBootstrap, DescriptionComposer, MinimalSeedTopologyBootstrap, StubDescriptionComposer)
 │   │
 │   └── auth/                                (Game-agnostic AuthN & HTTP security; depends ONLY on nimbus-jose-jwt)
 │       └── com.kotharworks.auth
-│           ├── principal/                   (UserId UUID, ExternalIdentity, GlobalRole, sealed Principal)
-│           ├── jwt/                         (JwtClaimsVerifier [RS256/ES256/EdDSA], KeycloakRoleClaimExtractor)
-│           ├── oidc/                        (OidcJwksAuthenticator, OidcAuthorizationCodeClient [PKCE S256])
-│           ├── dev/                         (DevLocalJwtIssuer [/dev/login], LoopbackStartupFuse)
-│           ├── token/                       (ApiTokenCodec [SecureRandom + SHA-256], ScopedApiTokenAuthenticator)
-│           └── http/                        (AccessPolicy, AuthenticatedRouter, CookieCodec, CsrfGuard)
+│           ├── principal/                   (UserId, ExternalIdentity, GlobalRole, TokenId, sealed Principal)
+│           ├── jwt/                         (JwtClaimsVerifier, JwtHumanAuthenticator, KeycloakRoleClaimExtractor)
+│           ├── oidc/                        (OidcJwksAuthenticator, OidcAuthorizationCodeClient, OidcConfig; no live OIDC path yet)
+│           ├── dev/                         (DevLocalJwtIssuer, DevPersona, LoopbackStartupFuse)
+│           ├── token/                       (ApiTokenCodec, ScopedApiTokenAuthenticator)
+│           ├── http/                        (AccessPolicy, AuthenticatedRouter, CookieCodec, CsrfGuard, RequestAuthenticator, SessionCookieAuthenticator)
+│           └── spi/                         (IdentityProvisioner, ScopedTokenLookup, ScopedTokenRecord, SessionRecord, SessionStore)
 │
-└── apps/
-    ├── wilds-headless/                      (CLI determinism rig & future GA batch runner)
-    │   └── com.kotharworks.wilds.headless
-    │       └── HeadlessMain                 (subcommands: run, replay --hash, gallery --seed)
-    │
-    ├── wilds-server/                        (Hexagonal online host — Java 25 Virtual Threads)
-    │   └── com.kotharworks.wilds.server
-    │       ├── Main                         (--port, --time-scale, --storage=memory|postgres, --auth-mode=dev-local|oidc)
-    │       ├── domain/                      (WorldHost single-writer mailbox, ChronicleService, WildsAuthorizer)
-    │       ├── ports/                       (ClockPort, AuthStorePort, WorldStorePort, EventBusPort)
-    │       └── adapters/
-    │           ├── http/                    (AuthenticatedRouter: /auth/*, /api/v1/* + POST /api/v1/commands)
-    │           ├── sse/                     (GET /api/v1/stream?since=cursor Virtual-Thread fan-out)
-    │           ├── web/                     (Escape-by-default Html builder + /play, /hold, /expeditions, /chronicle)
-    │           ├── memory/                  (InMemoryAuthStore, InMemoryWorldStore)
-    │           └── postgres/                (SqlMigrator + JDBI adapters for auth, wilds_meta, wilds_world)
-    │
-    └── wilds-bot/                           (Pure HTTP+SSE client — NEVER links libs/wilds!)
-        └── com.kotharworks.wilds.bot
-            ├── BotMain
-            └── Doctrine                     (@FunctionalInterface seam + GreedyFrontierDoctrine v0)
+├── apps/
+│   ├── wilds-headless/                      (CLI determinism rig; no gallery subcommand yet)
+│   │   └── com.kotharworks.wilds.headless
+│   │       └── HeadlessMain, RunCommand, ReplayCommand, InspectCommand
+│   │
+│   └── wilds-server/                        (Hexagonal online host, Java 25 Virtual Threads)
+│       └── com.kotharworks.wilds.server
+│           ├── Main, ServerConfig, WildsServer
+│           ├── domain/                      (WorldHost, SeatAuthorizer, SeatRateLimiter, CommandReceipt, CommandOutcome, ControllerKind, ...)
+│           ├── ports/                       (WorldStorePort, AuthStorePort, EventBusPort, ClockPort, ...)
+│           └── adapters/
+│               ├── clock/                   (ClockPump)
+│               ├── http/                    (AuthRoutes, CommandRoutes, QueryRoutes, SeatRoutes, ...)
+│               ├── sse/                     (SseRoutes)
+│               ├── web/                     (PlayRoutes, ChronicleRoutes, AssetRoutes, Html)
+│               ├── memory/                  (InMemoryAuthStore, InMemoryWorldStore, InMemoryEventBus)
+│               └── postgres/                (SqlMigrator, PostgresAuthStore, PostgresWorldStore)
+│
+└── systest/                                 (Opt-in `-Psystest` live suites, run by `./systest.sh`)
+    └── com.kotharworks.systest
+        └── bot/ headless/ human/ mixed/ regression/ restart/ security/ smoke/ support/
 ```
+
+Not present yet: `libs/procgen`, `apps/wilds-bot`, `deploy/` (no Keycloak compose).
+
+### 3.2 Planned Phase 1 additions (not built)
+
+- **Decision (procgen).** `libs/procgen` returns when the first real generator lands (planned: Phase 1 Ticket 14, `NameGrammar` + `PersonaGenerator`), absorbing `WorldSeed`/`SeededRng` from `com.kotharworks.wilds.seed`. Until then the `com.kotharworks.wilds.worldgen` seams (`WorldTopologyBootstrap`, `DescriptionComposer`) are the only procgen surface; the seed primitives live in `libs/wilds` only temporarily.
+- **Decision (IDs).** Neutral engine IDs are permanent. `OwnerId`, `ActorId` and `PlaceId` (generational `(index, generation)` records in `com.kotharworks.wilds.id`) are baked into the WAL, the wire format, `EventPayloadCodec` and SQL, and are never renamed. Gameplay concepts are layered on as state tables, `RuleRegistry` families and DTO fields keyed by those IDs. `CharacterId`, `HouseholdId`, `SiteId` and `HoldId` are historical names only.
+- `libs/procgen`: `persona/` (`NameGrammar`, `PersonaGenerator`, `JournalComposer`; Ticket 14), `geography/` (Ticket 15), `prose/` (Ticket 16), `delves/` (`LairGraphGenerator`; Ticket 22).
+- `libs/wilds`: `economy/` (Ticket 20), `combat/` (Tickets 21–23), plus item/stockpile state tables keyed by `OwnerId`/`ActorId` (Tickets 12–13).
+- `apps/wilds-bot`: pure HTTP+SSE client with the `Doctrine` seam (Ticket 24); never links `libs/wilds`.
 
 ---
 
@@ -124,47 +132,57 @@ kotharworks/
 
 ### 4.1 Milestone Breakdown
 
-| Milestone | Scope | Mechanically Verified Acceptance Gate |
-| :---: | :--- | :--- |
-| **M0: Deterministic Kernel & Headless Rig** | Generational IDs, `EntityTable`, integer `LazyGauge`, `DueEventHeap` (+ `heapTicket` cancel), `WorldCommand` switch, `WorldHash`, reflection purity/no-float arch test, `apps/wilds-headless` scaffold. | Equal-`dueAtMs` tiebreak test; purity/no-float reflection test green; double-run & snapshot-roundtrip `WorldHash` equality; `-DblessGolden=true` harness works. |
-| **M1: Seeded World, Personas & Prose (`M1a–M1b`)** | **M1a:** `SeededRng`, `OpenSimplex2S`, `PoissonDisc`, `RegionPassPipeline` + `WaypointGraph`, `MythGenerator`, `headless gallery --seed`.<br>**M1b:** `NameGrammar`, `PersonaGenerator`, `JournalComposer`, `ProseComposer` (`glance`/`look`/`examine`), plus `Travel`/`Gather`/`Deposit` with fail-soft queues. | `headless gallery` prints coherent ASCII map; 0-apostrophe name tests; scripted story test: Mara & Pell gather, hit `DEPLETED`, fail-soft walk home, and emit distinct temperament-voiced Journal lines! |
-| **M2: Skills, Tech, Hold & Tithe Economy** | 5 Skills + XP curve, `RuleRegistry` (`WILDS_RULES_VERSION`), `Craft`/`Construct`/`Research`, `Signal Beacon` staging, `TitheShipSystem` heartbeat -> Favor -> `RecruitSettler` (mints new `CharacterPersona`). | 10k-command randomized invariant fuzz (no negative items, conservation holds); headless story test: bare camp -> smelt iron -> ship crate -> recruit 4th settler. |
-| **M3: Plannable Violence (Raids & PvM)** | 3-Ring Hold math (`Vault` protected floor), foreshadowed Raid rumor + non-lethal `RaidResolver`, Party lazy muster + lethal `ExpeditionResolver`, scars, Memorial Cairn epitaphs. | Combat golden test; hard property test proving **0 defender deaths across 1,000 Hold Raids** and `0` vaulted item losses; lethal PvM test verifying Cairn epitaph & survivor grief mark. |
-| **M4: Modular Auth, Online Server, UI & Postgres (`M4a–M4c`)** | **M4a:** `libs/auth` (`Principal`, `JwtClaimsVerifier`, loopback-fused `DevLocalJwtIssuer`, `iw_bot_...` keys, `AuthenticatedRouter` + `CsrfGuard`, `AuthSecurityGateTest`) + `WildsAuthorizer` + `WorldHost` mailbox (Commit-Before-Mutate + `CLOCK_ADVANCE`) + REST `/api/v1/*` + `POST /api/v1/commands` (`cmdId` + `expectedRevision`) + SSE `/api/v1/stream` (in-memory stores).<br>**M4b:** SSR `/play` Multi-Tab UI (`1–9`/`H`/`E`), `expectedRevision` ETag forms, **"While You Were Away"** digest, Persona/Journal cards, 60fps local timers.<br>**M4c:** Keycloak OIDC (`OidcJwksAuthenticator` + PKCE + `deploy/keycloak/compose.yaml`), `SqlMigrator` + 3-schema Postgres (`auth`, `wilds_meta`, 100% append-only `wilds_world` — zero passwords, zero entity-sync `UPDATE`s!), `kill -9` WAL+Snapshot recovery. | All 12 `AuthSecurityGateTest` checks green; duplicate `cmdId` returns cached receipt; stale `expectedRevision` returns `409 STALE_STATE`; simulated `SQLException` on `command_wal` insert leaves `WorldState` untouched; passive SSE events followed by `kill -9` + restart experience **0 cursor rewind** and match `wilds-headless replay` `WorldHash`. |
-| **M5: Reference Bot, Observatory & Launch (`M5a–M5d`)** | **M5a:** `apps/wilds-bot` (`GreedyFrontierDoctrine` over HTTP+SSE only) + 10-bot CI soak test.<br>**M5b:** Public `/chronicle` Observatory (SVG Frontier Map + `HUMAN` vs `SCRIPT_BOT` telemetry).<br>**M5c:** Tier III/IV Stone & True Ironwood content pass + Season Archive CLI.<br>**M5d:** VPS deploy & **Chronicle I** live! | `wilds-bot` plays 3 simulated days unattended at `20×` speed (achieves bloomery + palisade + shipment + recruit, 0 raid deaths); live session WAL replays in `wilds-headless` to identical `WorldHash`. |
+> Execution order so far was M0 -> M4 -> (M1–M3): the server spine landed before gameplay. Scope text below keeps the original gameplay nouns; read it through the [mapping table](README.md#engine-primitives-vs-gameplay-nouns) and see [Current Status](README.md#current-status).
 
-### 4.2 Initial `st` Ticket Decomposition (`--project KOTHARWORKS`)
-When kicking off implementation, we cut tickets strictly in dependency order under `tech-procgen`, `tech-auth`, and `tech-wilds`:
+| Milestone | Status | Scope | Mechanically Verified Acceptance Gate |
+| :---: | :---: | :--- | :--- |
+| **M0: Deterministic Kernel & Headless Rig** | **Done** (tickets `01`–`05`) | Generational IDs, `EntityTable`, integer `LazyGauge`, `DueEventHeap` (+ `heapTicket` cancel), `WorldCommand` switch, `WorldHash`, reflection purity/no-float arch test, `apps/wilds-headless` scaffold. | Equal-`dueAtMs` tiebreak test; purity/no-float reflection test green; double-run & snapshot-roundtrip `WorldHash` equality; `-DblessGolden=true` harness works. |
+| **M1: Seeded World, Personas & Prose (`M1a–M1b`)** | Not started | **M1a:** `SeededRng`, `OpenSimplex2S`, `PoissonDisc`, `RegionPassPipeline` + `WaypointGraph`, `MythGenerator`, `headless gallery --seed`.<br>**M1b:** `NameGrammar`, `PersonaGenerator`, `JournalComposer`, `ProseComposer` (`glance`/`look`/`examine`), plus `Travel`/`Gather`/`Deposit` with fail-soft queues. | `headless gallery` prints coherent ASCII map; 0-apostrophe name tests; scripted story test: Mara & Pell gather, hit `DEPLETED`, fail-soft walk home, and emit distinct temperament-voiced Journal lines! |
+| **M2: Skills, Tech, Hold & Tithe Economy** | Not started | 5 Skills + XP curve, `RuleRegistry` (`WILDS_RULES_VERSION`), `Craft`/`Construct`/`Research`, `Signal Beacon` staging, `TitheShipSystem` heartbeat -> Favor -> `RecruitSettler` (mints new `CharacterPersona`). | 10k-command randomized invariant fuzz (no negative items, conservation holds); headless story test: bare camp -> smelt iron -> ship crate -> recruit 4th settler. |
+| **M3: Plannable Violence (Raids & PvM)** | Not started | 3-Ring Hold math (`Vault` protected floor), foreshadowed Raid rumor + non-lethal `RaidResolver`, Party lazy muster + lethal `ExpeditionResolver`, scars, Memorial Cairn epitaphs. | Combat golden test; hard property test proving **0 defender deaths across 1,000 Hold Raids** and `0` vaulted item losses; lethal PvM test verifying Cairn epitaph & survivor grief mark. |
+| **M4: Modular Auth, Online Server, UI & Postgres (`M4a–M4c`)** | **M4a** Done (`06`, `07`)<br>**M4b** Partially done (`09`): minimal SSR `/play` console (seat claim and multi-seat switcher, Wait/Travel queueing) and `/chronicle`; no multi-tab deck, persona/journal or "While You Were Away" digest yet<br>**M4c** Partially done (`08`): Postgres + crash recovery done; Keycloak `deploy/` compose and live OIDC path not done | **M4a:** `libs/auth` (`Principal`, `JwtClaimsVerifier`, loopback-fused `DevLocalJwtIssuer`, `iw_bot_...` keys, `AuthenticatedRouter` + `CsrfGuard`, `AuthSecurityGateTest`) + `SeatAuthorizer` + `WorldHost` mailbox (Commit-Before-Mutate + `CLOCK_ADVANCE`) + REST `/api/v1/*` + `POST /api/v1/commands` (`cmdId` + `expectedRevision`) + SSE `/api/v1/stream` (in-memory stores).<br>**M4b:** SSR `/play` Multi-Tab UI (`1–9`/`H`/`E`), `expectedRevision` ETag forms, **"While You Were Away"** digest, Persona/Journal cards, 60fps local timers.<br>**M4c:** Keycloak OIDC (`OidcJwksAuthenticator` + PKCE + `deploy/keycloak/compose.yaml`), `SqlMigrator` + 3-schema Postgres (`auth`, `wilds_meta`, 100% append-only `wilds_world` — zero passwords, zero entity-sync `UPDATE`s!), `kill -9` WAL+Snapshot recovery. | The `AuthSecurityGateTest` suites green; duplicate `cmdId` returns cached receipt; stale `expectedRevision` returns `409 STALE_STATE`; simulated `SQLException` on `command_wal` insert leaves `WorldState` untouched; passive SSE events followed by `kill -9` + restart experience **0 cursor rewind** and match `wilds-headless replay` `WorldHash`. |
+| **M5: Reference Bot, Observatory & Launch (`M5a–M5d`)** | Not started (`M5a`–`M5d`) | **M5a:** `apps/wilds-bot` (`GreedyFrontierDoctrine` over HTTP+SSE only) + 10-bot CI soak test.<br>**M5b:** Public `/chronicle` Observatory (SVG Frontier Map + `HUMAN` vs `SCRIPT_BOT` telemetry).<br>**M5c:** Tier III/IV Stone & True Ironwood content pass + Season Archive CLI.<br>**M5d:** VPS deploy & **Chronicle I** live! | `wilds-bot` plays 3 simulated days unattended at `20×` speed (achieves bloomery + palisade + shipment + recruit, 0 raid deaths); live session WAL replays in `wilds-headless` to identical `WorldHash`. |
 
-1. `tech-wilds` — **M0.1:** Reflection architecture gate in `libs/wilds` (ban I/O, wall-clock, unseeded RNG, `libs/auth`, and `float`/`double` in `WorldState`).
-2. `tech-wilds` — **M0.2:** Generational typed IDs (`index, generation`), dense `EntityTable`, integer `LazyGauge`, and `DueEventHeap` with `heapTicket` O(1) cancel.
-3. `tech-wilds` — **M0.3:** `WorldState` skeleton (`revision` counters on `CharacterRow`/`HoldRow`), pure `validatePhase1` (`409 STALE_STATE` on `expectedRevision` mismatch) + `sealed WorldCommand` applier, `EventOutbox`, `WorldHash` + Snapshot JSON codec, and `-DblessGolden` harness.
-4. `tech-wilds` — **M0.4:** Scaffold `apps/wilds-headless` module (`run` and `replay --hash` CLI subcommands).
-5. `tech-procgen` — **M1.1:** `WorldSeed` FNV-1a domain streams, integer-first `SeededRng`, `OpenSimplex2S`, and `PoissonDisc`.
-6. `tech-procgen` — **M1.2:** `RegionPassPipeline` (elevation/hydrology/biomes/seams), `WaypointGraph` (with `≤2` Ironwood cap), `MythGenerator`, and `headless gallery` ASCII renderer.
-7. `tech-procgen` — **M1.3:** `NameGrammar` (zero-apostrophe low-fantasy), `PersonaGenerator` (Origin/Temperament/Quirk/LifeMarks), and `JournalComposer`.
-8. `tech-procgen` — **M1.4:** Compile-time `ProseCatalog`, `Grammar`, and `ProseComposer` (`glance`/`look`/`examine` + dynamic `ProseContext`).
-9. `tech-wilds` — **M1.5:** Wire `procgen` regions/personas/journals into `libs/wilds` + implement `ActionMechanic` two-phase runner (`Travel`, `Gather`, `Deposit`, fail-soft `ADVANCE`/`HALT`).
-10. `tech-wilds` — **M2.1:** `RuleRegistry` (`WILDS_RULES_VERSION`), 5 Skills + `XpCurve`, `Craft`/`Construct`/`Research` mechanics.
-11. `tech-wilds` — **M2.2:** `Signal Beacon` staging, `TitheShipSystem` heartbeat, `FavorLedger`, and `RecruitSettler`.
-12. `tech-wilds` — **M3.1:** 3-Ring Hold fortification/Vault math, foreshadowed Raid rumor, and non-lethal `RaidResolver`.
-13. `tech-wilds` — **M3.2:** Lazy Party muster, `LairGraphGenerator` wiring, lethal `ExpeditionResolver`, scars, and Memorial Cairn epitaphs.
-14. `tech-auth` — **M4.0:** Scaffold `libs/auth` (`sealed Principal`, Nimbus `JwtClaimsVerifier`, loopback-fused `DevLocalJwtIssuer`, `ScopedApiTokenAuthenticator`, deny-by-default `AuthenticatedRouter` + `CsrfGuard`, and 12-case `AuthSecurityGateTest`).
-15. `tech-wilds` — **M4.1:** `WildsAuthorizer`, `WorldHost` single-writer mailbox (Commit-Before-Mutate + `CLOCK_ADVANCE`), `ObservationProjector` (fog + public rumors), in-memory stores, REST `/api/v1/*` + synchronous `POST /api/v1/commands` (`cmdId` + `expectedRevision`) + SSE `/api/v1/stream`.
-16. `tech-wilds` — **M4.2:** SSR `/play`, `/hold`, and `/expeditions` Web UI (`Html` builder + ~250 LOC `wilds-ui.js` with `expectedRevision` forms + **"While You Were Away"** + Persona/Journal panes).
-17. `tech-wilds` — **M4.3:** Keycloak OIDC adapter (`OidcJwksAuthenticator` + PKCE + `deploy/keycloak/compose.yaml`), `SqlMigrator` + JDBI Postgres adapters (`auth`, `wilds_meta`, append-only `wilds_world`), and `SQLException` + `kill -9` zero-rewind WAL+Snapshot recovery tests.
-18. `tech-wilds` — **M5.1:** Scaffold `apps/wilds-bot` (`Doctrine` strategy seam + `GreedyFrontierDoctrine`) + multi-bot soak integration test.
-19. `tech-wilds` — **M5.2:** Public `/chronicle` Observatory UI (Frontier SVG map + `HUMAN`/`SCRIPT_BOT`/`GENETIC_AGENT` telemetry).
+### 4.2 Ticket Backlog (`--project KOTHARWORKS`)
+The original 19-item decomposition is superseded. The authoritative, current index (build order, dependency graph, ticket template and Definition of Done) is [`tickets/README.md`](../../tickets/README.md); the closed Phase 0 index is [`tickets/done/PHASE0-README.md`](../../tickets/done/PHASE0-README.md). Mapping to milestones:
+
+| # | Ticket | Milestone | Status |
+| :---: | :--- | :---: | :---: |
+| 01 | [Workspace cleanup, `WorldSeed`/`SeededRng`, bytecode purity gate](../../tickets/done/01-workspace-cleanup-and-determinism-gates.md) | M0 (also seeds M1 prep) | Done |
+| 02 | [Generational IDs, `EntityTable`, `LazyGauge`, `DueEventHeap`](../../tickets/done/02-generational-tables-gauges-and-event-heap.md) | M0 | Done |
+| 03 | [`WorldState`, `RuleRegistry`, procgen seams, `JsonCodec`, `WorldHash`](../../tickets/done/03-neutral-world-state-rules-and-procgen-seams.md) | M0 | Done |
+| 04 | [Commands, Wait/Travel task queues, `EventOutbox`, `ObservationProjector`, golden replay](../../tickets/done/04-commands-task-queues-events-and-projections.md) | M0 | Done |
+| 05 | [Headless CLI + WAL replay](../../tickets/done/05-headless-cli-and-wal-replay-rig.md) | M0 | Done |
+| 06 | [`libs/auth` + `AuthSecurityGateTest`](../../tickets/done/06-modular-auth-and-http-security-library.md) | M4a | Done |
+| 07 | [`WorldHost`, `SeatAuthorizer`, REST + SSE in-memory](../../tickets/done/07-server-worldhost-rest-and-sse-inmemory.md) | M4a | Done |
+| 08 | [Postgres migrator, JDBI, crash recovery](../../tickets/done/08-postgres-schemas-migrator-and-jdbi-adapters.md) | M4c | Done |
+| 09 | [Minimal SSR `/play` + `/chronicle` console and full-spine E2E](../../tickets/done/09-minimal-ssr-console-and-end-to-end-system-tests.md) | M4b (partial) + E2E | Done |
+| 10 | Planning reconciliation & Phase 1 index (`tickets/done/10-planning-reconciliation-and-phase1-index.md`) | — | Done |
+| 11 | [Rules-version gate: `RulesFingerprint` pin, clean boot refusal & world rollover](../../tickets/11-rules-version-gate-and-world-rollover.md) | M2 prep | Planned |
+| 12 | Items, stockpiles, carry & `Deposit` | M1b | Planned |
+| 13 | Resource nodes, `Gather` ×N & fail-soft `DEPLETED` | M1b | Planned |
+| 14 | Restore `libs/procgen`: `NameGrammar`, `PersonaGenerator`, 3-settler charter | M1b | Planned |
+| 15 | Bounded 3×3 region geography, `WaypointGraph` & `headless gallery` | M1a | Planned |
+| 16 | `ProseComposer` (`glance`/`look`/`examine`) & `JournalComposer` | M1b | Planned |
+| 17 | `/play` multi-tab Character Deck (persona, journal, stockpile, queue builder) | M4b | Planned |
+| 18 | Skills, XP curve & stamina modifiers | M2 | Planned |
+| 19 | Craft, Research & Construct (4 techs, 5 buildings) | M2 | Planned |
+| 20 | Tithe Ship heartbeat, Favor & `RecruitSettler` | M2 gate | Planned |
+| 21 | Hold rings, raid rumor & non-lethal `RaidResolver` | M3 | Planned |
+| 22 | Parties, `LairGraphGenerator`, lazy muster & `CombatDoctrine` | M3 | Planned |
+| 23 | `ExpeditionResolver`, permadeath, scars & Memorial Cairn | M3 gate | Planned |
+| 24 | `apps/wilds-bot` `GreedyFrontierDoctrine` & 3-day soak | M5a gate | Planned |
+| infra | Keycloak `deploy/` compose + live OIDC `systest` path | M4c | Planned |
 
 ### 4.3 Post-Implementation Code Review Checklist (Our Gate on Every Ticket)
-Every ticket completed by the coding agent is reviewed against seven non-negotiable checks before closing:
-1. **`mvnd test` passes with zero warnings (`-Werror`)** and every new `.java` / `pom.xml` file carries the **Apache 2.0 Samuel "Lord-Windy" Brown header**.
-2. **Purity & Zero-Float Check:** Zero `float`/`double`, `HashMap` iteration, wall-clock calls, `libs/auth` imports, or I/O inside `libs/procgen` or `libs/wilds` state/mutation paths.
-3. **No Cross-Entity Object Pointers:** Entities hold only generational value IDs (`CharacterId`, `HoldId`, `SiteId`).
+Every ticket completed by the coding agent is reviewed against seven non-negotiable checks before closing. The per-ticket gate in [`tickets/README.md`](../../tickets/README.md) (its Definition of Done) is authoritative; this list is the planning-level summary.
+1. **`mvnd test` passes with zero warnings (`-Werror`) and `./systest.sh` passes** (the one-command definition-of-done gate: Maven suite plus the live bot/human `systest/` suites in Docker), and every new `.java` / `pom.xml` file carries the **Apache 2.0 Samuel "Lord-Windy" Brown header**.
+2. **Purity & Zero-Float Check:** Zero `float`/`double`, `HashMap` iteration, wall-clock calls, `libs/auth` imports, or I/O inside `libs/procgen` (once the module returns) or `libs/wilds` state/mutation paths.
+3. **No Cross-Entity Object Pointers:** Entities hold only generational value IDs (`ActorId`, `OwnerId`, `PlaceId`).
 4. **Single-Writer & Commit-Before-Mutate Discipline (Server/DB Tickets):** Pure read-only Phase-1 validation (including `expectedRevision` -> `409 STALE_STATE`) runs inside `WorldHost`; `command_wal` (`WorldCommand` and `CLOCK_ADVANCE`) commits synchronously **before** `WorldState` mutates or SSE emits; `wilds_world` contains zero mutable entity-sync `UPDATE` tables.
 5. **Fog Security:** Client responses come exclusively through `ObservationProjector` DTOs, never serializing internal `*Row` records.
-6. **Determinism Proof:** Any rule/mechanic change updates or adds a deterministic story/golden hash test and bumps `WILDS_RULES_VERSION` if intentional.
-7. **AuthN/AuthZ & Crypto Safety (Auth/Server Tickets):** Zero password storage or hand-rolled JWT crypto (`nimbus-jose-jwt` asymmetric allowlist only); every route declares an explicit `AccessPolicy`; `dev-local` aborts boot on non-loopback addresses; all 12 `AuthSecurityGateTest` negative checks stay green.
+6. **Determinism Proof:** Any rule/mechanic change updates or adds a deterministic story/golden hash test and bumps `WILDS_RULES_VERSION` if intentional. Once Ticket [`11`](../../tickets/11-rules-version-gate-and-world-rollover.md) lands, the pin is mechanical ("…bumps `WILDS_RULES_VERSION`; `RulesVersionPinTest` enforces this"); until then the test does not exist and this is a review-time check.
+7. **AuthN/AuthZ & Crypto Safety (Auth/Server Tickets):** Zero password storage or hand-rolled JWT crypto (`nimbus-jose-jwt` asymmetric allowlist only); every route declares an explicit `AccessPolicy`; `dev-local` aborts boot on non-loopback addresses; the `AuthSecurityGateTest` negative checks stay green.
 
 ---
 
