@@ -2,7 +2,7 @@
 
 > **Phase 0 reality note.** The three schemas (`auth`, `wilds_meta`, `wilds_world`) are implemented with `SqlMigrator`, JDBI adapters and crash recovery ([Ticket 08](../../tickets/done/08-postgres-schemas-migrator-and-jdbi-adapters.md)); the account and seat paths are used by the server ([Ticket 07](../../tickets/done/07-server-worldhost-rest-and-sse-inmemory.md)). Gameplay-bearing tables shown below (houses, chronicle standings, doctrine blueprints, battle chronicles) are planned. See the [engine noun mapping](README.md#engine-primitives-vs-gameplay-nouns) and [Current Status](README.md#current-status).
 >
-> **Migration files are authoritative.** The DDL below is the original design; `apps/wilds-server/src/main/resources/db/V001__auth.sql`, `V002__wilds_meta.sql`, `V003__wilds_world.sql` and `V004__worlds_rules_fingerprint.sql` are the truth. Material differences:
+> **Migration files are authoritative.** The DDL below is the original design; the `apps/wilds-server/src/main/resources/db/V*.sql` migration files are the truth, whatever their current count. Material differences (as of Phase 0 plus Ticket 11's `V004`):
 >
 > - `auth.users`: `max_seats_override` replaces `max_houses_override`.
 > - `auth.web_sessions`: no `active_house_id` column.
@@ -250,7 +250,7 @@ CREATE TABLE wilds_world.battle_chronicles (
 ## 5. Migrations & Both Restart Lifecycles
 
 ### Zero-Framework Forward SQL Migrator (`~100 LOC`)
-Plain SQL files live in `apps/wilds-server/src/main/resources/db/V001__auth.sql`, `V002__wilds_meta.sql`, `V003__wilds_world.sql`, `V004__worlds_rules_fingerprint.sql`. On boot, a tiny JDBC runner checks `public.schema_migrations`, applies any unapplied `V###` scripts inside a transaction, and refuses to boot if an unknown future migration version is present. No Flyway or Liquibase dependencies required.
+Plain SQL files live in `apps/wilds-server/src/main/resources/db/` as `V###__name.sql` (starting with `V001__auth.sql`). On boot, a tiny JDBC runner checks `public.schema_migrations`, applies any unapplied `V###` scripts inside a transaction, and refuses to boot if an unknown future migration version is present. No Flyway or Liquibase dependencies required.
 
 **Version gate ordering ([Ticket 11](../../tickets/done/11-rules-version-gate-and-world-rollover.md)).** In the default `--on-version-mismatch=refuse` mode the server first runs a read-only pre-migration gate (`PreMigrationVersionGate`: one `READ ONLY` transaction, always rolled back, no `schema_migrations` access, no advisory lock) that compares the stored `ACTIVE` world's seed, rules/engine/protocol versions and, when the column exists, `rules_fingerprint` against the running binary. A mismatch refuses boot (exit `3`) before any pending migration is applied, so a refused boot writes nothing to any schema and the binary matching the stored world can still boot the database. Only then does the migrator run, followed by the authoritative, advisory-locked `ensureActiveWorld` check. In `archive` mode the pre-check is skipped: migrations run first, then `ensureActiveWorld` archives the mismatched world.
 

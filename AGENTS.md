@@ -101,10 +101,12 @@ free of framework bloat:
      (policies, doctrines, ports).
 3. **Flat Entity Tables + Typed IDs (No Object-Reference Webs):**
    - Inside simulation state, store entities in flat indexed collections/maps
-     addressed by value IDs (e.g.
-     `record CharacterId(int index, int generation)` or monotonic `long` IDs) —
-     **never** hold mutable object references across entities (`Character`
-     holding a direct `Party` or `Site` reference). This keeps state trivially
+     addressed by value IDs (e.g. the neutral engine IDs
+     `record ActorId(int index, int generation)`, `OwnerId`, `PlaceId`, or
+     monotonic `long` IDs) — **never** hold mutable object references across
+     entities (an actor holding a direct reference to its owner or place).
+     Gameplay nouns are tables/rule families keyed by these IDs, not new ID
+     types (planning D1). This keeps state trivially
      serializable, deterministic, and immune to aliasing bugs.
 4. **Pure Simulation Libraries (`libs/*`):**
    - Simulation and procgen libraries must remain **100% pure and
