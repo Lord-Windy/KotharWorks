@@ -29,6 +29,7 @@ import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.replay.CommandCodec;
 import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
+import com.kotharworks.wilds.server.adapters.http.ApiJson;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
@@ -41,11 +42,18 @@ import org.jdbi.v3.core.statement.UnableToExecuteStatementException;
 /**
  * Durable {@link WorldStorePort} over PostgreSQL via the JDBI3 Handle API.
  * {@code wilds_world} is 100% append-only: the WAL, the event log, and the
- * checkpoints only ever receive {@code INSERT}s — event backfill is idempotent
- * on {@code (world_id, event_cursor)} via {@code ON CONFLICT DO NOTHING}, and
- * checkpoint retention keeps the latest ten rows per world.
+ * checkpoints only ever receive {@code INSERT}s — {@code wal_seq} is allocated
+ * densely per {@code world_id} ({@code 1..N}, immune to rolled-back inserts and
+ * sequence-cache gaps), event backfill is idempotent on
+ * {@code (world_id, event_cursor)} via {@code ON CONFLICT DO NOTHING},
+ * {@link #exportWalJsonl} streams via a server-side cursor in bounded memory,
+ * and checkpoint retention keeps the latest ten rows per world.
  */
 public final class PostgresWorldStore implements WorldStorePort {
+
+    private static final long WORLD_META_LOCK_KEY = 0x6B77_574D_4554_4101L;
+    private static final int WAL_LOCK_NAMESPACE = 0x6B77_5741;
+    private static final int WAL_STREAM_FETCH_SIZE = 1_000;
 
     private final Jdbi jdbi;
 
@@ -59,17 +67,7 @@ public final class PostgresWorldStore implements WorldStorePort {
     public SeatRecord createSeat(UserId owner, String seatName, ControllerKind kind) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(kind, "kind");
-        String trimmed = seatName == null ? "" : seatName.trim();
-        if (trimmed.length() < 3 || trimmed.length() > 40) {
-            throw new IllegalArgumentException(
-                    "seat name must be 3..40 characters after trim: \"" + trimmed + "\"");
-        }
-        for (int i = 0; i < trimmed.length(); i++) {
-            if (Character.isISOControl(trimmed.charAt(i))) {
-                throw new IllegalArgumentException(
-                        "seat name must not contain ISO control characters");
-            }
-        }
+        String trimmed = ApiJson.validatePrintable(seatName, "seatName", 3, 40);
         long seatId;
         try {
             seatId = jdbi.withHandle(handle -> handle.select(
@@ -85,6 +83,9 @@ public final class PostgresWorldStore implements WorldStorePort {
             }
             if ("23503".equals(state)) {
                 throw new IllegalArgumentException("unknown owner: " + owner.value());
+            }
+            if ("23514".equals(state)) {
+                throw new IllegalArgumentException("invalid seat definition: \"" + trimmed + "\"");
             }
             throw failure;
         }
@@ -132,6 +133,7 @@ public final class PostgresWorldStore implements WorldStorePort {
     public WorldRecord ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
             int protocolVersion) {
         return jdbi.inTransaction(handle -> {
+            handle.execute("SELECT pg_advisory_xact_lock(?)", WORLD_META_LOCK_KEY);
             Optional<WorldRecord> active = selectActiveWorld(handle);
             if (active.isPresent()) {
                 WorldRecord world = active.get();
@@ -203,25 +205,40 @@ public final class PostgresWorldStore implements WorldStorePort {
 
     @Override
     public long appendClockAdvance(int worldId, long admittedMs, Long worldHash) {
-        return jdbi.withHandle(handle -> handle.select(
-                        "INSERT INTO wilds_world.command_wal (world_id, admitted_ms, cmd_type,"
-                                + " payload_json, world_hash) VALUES (?, ?, 'CLOCK_ADVANCE',"
-                                + " '{}'::jsonb, ?) RETURNING wal_seq",
-                        worldId, admittedMs, worldHash)
-                .mapTo(long.class).one());
+        return jdbi.inTransaction(handle -> {
+            handle.execute("SELECT pg_advisory_xact_lock(?, ?)", WAL_LOCK_NAMESPACE, worldId);
+            return handle.select(
+                            "INSERT INTO wilds_world.command_wal (world_id, wal_seq, admitted_ms,"
+                                    + " cmd_type, payload_json, world_hash)"
+                                    + " VALUES (?, COALESCE((SELECT max(wal_seq)"
+                                    + " FROM wilds_world.command_wal WHERE world_id = ?), 0) + 1,"
+                                    + " ?, 'CLOCK_ADVANCE', '{}'::jsonb, ?) RETURNING wal_seq",
+                            worldId, worldId, admittedMs, worldHash)
+                    .mapTo(long.class).one();
+        });
     }
 
     @Override
     public long appendCommand(int worldId, long admittedMs, long seatId, UUID cmdId,
             WorldCommand cmd, Long worldHash) {
+        Objects.requireNonNull(cmdId, "cmdId");
+        Objects.requireNonNull(cmd, "cmd");
+        String type = cmdType(cmd);
+        String encoded = CommandCodec.encode(cmd);
         try {
-            return jdbi.withHandle(handle -> handle.select(
-                            "INSERT INTO wilds_world.command_wal (world_id, admitted_ms, seat_id,"
-                                    + " cmd_id, cmd_type, payload_json, world_hash)"
-                                    + " VALUES (?, ?, ?, ?, ?, ?::jsonb, ?) RETURNING wal_seq",
-                            worldId, admittedMs, seatId, cmdId, cmdType(cmd),
-                            CommandCodec.encode(cmd), worldHash)
-                    .mapTo(long.class).one());
+            return jdbi.inTransaction(handle -> {
+                handle.execute("SELECT pg_advisory_xact_lock(?, ?)", WAL_LOCK_NAMESPACE, worldId);
+                return handle.select(
+                                "INSERT INTO wilds_world.command_wal (world_id, wal_seq,"
+                                        + " admitted_ms, seat_id, cmd_id, cmd_type,"
+                                        + " payload_json, world_hash)"
+                                        + " VALUES (?, COALESCE((SELECT max(wal_seq)"
+                                        + " FROM wilds_world.command_wal WHERE world_id = ?), 0)"
+                                        + " + 1, ?, ?, ?, ?, ?::jsonb, ?) RETURNING wal_seq",
+                                worldId, worldId, admittedMs, seatId, cmdId, type, encoded,
+                                worldHash)
+                        .mapTo(long.class).one();
+            });
         } catch (UnableToExecuteStatementException failure) {
             if ("23505".equals(sqlState(failure))) {
                 throw new IllegalStateException("duplicate cmdId in WAL: " + cmdId);
@@ -245,15 +262,28 @@ public final class PostgresWorldStore implements WorldStorePort {
 
     @Override
     public void appendEvents(int worldId, List<StoredWorldEvent> events) {
-        jdbi.useHandle(handle -> {
-            for (StoredWorldEvent event : events) {
-                handle.execute("INSERT INTO wilds_world.world_events (world_id, event_cursor,"
-                                + " occurred_ms, kind, seat_id, public_summary, private_summary,"
-                                + " payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb)"
-                                + " ON CONFLICT (world_id, event_cursor) DO NOTHING",
-                        worldId, event.cursor(), event.occurredMs(), event.kind(),
-                        event.seatId(), event.publicSummary(), event.privateSummary(),
-                        WorldEventPayloadCodec.encode(event.event()));
+        Objects.requireNonNull(events, "events");
+        if (events.isEmpty()) {
+            return;
+        }
+        jdbi.useTransaction(handle -> {
+            try (var batch = handle.prepareBatch(
+                    "INSERT INTO wilds_world.world_events (world_id, event_cursor,"
+                            + " occurred_ms, kind, seat_id, public_summary, private_summary,"
+                            + " payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb)"
+                            + " ON CONFLICT (world_id, event_cursor) DO NOTHING")) {
+                for (StoredWorldEvent event : events) {
+                    batch.bind(0, worldId)
+                            .bind(1, event.cursor())
+                            .bind(2, event.occurredMs())
+                            .bind(3, event.kind())
+                            .bindByType(4, event.seatId(), Long.class)
+                            .bindByType(5, event.publicSummary(), String.class)
+                            .bind(6, event.privateSummary())
+                            .bind(7, WorldEventPayloadCodec.encode(event.event()))
+                            .add();
+                }
+                batch.execute();
             }
         });
     }
@@ -324,44 +354,59 @@ public final class PostgresWorldStore implements WorldStorePort {
 
     @Override
     public List<WalRecord> loadWalAfter(int worldId, long afterWalSeq) {
-        return jdbi.withHandle(handle -> handle.select(
+        return jdbi.inTransaction(handle -> handle.select(
                         "SELECT wal_seq, admitted_ms, seat_id, cmd_id::text AS cmd_id, cmd_type,"
                                 + " payload_json::text AS payload, world_hash"
                                 + " FROM wilds_world.command_wal WHERE world_id = ?"
                                 + " AND wal_seq > ? ORDER BY wal_seq",
                         worldId, afterWalSeq)
-                .map((rs, ctx) -> {
-                    long walSeq = rs.getLong("wal_seq");
-                    long admittedMs = rs.getLong("admitted_ms");
-                    Long worldHash = rs.getObject("world_hash", Long.class);
-                    if ("CLOCK_ADVANCE".equals(rs.getString("cmd_type"))) {
-                        return (WalRecord) new WalRecord.ClockAdvance(walSeq, admittedMs,
-                                worldHash);
-                    }
-                    return (WalRecord) new WalRecord.CommandEntry(walSeq, admittedMs,
-                            rs.getLong("seat_id"), rs.getString("cmd_id"),
-                            CommandCodec.decode(rs.getString("payload")), worldHash);
-                })
+                .setFetchSize(WAL_STREAM_FETCH_SIZE)
+                .map((rs, ctx) -> walRow(rs))
                 .list());
     }
 
     @Override
     public void exportWalJsonl(int worldId, Writer out) throws IOException {
-        WorldRecord world = jdbi.withHandle(handle -> handle.select(
-                        "SELECT world_id, world_seed, rules_version, engine_version,"
-                                + " protocol_version FROM wilds_meta.worlds WHERE world_id = ?",
-                        worldId)
-                .map((rs, ctx) -> worldRow(rs))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
-                        "no world row to export: " + worldId)));
-        out.write(new WalHeader(world.worldSeed(), world.rulesVersion(),
-                world.engineVersion()).encode());
-        out.write('\n');
-        for (WalRecord record : loadWalAfter(worldId, 0L)) {
-            out.write(CommandCodec.encodeWal(record));
+        Objects.requireNonNull(out, "out");
+        jdbi.useTransaction(handle -> {
+            WorldRecord world = handle.select(
+                            "SELECT world_id, world_seed, rules_version, engine_version,"
+                                    + " protocol_version FROM wilds_meta.worlds WHERE world_id = ?",
+                            worldId)
+                    .map((rs, ctx) -> worldRow(rs))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "no world row to export: " + worldId));
+            out.write(new WalHeader(world.worldSeed(), world.rulesVersion(),
+                    world.engineVersion()).encode());
             out.write('\n');
+            try (var iter = handle.select(
+                            "SELECT wal_seq, admitted_ms, seat_id, cmd_id::text AS cmd_id,"
+                                    + " cmd_type, payload_json::text AS payload, world_hash"
+                                    + " FROM wilds_world.command_wal WHERE world_id = ?"
+                                    + " ORDER BY wal_seq",
+                            worldId)
+                    .setFetchSize(WAL_STREAM_FETCH_SIZE)
+                    .map((rs, ctx) -> walRow(rs))
+                    .iterator()) {
+                while (iter.hasNext()) {
+                    out.write(CommandCodec.encodeWal(iter.next()));
+                    out.write('\n');
+                }
+            }
+        });
+    }
+
+    private static WalRecord walRow(java.sql.ResultSet rs) throws SQLException {
+        long walSeq = rs.getLong("wal_seq");
+        long admittedMs = rs.getLong("admitted_ms");
+        Long worldHash = rs.getObject("world_hash", Long.class);
+        if ("CLOCK_ADVANCE".equals(rs.getString("cmd_type"))) {
+            return new WalRecord.ClockAdvance(walSeq, admittedMs, worldHash);
         }
+        return new WalRecord.CommandEntry(walSeq, admittedMs,
+                rs.getLong("seat_id"), rs.getString("cmd_id"),
+                CommandCodec.decode(rs.getString("payload")), worldHash);
     }
 
     // ------------------------------------------------------------------ helpers

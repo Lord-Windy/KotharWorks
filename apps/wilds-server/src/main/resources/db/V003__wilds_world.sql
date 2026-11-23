@@ -5,7 +5,7 @@ CREATE SCHEMA IF NOT EXISTS wilds_world;
 
 CREATE TABLE wilds_world.command_wal (
     world_id     INT NOT NULL,
-    wal_seq      BIGINT GENERATED ALWAYS AS IDENTITY,
+    wal_seq      BIGINT NOT NULL CHECK (wal_seq >= 1),
     admitted_ms  BIGINT NOT NULL,
     seat_id      BIGINT,
     cmd_id       UUID,
@@ -41,3 +41,10 @@ CREATE TABLE wilds_world.world_events (
     payload_json    JSONB NOT NULL,
     PRIMARY KEY (world_id, event_cursor)
 );
+
+CREATE INDEX idx_world_events_seat_cursor
+    ON wilds_world.world_events (world_id, seat_id, event_cursor);
+
+CREATE INDEX idx_world_events_public_cursor
+    ON wilds_world.world_events (world_id, event_cursor)
+    WHERE public_summary IS NOT NULL;

@@ -15,8 +15,6 @@
  */
 package com.kotharworks.wilds.server;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 
 import com.kotharworks.auth.AuthMode;
@@ -104,18 +102,6 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
      * @param rawArgs raw {@code main} args, e.g. {@code --port 8080 --seed=7 --time-scale=20}
      */
     public static ServerConfig parse(String[] rawArgs) {
-        List<String> expanded = new ArrayList<>(rawArgs.length * 2);
-        for (String arg : rawArgs) {
-            int eq = arg.startsWith("--") ? arg.indexOf('=') : -1;
-            if (eq > 2) {
-                expanded.add(arg.substring(0, eq));
-                expanded.add(arg.substring(eq + 1));
-            } else {
-                expanded.add(arg);
-            }
-        }
-        String[] args = expanded.toArray(String[]::new);
-
         int port = 8080;
         long worldSeed = 1L;
         long timeScale = 1L;
@@ -137,31 +123,58 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         String dbPassword = null;
         long checkpointIntervalMs = 300_000L;
 
-        for (int i = 0; i < args.length; i++) {
-            String flag = args[i];
+        for (int i = 0; i < rawArgs.length; i++) {
+            String raw = rawArgs[i];
+            String flag;
+            String inlineValue = null;
+            int eq = raw.startsWith("--") ? raw.indexOf('=') : -1;
+            if (eq > 2) {
+                flag = raw.substring(0, eq);
+                inlineValue = raw.substring(eq + 1);
+            } else {
+                flag = raw;
+            }
             switch (flag) {
-                case "--port" -> port = parseInt(next(args, ++i, flag), flag);
-                case "--seed" -> worldSeed = parseSeed(next(args, ++i, flag), flag);
-                case "--time-scale" -> timeScale = parseLong(next(args, ++i, flag), flag);
-                case "--pump-interval-ms" -> pumpIntervalMs = parseLong(next(args, ++i, flag), flag);
-                case "--auth-mode" -> authMode = parseAuthMode(next(args, ++i, flag));
-                case "--public-origin" -> publicOrigin = next(args, ++i, flag);
-                case "--oidc-issuer" -> oidcIssuerUrl = next(args, ++i, flag);
-                case "--oidc-client-id" -> oidcClientId = next(args, ++i, flag);
-                case "--oidc-client-secret" -> oidcClientSecret = next(args, ++i, flag);
-                case "--oidc-authorization-endpoint" ->
-                        oidcAuthorizationEndpoint = next(args, ++i, flag);
-                case "--oidc-token-endpoint" -> oidcTokenEndpoint = next(args, ++i, flag);
-                case "--oidc-jwks-uri" -> oidcJwksUri = next(args, ++i, flag);
-                case "--rate-per-sec" -> ratePerSec = parseLong(next(args, ++i, flag), flag);
-                case "--rate-burst" -> rateBurst = parseLong(next(args, ++i, flag), flag);
-                case "--bind" -> bindAddress = next(args, ++i, flag);
-                case "--storage" -> storage = parseStorage(next(args, ++i, flag));
-                case "--jdbc-url" -> jdbcUrl = next(args, ++i, flag);
-                case "--db-user" -> dbUser = next(args, ++i, flag);
-                case "--db-password" -> dbPassword = next(args, ++i, flag);
-                case "--checkpoint-interval-ms" ->
-                        checkpointIntervalMs = parseLong(next(args, ++i, flag), flag);
+                case "--port" -> port = parseInt(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
+                case "--seed" -> worldSeed = parseSeed(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
+                case "--time-scale" -> timeScale = parseLong(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
+                case "--pump-interval-ms" -> pumpIntervalMs = parseLong(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
+                case "--auth-mode" -> authMode = parseAuthMode(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag));
+                case "--public-origin" -> publicOrigin =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--oidc-issuer" -> oidcIssuerUrl =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--oidc-client-id" -> oidcClientId =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--oidc-client-secret" -> oidcClientSecret =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--oidc-authorization-endpoint" -> oidcAuthorizationEndpoint =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--oidc-token-endpoint" -> oidcTokenEndpoint =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--oidc-jwks-uri" -> oidcJwksUri =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--rate-per-sec" -> ratePerSec = parseLong(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
+                case "--rate-burst" -> rateBurst = parseLong(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
+                case "--bind" -> bindAddress =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--storage" -> storage = parseStorage(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag));
+                case "--jdbc-url" -> jdbcUrl =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--db-user" -> dbUser =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--db-password" -> dbPassword =
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
+                case "--checkpoint-interval-ms" -> checkpointIntervalMs = parseLong(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
                 default -> throw new IllegalArgumentException("unknown flag: " + flag);
             }
         }

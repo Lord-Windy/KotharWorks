@@ -128,6 +128,10 @@ public final class WildsServer implements AutoCloseable {
                     hikari.setPassword(this.config.dbPassword());
                 }
                 hikari.setMaximumPoolSize(8);
+                hikari.setConnectionTimeout(2_500L);
+                hikari.setValidationTimeout(1_500L);
+                hikari.addDataSourceProperty("connectTimeout", "3");
+                hikari.addDataSourceProperty("socketTimeout", "5");
                 hikari.setPoolName("wilds-server");
                 openedPool = new HikariDataSource(hikari);
                 Jdbi jdbi = Jdbi.create(openedPool);

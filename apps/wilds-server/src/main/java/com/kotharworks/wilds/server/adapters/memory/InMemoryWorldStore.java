@@ -36,6 +36,7 @@ import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.replay.CommandCodec;
 import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
+import com.kotharworks.wilds.server.adapters.http.ApiJson;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
@@ -54,7 +55,6 @@ import com.kotharworks.wilds.server.ports.WorldStorePort;
 public final class InMemoryWorldStore implements WorldStorePort {
 
     private final AtomicLong seatIds = new AtomicLong(1);
-    private final AtomicLong walSeqs = new AtomicLong(1);
     private final AtomicLong checkpointIds = new AtomicLong(1);
     private final Object lock = new Object();
 
@@ -73,17 +73,7 @@ public final class InMemoryWorldStore implements WorldStorePort {
     public SeatRecord createSeat(UserId owner, String seatName, ControllerKind kind) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(kind, "kind");
-        String trimmed = seatName == null ? "" : seatName.trim();
-        if (trimmed.length() < 3 || trimmed.length() > 40) {
-            throw new IllegalArgumentException(
-                    "seat name must be 3..40 characters after trim: \"" + trimmed + "\"");
-        }
-        for (int i = 0; i < trimmed.length(); i++) {
-            if (Character.isISOControl(trimmed.charAt(i))) {
-                throw new IllegalArgumentException(
-                        "seat name must not contain ISO control characters");
-            }
-        }
+        String trimmed = ApiJson.validatePrintable(seatName, "seatName", 3, 40);
         synchronized (lock) {
             if (!seatNames.add(trimmed)) {
                 throw new IllegalArgumentException("DUPLICATE_SEAT: \"" + trimmed
@@ -164,8 +154,9 @@ public final class InMemoryWorldStore implements WorldStorePort {
     public long appendClockAdvance(int worldId, long admittedMs, Long worldHash) {
         synchronized (lock) {
             requireWorld(worldId);
-            long walSeq = walSeqs.getAndIncrement();
-            walByWorld.get(worldId).add(new WalRecord.ClockAdvance(walSeq, admittedMs, worldHash));
+            List<WalRecord> wal = walByWorld.get(worldId);
+            long walSeq = wal.size() + 1L;
+            wal.add(new WalRecord.ClockAdvance(walSeq, admittedMs, worldHash));
             return walSeq;
         }
     }
@@ -183,11 +174,12 @@ public final class InMemoryWorldStore implements WorldStorePort {
             if (byCmdId.containsKey(cmdId.toString())) {
                 throw new IllegalStateException("duplicate cmdId in WAL: " + cmdId);
             }
-            long walSeq = walSeqs.getAndIncrement();
+            List<WalRecord> wal = walByWorld.get(worldId);
+            long walSeq = wal.size() + 1L;
             WalRecord.CommandEntry entry = new WalRecord.CommandEntry(walSeq, admittedMs, seatId,
                     cmdId.toString(), cmd, worldHash);
             byCmdId.put(cmdId.toString(), entry);
-            walByWorld.get(worldId).add(entry);
+            wal.add(entry);
             return walSeq;
         }
     }

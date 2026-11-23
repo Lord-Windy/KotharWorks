@@ -92,12 +92,13 @@ class MainTest {
     }
 
     @Test
-    void parseSupportsEqualsSeparatedFlags() {
+    void parseSupportsEqualsSeparatedFlagsAndPreservesDashPrefixedValues() {
         ServerConfig config = ServerConfig.parse(new String[] {
                 "--bind=127.0.0.1", "--port=9090", "--time-scale=5",
                 "--storage=postgres",
                 "--jdbc-url=jdbc:postgresql://127.0.0.1:5432/wilds?sslmode=disable",
-                "--db-user=wilds", "--db-password=secret", "--auth-mode=dev-local"})
+                "--db-user=wilds", "--db-password", "--secret=hunter2",
+                "--auth-mode=dev-local"})
                 .validated();
         assertEquals("127.0.0.1", config.bindAddress());
         assertEquals(9090, config.port());
@@ -105,8 +106,12 @@ class MainTest {
         assertEquals(ServerConfig.StorageMode.POSTGRES, config.storage());
         assertEquals("jdbc:postgresql://127.0.0.1:5432/wilds?sslmode=disable", config.jdbcUrl());
         assertEquals("wilds", config.dbUser());
-        assertEquals("secret", config.dbPassword());
+        assertEquals("--secret=hunter2", config.dbPassword());
         assertEquals(AuthMode.DEV_LOCAL, config.authMode());
+
+        ServerConfig inlineSecret = ServerConfig.parse(new String[] {
+                "--db-password=--secret=hunter2"});
+        assertEquals("--secret=hunter2", inlineSecret.dbPassword());
     }
 
     @Test

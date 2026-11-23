@@ -19,23 +19,27 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Clock;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 
@@ -46,12 +50,11 @@ import com.kotharworks.auth.principal.UserId;
 import com.kotharworks.auth.token.ApiTokenCodec;
 import com.kotharworks.wilds.WildsEngine;
 import com.kotharworks.wilds.command.WorldCommand;
-import com.kotharworks.wilds.event.WorldEvent;
+import com.kotharworks.wilds.headless.HeadlessMain;
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.OwnerId;
 import com.kotharworks.wilds.id.PlaceId;
 import com.kotharworks.wilds.state.ActorRow;
-import com.kotharworks.wilds.state.OwnerRow;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.replay.CommandCodec;
 import com.kotharworks.wilds.rules.RuleRegistry;
@@ -368,8 +371,8 @@ class CrashRecoveryTest {
                 + " WHERE world_id = " + worldId),
                 "kill -9 window: still exactly the one checkpoint");
 
-        // Abrupt kill: host1 is abandoned, never closed, never checkpointed again.
-        host1 = null;
+        // Abrupt kill: stop writer without flushing, anchoring, or checkpointing.
+        host1.closeWithoutCheckpoint();
 
         WorldHost host2 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L,
                 Long.MAX_VALUE);
@@ -459,7 +462,7 @@ class CrashRecoveryTest {
         assertEquals(0L, count(jdbi, "SELECT count(*) FROM wilds_world.world_checkpoints"
                         + " WHERE world_id = " + worldId),
                 "kill -9 lands before the first checkpoint ever exists");
-        host1 = null;
+        host1.closeWithoutCheckpoint();
 
         // Recovery from the WAL tail alone: fresh seeded engine + full replay.
         WorldHost host2 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L,
@@ -489,12 +492,13 @@ class CrashRecoveryTest {
         assertEquals(watermark, pg.loadLatestCheckpoint(worldId).orElseThrow().upToWalSeq(),
                 "checkpoint carries the highest replayed wal_seq, never 0");
 
-        host2.close(); // the graceful close anchors one final CLOCK_ADVANCE row
+        host2.close(); // graceful close advances to currentLogicalMs and checkpoints
+        long hashAfterHost2Close = host2.worldHash();
 
         // Boot 3: a short checkpoint interval must not poison the next boot even
         // when the periodic write fires on an idle world before any new append.
         WorldHost host3 = new WorldHost(pg, new InMemoryEventBus(), 1L, 20L, 200L, 50L);
-        assertEquals(hashBefore, host3.worldHash(),
+        assertEquals(hashAfterHost2Close, host3.worldHash(),
                 "boot from the watermark-pinned checkpoint never re-applies the WAL");
         // the expected watermark now includes close()'s final anchor row
         List<WalRecord> afterClose = pg.loadWalAfter(worldId, 0L);
@@ -515,6 +519,113 @@ class CrashRecoveryTest {
                 pg.loadLatestCheckpoint(worldId).orElseThrow().upToWalSeq(),
                 "the periodic idle checkpoint keeps pinning the WAL watermark");
         host3.close();
+    }
+
+    @Test
+    void preCheckpointCmdIdRetryGracefulCloseAdvanceAndClockRegressionGuard(
+            @TempDir Path tempDir) throws Exception {
+        Jdbi jdbi = freshJdbi();
+        PostgresAuthStore auth = new PostgresAuthStore(jdbi, Clock.systemUTC(),
+                new SecureRandom());
+        PostgresWorldStore pg = new PostgresWorldStore(jdbi);
+        UserRecord samUser = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "sam-precp"), "Sam");
+        UserRecord aliceUser = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "alice-precp"), "Alice");
+        SeatRecord samSeat = pg.createSeat(samUser.userId(), "Sam Seat", ControllerKind.HUMAN);
+        SeatRecord aliceSeat = pg.createSeat(aliceUser.userId(), "Alice Seat",
+                ControllerKind.HUMAN);
+
+        long[] wallNanos = new long[] {1_000_000_000L};
+        WorldHost host1 = new WorldHost(pg, new InMemoryEventBus(), () -> wallNanos[0],
+                7L, 1L, 60_000L, Long.MAX_VALUE);
+        int worldId = host1.worldId();
+        host1.submit(samSeat.seatId(), UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(samSeat.seatId(), "Sam", "Sam Actor"));
+        host1.submit(aliceSeat.seatId(), UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(aliceSeat.seatId(), "Alice", "Alice Actor"));
+        OwnerId samOwner = host1.view().findOwnerBySeatKey(samSeat.seatId()).orElseThrow().id();
+        ActorId samActor = host1.view().actorsOwnedBy(samOwner).getFirst().id();
+        OwnerId aliceOwner = host1.view().findOwnerBySeatKey(aliceSeat.seatId()).orElseThrow().id();
+        ActorId aliceActor = host1.view().actorsOwnedBy(aliceOwner).getFirst().id();
+
+        // Commit command X at admittedMs = 250ms, then write checkpoint subsuming X.
+        wallNanos[0] += TimeUnit.MILLISECONDS.toNanos(250);
+        UUID preCheckpointCmdId = UUID.randomUUID();
+        CommandOutcome.Ok original = assertInstanceOf(CommandOutcome.Ok.class,
+                host1.submit(samSeat.seatId(), preCheckpointCmdId,
+                        new WorldCommand.EnqueueTasks(samOwner, samActor, null,
+                                List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(
+                                        10_000L, 1)))));
+        assertEquals(250L, original.receipt().admittedMs());
+        host1.writeCheckpointNow();
+
+        // Advance +3_750ms of quiet online wall time (total t = 4_000ms, < 60_000ms quiet
+        // threshold, with zero ticks): graceful close must anchor currentLogicalMs = 4_000ms!
+        wallNanos[0] += TimeUnit.MILLISECONDS.toNanos(3_750);
+        host1.close();
+        assertEquals(4_000L, host1.nowMs(),
+                "graceful close must advance to currentLogicalMs (4_000ms)");
+
+        // Simulate 30 seconds of offline maintenance downtime: PAUSE_WHILE_DOWN must ignore it!
+        wallNanos[0] += TimeUnit.SECONDS.toNanos(30);
+        WorldHost host2 = new WorldHost(pg, new InMemoryEventBus(), () -> wallNanos[0],
+                7L, 1L, 60_000L, Long.MAX_VALUE);
+        try {
+            assertEquals(4_000L, host2.nowMs(),
+                    "PAUSE_WHILE_DOWN: 4s online preserved, 30s offline ignored");
+            long walCountAfterBoot = count(jdbi,
+                    "SELECT count(*) FROM wilds_world.command_wal WHERE world_id = " + worldId);
+
+            // Owning seat retrying pre-checkpoint cmdId (not in receiptCache!) hits
+            // PostgresWorldStore.findCommandByCmdId and gets exact walSeq & admittedMs.
+            CommandOutcome.Ok retried = assertInstanceOf(CommandOutcome.Ok.class,
+                    host2.submit(samSeat.seatId(), preCheckpointCmdId,
+                            new WorldCommand.EnqueueTasks(samOwner, samActor, null,
+                                    List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(
+                                            10_000L, 1)))));
+            assertEquals(original.receipt().walSeq(), retried.receipt().walSeq());
+            assertEquals(original.receipt().admittedMs(), retried.receipt().admittedMs());
+
+            // Foreign seat probing the same pre-checkpoint cmdId gets FORBIDDEN.
+            CommandOutcome.Rejected foreignProbe = assertInstanceOf(CommandOutcome.Rejected.class,
+                    host2.submit(aliceSeat.seatId(), preCheckpointCmdId,
+                            new WorldCommand.EnqueueTasks(aliceOwner, aliceActor, null,
+                                    List.of(new com.kotharworks.wilds.state.TaskSpec.Wait(
+                                            1_000L, 1)))));
+            assertEquals("FORBIDDEN", foreignProbe.errorCode());
+            assertEquals(walCountAfterBoot, count(jdbi,
+                    "SELECT count(*) FROM wilds_world.command_wal WHERE world_id = " + worldId),
+                    "pre-checkpoint retries/probes must write zero new WAL rows");
+
+            // Exported WAL replays in wilds-headless to the exact WorldHash.
+            StringWriter walOut = new StringWriter();
+            pg.exportWalJsonl(worldId, walOut);
+            Path walPath = tempDir.resolve("graceful-close.wal.jsonl");
+            Files.writeString(walPath, walOut.toString());
+            StringWriter hOut = new StringWriter();
+            StringWriter hErr = new StringWriter();
+            assertEquals(0, HeadlessMain.execute(
+                    new String[] {"replay", "--seed", "7", "--wal", walPath.toString(), "--hash"},
+                    new PrintWriter(hOut), new PrintWriter(hErr)), hErr.toString());
+            assertTrue(hOut.toString().contains(String.format("worldHash=0x%016x",
+                    host2.worldHash())), hOut.toString());
+        } finally {
+            host2.close();
+        }
+
+        // Corrupt backward admitted_ms in command_wal must fail fast on boot recovery.
+        Jdbi regressedDb = freshJdbi();
+        PostgresWorldStore regressedStore = new PostgresWorldStore(regressedDb);
+        int regressedWorldId = regressedStore.ensureActiveWorld(3L,
+                RuleRegistry.WILDS_RULES_VERSION, WildsEngine.API_VERSION,
+                WorldHost.WILDS_PROTOCOL_VERSION).worldId();
+        regressedStore.appendClockAdvance(regressedWorldId, 5_000L, null);
+        regressedStore.appendClockAdvance(regressedWorldId, 4_999L, null);
+        assertThrows(IllegalStateException.class,
+                () -> new WorldHost(regressedStore, new InMemoryEventBus(), 3L, 1L,
+                        60_000L, Long.MAX_VALUE),
+                "boot WAL replay must fail fast on clock regression");
     }
 
     // ------------------------------------------------------------------ rig

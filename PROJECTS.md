@@ -117,20 +117,22 @@ reconstruction, pre-mutation `CLOCK_ADVANCE` anchors plus a quiet `ClockPump`
 adapter, and lock-free volatile `WorldView` MVCC reads with
 checkpoint-hash-verified + WAL-tail boot recovery, `PAUSE_WHILE_DOWN` clock resume
 (logical time never advances offline), periodic + graceful-close checkpointing
-(retention: latest ten) and a best-effort final `CLOCK_ADVANCE` anchor so the
-exported WAL replays to the exact shutdown hash.
+(retention: latest ten) and a best-effort final `CLOCK_ADVANCE(currentLogicalMs)`
+anchor so sub-quiet uptime survives rolling restarts and the exported WAL replays
+to the exact shutdown hash.
 `adapters/postgres/` ships the zero-framework `SqlMigrator` (plain versioned
 `V###__*.sql` under `db/`: `V001__auth.sql`, `V002__wilds_meta.sql`,
 `V003__wilds_world.sql` — gameplay-neutral `auth`/`wilds_meta` schemas and a
-100% append-only `wilds_world` (`command_wal`, `world_checkpoints`,
-`world_events`), `pg_advisory_lock` serialized, one transaction per script,
-refuses to boot on a newer database), `PostgresAuthStore` (JIT provisioning under
-`pg_advisory_xact_lock(hashtextextended(...))` — zero orphan users, zero 23505
-races; SHA-256-only session/token credentials), `PostgresWorldStore` (append-only
-WAL + `ON CONFLICT (world_id, event_cursor) DO NOTHING` event backfill, latest-ten
-checkpoint retention, `exportWalJsonl` byte-compatible with `wilds-headless`
-replay) and `WorldEventPayloadCodec` (payload_json round-trip, scopeOwner
-embedded). The Testcontainers 2.x suite (`postgres/`) boots a singleton
+100% append-only `wilds_world` (`command_wal` with dense per-world `wal_seq`,
+`world_checkpoints`, indexed `world_events`), `pg_advisory_lock` serialized with
+pooled-session cleanup, one transaction per script, refuses to boot on a newer
+database or duplicate/out-of-order scripts), `PostgresAuthStore` (JIT provisioning
+under `pg_advisory_xact_lock(hashtextextended(...))` — zero orphan users, zero
+23505 races; SHA-256-only session/token credentials), `PostgresWorldStore`
+(append-only WAL + batched `ON CONFLICT (world_id, event_cursor) DO NOTHING`
+event backfill, latest-ten checkpoint retention, cursor-streamed `exportWalJsonl`
+byte-compatible with `wilds-headless` replay) and `WorldEventPayloadCodec`
+(payload_json round-trip, scopeOwner embedded). The Testcontainers 2.x suite (`postgres/`) boots a singleton
 `postgres:17-alpine` once per JVM and proves migration idempotency, 20-virtual-
 thread JIT identity races, split-brain store-fault immunity (RAM never ahead of
 WAL, HTTP 503) and full `kill -9` recovery with zero cursor rewind.

@@ -89,12 +89,12 @@ public final class WorldEventPayloadCodec {
             case "task_batch_completed" -> new WorldEvent.TaskBatchCompleted(
                     ActorId.parse(reqStr(obj, "actorId")),
                     decodeSpec(obj.getOrNull("spec")),
-                    (int) reqLong(obj, "batchesLeftAfter"),
+                    reqInt(obj, "batchesLeftAfter"),
                     cursor, occurredMs, scopeOwner, publicSummary, privateSummary);
             case "task_cancelled" -> new WorldEvent.TaskCancelled(
                     ActorId.parse(reqStr(obj, "actorId")),
                     reqBool(obj, "cancelledActive"),
-                    (int) reqLong(obj, "clearedPendingCount"),
+                    reqInt(obj, "clearedPendingCount"),
                     cursor, occurredMs, scopeOwner, publicSummary, privateSummary);
             case "task_failed" -> new WorldEvent.TaskFailed(
                     ActorId.parse(reqStr(obj, "actorId")),
@@ -119,7 +119,7 @@ public final class WorldEventPayloadCodec {
                 reqLong(obj, "dueAtMs"),
                 reqLong(obj, "heapTicket"),
                 decodeSpec(obj.getOrNull("spec")),
-                (int) reqLong(obj, "batchesLeft"));
+                reqInt(obj, "batchesLeft"));
     }
 
     private static TaskSpec decodeSpec(JsonValue value) {
@@ -130,7 +130,7 @@ public final class WorldEventPayloadCodec {
         return switch (type) {
             case "wait" -> new TaskSpec.Wait(
                     reqLong(obj, "durationMs"),
-                    (int) reqLong(obj, "batches"));
+                    reqInt(obj, "batches"));
             case "travel" -> new TaskSpec.Travel(
                     PlaceId.parse(reqStr(obj, "destination")));
             default -> throw new IllegalArgumentException(
@@ -154,6 +154,16 @@ public final class WorldEventPayloadCodec {
         }
         throw new IllegalArgumentException(
                 "event payload field \"" + key + "\" must be a JSON integer");
+    }
+
+    private static int reqInt(JsonObj obj, String key) {
+        long value = reqLong(obj, key);
+        try {
+            return Math.toIntExact(value);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "event payload field \"" + key + "\" exceeds int range: " + value);
+        }
     }
 
     private static boolean reqBool(JsonObj obj, String key) {

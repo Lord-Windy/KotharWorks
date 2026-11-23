@@ -403,6 +403,10 @@ public final class WorldHost {
                         "FORBIDDEN", 0L, "cmdId belongs to another seat"));
                 return;
             }
+            // command_wal is strictly pre-mutation and append-only (zero UPDATEs),
+            // so pre-checkpoint / cache-evicted reconstruction returns the exact
+            // (cmdId, admittedMs, walSeq) plus the target actor's current live
+            // revision for subsequent optimistic expectedRevision calls.
             CommandReceipt rebuilt = new CommandReceipt(cmdId, prior.admittedMs(),
                     prior.walSeq(), revisionFor(prior.command(), engine.view()));
             receiptCache.put(cmdId, new CachedReceipt(prior.seatId(), rebuilt));
@@ -569,13 +573,22 @@ public final class WorldHost {
     private void handleClose() {
         try {
             flushPendingEvents();
-            // Final PAUSE_WHILE_DOWN anchor so the exported WAL ends exactly at
-            // the checkpointed logical ms and headless replay lands on the same
-            // world hash.
-            lastWalSeq = worldStore.appendClockAdvance(worldId, engine.nowMs(), null);
-            engine.advanceTo(engine.nowMs());
-            drainEmitted();
-            flushPendingEvents();
+            // Graceful SIGTERM anchor: commit CLOCK_ADVANCE(currentLogicalMs) and
+            // drain advanceTo(currentLogicalMs) before checkpointing so sub-quiet
+            // elapsed uptime is preserved and the exported WAL matches the
+            // shutdown checkpoint hash bit-for-bit.
+            long wallNow = clockPort.nanoTime();
+            long targetMs = currentLogicalMs(wallNow);
+            OptionalLong nextDue = engine.peekNextDueMs();
+            boolean duePending = nextDue.isPresent() && nextDue.getAsLong() <= targetMs;
+            if (lastWalSeq == 0L || targetMs > lastPersistedClockMs || duePending) {
+                lastWalSeq = worldStore.appendClockAdvance(worldId, targetMs, null);
+                engine.advanceTo(targetMs);
+                lastPersistedClockMs = engine.nowMs();
+                lastTickWallNanos = wallNow;
+                drainEmitted();
+                flushPendingEvents();
+            }
         } catch (RuntimeException storeFailure) {
             // Best effort on shutdown; the WAL tail recovers the difference.
             LOG.log(System.Logger.Level.WARNING,
@@ -598,9 +611,7 @@ public final class WorldHost {
             });
             switch (record) {
                 case WalRecord.ClockAdvance advance -> {
-                    if (advance.admittedMs() > engine.nowMs()) {
-                        engine.advanceTo(advance.admittedMs());
-                    }
+                    engine.advanceTo(advance.admittedMs());
                     backfillEvents();
                 }
                 case WalRecord.CommandEntry entry -> {
@@ -608,9 +619,7 @@ public final class WorldHost {
                     if (receiptCache.containsKey(cmdId)) {
                         continue;
                     }
-                    if (entry.admittedMs() > engine.nowMs()) {
-                        engine.advanceTo(entry.admittedMs());
-                    }
+                    engine.advanceTo(entry.admittedMs());
                     Phase1Result applied = engine.apply(entry.command());
                     if (applied instanceof Phase1Result.Rejected rejected) {
                         throw new IllegalStateException("WAL replay rejected committed command "

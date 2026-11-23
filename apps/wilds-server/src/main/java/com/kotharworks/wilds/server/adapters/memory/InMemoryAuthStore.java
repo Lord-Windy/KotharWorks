@@ -15,7 +15,6 @@
  */
 package com.kotharworks.wilds.server.adapters.memory;
 
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
@@ -88,8 +87,7 @@ public final class InMemoryAuthStore implements AuthStorePort, IdentityProvision
     public UserRecord upsertUser(ExternalIdentity identity, String displayName) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(displayName, "displayName");
-        UUID uuid = userIdsByIdentity.computeIfAbsent(identity, id -> UUID.nameUUIDFromBytes(
-                (id.issuer() + "\n" + id.subject()).getBytes(StandardCharsets.UTF_8)));
+        UUID uuid = userIdsByIdentity.computeIfAbsent(identity, _ -> UUID.randomUUID());
         UserRecord fresh = UserRecord.active(new UserId(uuid), displayName, null);
         return usersById.compute(uuid, (_, existing) -> {
             if (existing == null) {

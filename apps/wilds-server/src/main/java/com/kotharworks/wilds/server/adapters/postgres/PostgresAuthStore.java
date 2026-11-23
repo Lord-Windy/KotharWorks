@@ -15,7 +15,6 @@
  */
 package com.kotharworks.wilds.server.adapters.postgres;
 
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -60,7 +59,7 @@ import org.jdbi.v3.core.Jdbi;
  */
 public final class PostgresAuthStore implements AuthStorePort {
 
-    private static final Base64.Encoder B64 = Base64.getEncoder();
+    private static final Base64.Encoder B64_URL = Base64.getUrlEncoder().withoutPadding();
 
     private final Jdbi jdbi;
     private final Clock clock;
@@ -78,26 +77,27 @@ public final class PostgresAuthStore implements AuthStorePort {
     public UserRecord upsertUser(ExternalIdentity identity, String displayName) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(displayName, "displayName");
+        String lockKey = identity.issuer().length() + ":" + identity.issuer() + ":"
+                + identity.subject();
         return jdbi.inTransaction(handle -> {
-            handle.execute("SELECT pg_advisory_xact_lock(hashtextextended(? || ':' || ?, 0))",
-                    identity.issuer(), identity.subject());
+            handle.execute("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", lockKey);
             UUID existing = findUserId(handle, identity);
+            UUID userId;
             if (existing == null) {
-                UUID minted = UUID.nameUUIDFromBytes((identity.issuer() + "\n"
-                        + identity.subject()).getBytes(StandardCharsets.UTF_8));
-                handle.execute("INSERT INTO auth.users (user_id, display_name, last_seen_at)"
-                                + " VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING",
-                        minted, displayName, now());
-                handle.execute("INSERT INTO auth.identity_links (issuer, subject, user_id)"
-                                + " VALUES (?, ?, ?) ON CONFLICT (issuer, subject) DO NOTHING",
-                        identity.issuer(), identity.subject(), minted);
+                userId = UUID.randomUUID();
+                OffsetDateTime seenAt = now();
+                handle.execute("INSERT INTO auth.users (user_id, display_name, created_at,"
+                                + " last_seen_at) VALUES (?, ?, ?, ?)",
+                        userId, displayName, seenAt, seenAt);
+                handle.execute("INSERT INTO auth.identity_links (issuer, subject, user_id,"
+                                + " linked_at) VALUES (?, ?, ?, ?)",
+                        identity.issuer(), identity.subject(), userId, seenAt);
             } else {
+                userId = existing;
                 handle.execute("UPDATE auth.users SET display_name = ?, last_seen_at = ?"
-                                + " WHERE user_id = ? AND suspended_at IS NULL"
-                                + " AND display_name <> ?",
-                        displayName, now(), existing, displayName);
+                                + " WHERE user_id = ? AND suspended_at IS NULL",
+                        displayName, now(), userId);
             }
-            UUID userId = existing != null ? existing : findUserId(handle, identity);
             return selectUser(handle, userId);
         });
     }
@@ -138,7 +138,7 @@ public final class PostgresAuthStore implements AuthStorePort {
         byte[] digest = CookieCodec.sha256Digest(rawToken);
         byte[] csrfBytes = new byte[32];
         random.nextBytes(csrfBytes);
-        String csrfToken = B64.encodeToString(csrfBytes);
+        String csrfToken = B64_URL.encodeToString(csrfBytes);
         jdbi.useHandle(handle -> handle.execute(
                 "INSERT INTO auth.web_sessions (session_sha256, user_id, issuer, subject,"
                         + " granted_roles, csrf_token, expires_at) VALUES (?, ?, ?, ?, ?::text[], ?, ?)",
@@ -198,16 +198,18 @@ public final class PostgresAuthStore implements AuthStorePort {
     public Optional<ScopedTokenRecord> findActiveTokenBySha256(byte[] sha256) {
         return jdbi.withHandle(handle -> handle.select(
                         "SELECT t.token_id, t.owner_user_id, t.resource_namespace,"
-                                + " t.scoped_resource_id, (u.suspended_at IS NOT NULL)"
-                                + " AS owner_suspended FROM auth.api_tokens t"
+                                + " t.scoped_resource_id,"
+                                + " (t.revoked_at IS NOT NULL) AS token_revoked,"
+                                + " (u.suspended_at IS NOT NULL) AS owner_suspended"
+                                + " FROM auth.api_tokens t"
                                 + " JOIN auth.users u ON u.user_id = t.owner_user_id"
-                                + " WHERE t.token_sha256 = ? AND t.revoked_at IS NULL",
+                                + " WHERE t.token_sha256 = ?",
                         sha256)
                 .map((rs, ctx) -> new ScopedTokenRecord(
                         new TokenId(rs.getLong("token_id")),
                         new UserId(rs.getObject("owner_user_id", UUID.class)),
                         rs.getString("resource_namespace"), rs.getLong("scoped_resource_id"),
-                        false, rs.getBoolean("owner_suspended")))
+                        rs.getBoolean("token_revoked"), rs.getBoolean("owner_suspended")))
                 .findFirst());
     }
 
@@ -241,10 +243,9 @@ public final class PostgresAuthStore implements AuthStorePort {
 
     private static UserRecord userRow(ResultSet rs) throws SQLException {
         Integer maxSeatsOverride = rs.getObject("max_seats_override", Integer.class);
-        java.sql.Timestamp suspendedAt = rs.getTimestamp("suspended_at");
         return new UserRecord(new UserId(rs.getObject("user_id", UUID.class)),
                 rs.getString("display_name"), maxSeatsOverride,
-                suspendedAt == null ? null : suspendedAt.toInstant(),
+                instantOf(rs, "suspended_at"),
                 rs.getString("suspended_reason"));
     }
 

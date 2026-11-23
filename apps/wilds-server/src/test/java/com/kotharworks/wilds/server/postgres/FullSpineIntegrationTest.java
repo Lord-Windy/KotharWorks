@@ -326,11 +326,16 @@ class FullSpineIntegrationTest {
                 assertTrue(waitUntilIdle(base2, alice),
                         "batch #2 completed and the queue drained once the pump resumed");
 
-                long finalHash = server2.worldHost().worldHash();
-                server2.close(); // graceful final anchor + checkpoint
+                long msBeforeClose = server2.worldHost().nowMs();
+                server2.close(); // graceful final currentLogicalMs anchor + checkpoint
                 server2Alive = false;
-                assertEquals(finalHash, server2.worldHost().worldHash(),
-                        "the graceful close anchors without moving the hash");
+                long finalHash = server2.worldHost().worldHash();
+                assertTrue(server2.worldHost().nowMs() >= msBeforeClose,
+                        "graceful close anchors up to currentLogicalMs");
+                assertEquals(finalHash,
+                        new PostgresWorldStore(testJdbi).loadLatestCheckpoint(worldId)
+                                .orElseThrow().worldHash(),
+                        "shutdown checkpoint pins the post-anchor worldHash");
 
                 // Export with the TEST's own store: server2's pool is now shut.
                 StringWriter export = new StringWriter();

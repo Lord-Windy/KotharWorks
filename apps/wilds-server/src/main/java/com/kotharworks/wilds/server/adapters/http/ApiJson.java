@@ -90,15 +90,11 @@ public final class ApiJson {
     }
 
     /**
-     * Validates a trimmed printable label ({@code minLen..maxLen} chars, no ISO
-     * control chars, no unpaired UTF-16 surrogates).
+     * Validates a trimmed printable label ({@code minLen..maxLen} Unicode code
+     * points, no ISO control chars, no unpaired UTF-16 surrogates).
      */
     public static String validatePrintable(String raw, String field, int minLen, int maxLen) {
         String trimmed = raw == null ? "" : raw.trim();
-        if (trimmed.length() < minLen || trimmed.length() > maxLen) {
-            throw new IllegalArgumentException("field \"" + field + "\" must be " + minLen + ".."
-                    + maxLen + " characters after trim");
-        }
         for (int i = 0; i < trimmed.length(); i++) {
             char c = trimmed.charAt(i);
             if (Character.isISOControl(c)) {
@@ -115,6 +111,11 @@ public final class ApiJson {
                 throw new IllegalArgumentException(
                         "field \"" + field + "\" contains an unpaired UTF-16 surrogate");
             }
+        }
+        int codePoints = trimmed.codePointCount(0, trimmed.length());
+        if (codePoints < minLen || codePoints > maxLen) {
+            throw new IllegalArgumentException("field \"" + field + "\" must be " + minLen + ".."
+                    + maxLen + " characters after trim");
         }
         return trimmed;
     }
