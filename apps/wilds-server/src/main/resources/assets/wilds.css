@@ -33,7 +33,7 @@ header.console-bar {
 }
 
 header.console-bar h1 { font-size: 1.15rem; margin: 0; }
-header.console-bar .meta { color: #6b675d; font-size: 0.85rem; }
+header.console-bar .meta, nav.seat-switcher { color: #6b675d; font-size: 0.85rem; }
 header.console-bar form { margin-left: auto; }
 
 .panel {
@@ -81,14 +81,14 @@ button:hover { filter: brightness(1.1); }
   transition: none;
 }
 
-#event-log, #queue, #catch-up {
+#event-log, #queue, #catch-up, #away-list {
   list-style: none;
   margin: 0;
   padding: 0;
   font-size: 0.85rem;
 }
 
-#event-log li, #catch-up li {
+#event-log li, #catch-up li, #away-list li {
   border-bottom: 1px dotted var(--line);
   padding: 0.15rem 0;
   white-space: pre-wrap;
@@ -99,6 +99,12 @@ button:hover { filter: brightness(1.1); }
   background: #f1ece0;
   padding: 0.5rem 0.75rem;
   margin-top: 0.5rem;
+}
+
+#drawer-text {
+  font: inherit;
+  white-space: pre-wrap;
+  margin: 0 0 0.5rem;
 }
 
 #notice {

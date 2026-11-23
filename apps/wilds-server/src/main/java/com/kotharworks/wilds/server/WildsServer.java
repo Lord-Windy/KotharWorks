@@ -206,7 +206,8 @@ public final class WildsServer implements AutoCloseable {
             new SseRoutes(worldHost, this.worldStore, this.eventBus, seatAuthorizer)
                     .register(router);
             new AssetRoutes().register(router);
-            new PlayRoutes(this.authStore, this.worldStore, worldHost, cookies).register(router);
+            new PlayRoutes(this.authStore, this.worldStore, worldHost, cookies,
+                    this.config.timeScale()).register(router);
             new ChronicleRoutes(worldHost, this.worldStore).register(router);
         } catch (RuntimeException | IOException bootFailure) {
             if (openedHost != null) {

@@ -266,6 +266,25 @@ class PostgresStoresTest {
                 0, 100);
         assertEquals(privateRows.size(), afterBackfill.size(),
                 "ON CONFLICT (world_id, event_cursor) DO NOTHING keeps the log append-once");
+
+        // Newest-tail query: when > limit events exist, readRecentEvents returns the
+        // newest rows in ascending cursor order (never freezing on the oldest rows).
+        List<StoredWorldEvent> extra = new ArrayList<>();
+        for (long c = 10; c <= 70; c++) {
+            WorldEvent.OwnerRegistered ev = new WorldEvent.OwnerRegistered(
+                    new OwnerId(0, 1), new ActorId(0, 1), c, c * 100L, new OwnerId(0, 1),
+                    "pub-" + c, "priv-" + c);
+            extra.add(StoredWorldEvent.of(ev, seat.seatId()));
+        }
+        store.appendEvents(worldId, extra);
+        List<StoredWorldEvent> recentSeat = store.readRecentEvents(worldId, seat.seatId(), 5);
+        assertEquals(List.of(66L, 67L, 68L, 69L, 70L),
+                recentSeat.stream().map(StoredWorldEvent::cursor).toList());
+        List<StoredWorldEvent> recentPublic = store.readRecentEvents(worldId, null, 5);
+        assertEquals(List.of(66L, 67L, 68L, 69L, 70L),
+                recentPublic.stream().map(StoredWorldEvent::cursor).toList());
+        assertTrue(recentPublic.stream().allMatch(row -> row.privateSummary() == null
+                && row.event() == null && row.seatId() == null));
         host.close();
     }
 

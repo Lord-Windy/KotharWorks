@@ -18,6 +18,7 @@ package com.kotharworks.wilds.server.adapters.memory;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -216,6 +217,34 @@ public final class InMemoryWorldStore implements WorldStorePort {
                 }
             }
             return List.copyOf(result);
+        }
+    }
+
+    @Override
+    public List<StoredWorldEvent> readRecentEvents(int worldId, Long seatIdOrNullForPublic,
+            int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be >= 1, got: " + limit);
+        }
+        synchronized (lock) {
+            requireWorld(worldId);
+            TreeMap<Long, StoredWorldEvent> log = eventsByWorld.get(worldId);
+            List<StoredWorldEvent> reversed = new ArrayList<>(Math.min(limit, 64));
+            for (StoredWorldEvent row : log.descendingMap().values()) {
+                if (reversed.size() >= limit) {
+                    break;
+                }
+                if (seatIdOrNullForPublic != null) {
+                    if (!seatIdOrNullForPublic.equals(row.seatId())) {
+                        continue;
+                    }
+                    reversed.add(row);
+                } else if (row.publicSummary() != null) {
+                    reversed.add(StoredWorldEvent.publicProjection(row));
+                }
+            }
+            Collections.reverse(reversed);
+            return List.copyOf(reversed);
         }
     }
 

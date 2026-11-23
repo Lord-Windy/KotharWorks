@@ -153,7 +153,23 @@ public final class AuthRoutes {
         }
         ctx.exchange().getResponseHeaders().set("Set-Cookie",
                 cookies.clearCookieHeaderValue());
+        if (isFormSubmission(ctx)) {
+            ctx.respondRedirect("/chronicle");
+            return;
+        }
         ctx.respondJson(200, "{\"loggedOut\":true}");
+    }
+
+    private static boolean isFormSubmission(RouteContext ctx) {
+        String contentType = ctx.exchange().getRequestHeaders().getFirst("Content-Type");
+        if (contentType == null) {
+            return false;
+        }
+        int semicolon = contentType.indexOf(';');
+        String mediaType = (semicolon < 0 ? contentType : contentType.substring(0, semicolon))
+                .trim()
+                .toLowerCase(java.util.Locale.ROOT);
+        return "application/x-www-form-urlencoded".equals(mediaType);
     }
 
     private void me(RouteContext ctx) throws java.io.IOException {

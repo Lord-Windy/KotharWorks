@@ -222,6 +222,31 @@ class InMemoryStoresTest {
                 () -> StoredWorldEvent.full(1L, 1L, "bad\nkind", 1L, null, "p", sampleEvent()));
     }
 
+    @Test
+    void readRecentEventsReturnsNewestTailInAscendingCursorOrder() {
+        InMemoryWorldStore store = new InMemoryWorldStore();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        java.util.ArrayList<StoredWorldEvent> batch = new java.util.ArrayList<>();
+        for (long c = 1; c <= 60; c++) {
+            String pub = (c % 2 == 0) ? "pub-" + c : null;
+            batch.add(StoredWorldEvent.full(c, c * 10L, "owner_registered", 1L,
+                    pub, "priv-" + c, sampleEvent()));
+        }
+        store.appendEvents(worldId, batch);
+
+        List<StoredWorldEvent> seatTail = store.readRecentEvents(worldId, 1L, 10);
+        assertEquals(List.of(51L, 52L, 53L, 54L, 55L, 56L, 57L, 58L, 59L, 60L),
+                seatTail.stream().map(StoredWorldEvent::cursor).toList());
+
+        List<StoredWorldEvent> publicTail = store.readRecentEvents(worldId, null, 5);
+        assertEquals(List.of(52L, 54L, 56L, 58L, 60L),
+                publicTail.stream().map(StoredWorldEvent::cursor).toList());
+        assertTrue(publicTail.stream().allMatch(row -> row.privateSummary() == null
+                && row.event() == null && row.seatId() == null));
+        assertThrows(IllegalArgumentException.class,
+                () -> store.readRecentEvents(worldId, 1L, 0));
+    }
+
     // ------------------------------------------------------------------ checkpoints
 
     @Test

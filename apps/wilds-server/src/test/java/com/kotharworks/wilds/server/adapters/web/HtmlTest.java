@@ -17,8 +17,12 @@ package com.kotharworks.wilds.server.adapters.web;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.Test;
 
@@ -37,8 +41,10 @@ class HtmlTest {
         assertEquals("&lt;x&gt;", Html.escape("<x>"));
         assertEquals("&quot;q&quot;", Html.escape("\"q\""));
         assertEquals("&#39;p&#39;", Html.escape("'p'"));
+        assertEquals("a&amp;&lt;&gt;&quot;&#39;z", Html.escape("a&<>\"'z"));
         assertEquals("House &lt;script&gt;alert(1)&lt;/script&gt;", Html.escape(PAYLOAD));
-        assertEquals("plain", Html.escape("plain"));
+        String plain = "plain";
+        assertSame(plain, Html.escape(plain), "fast path returns the identical String");
     }
 
     @Test
@@ -106,5 +112,31 @@ class HtmlTest {
                 new Html.Attr("x onclick", "1")));
         assertThrows(IllegalArgumentException.class, () -> Html.create().close("P"));
         assertThrows(IllegalArgumentException.class, () -> Html.create().voidTag(""));
+        assertThrows(IllegalArgumentException.class, () -> Html.create().open("1div"));
+        assertThrows(IllegalArgumentException.class, () -> Html.create().open("p",
+                new Html.Attr("-bad", "1")));
+    }
+
+    @Test
+    void voidAndNonVoidElementsCannotBeConfused() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Html.create().voidTag("script", new Html.Attr("src", "/assets/wilds-ui.js")));
+        assertThrows(IllegalArgumentException.class, () -> Html.create().voidTag("div"));
+        assertThrows(IllegalArgumentException.class, () -> Html.create().open("meta"));
+        assertThrows(IllegalArgumentException.class, () -> Html.create().close("input"));
+    }
+
+    @Test
+    void consoleJavascriptAssetStaysUnderTwoHundredLinesAndAvoidsUnsafeDomSinks()
+            throws IOException {
+        try (var stream = AssetRoutes.class.getResourceAsStream("/assets/wilds-ui.js")) {
+            assertTrue(stream != null, "/assets/wilds-ui.js must be packaged on classpath");
+            String js = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            long lines = js.lines().count();
+            assertTrue(lines < 200, "wilds-ui.js must stay < 200 LOC, got: " + lines);
+            assertFalse(js.contains("innerHTML"), "DOM XSS guard: zero innerHTML");
+            assertFalse(js.contains("outerHTML"), "DOM XSS guard: zero outerHTML");
+            assertFalse(js.contains("insertAdjacentHTML"), "DOM XSS guard: zero insertAdjacentHTML");
+        }
     }
 }

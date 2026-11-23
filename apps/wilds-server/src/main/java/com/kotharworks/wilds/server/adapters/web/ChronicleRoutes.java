@@ -66,8 +66,7 @@ public final class ChronicleRoutes {
         for (SeatRecord seat : seats) {
             counts.merge(seat.controllerKind(), 1, Integer::sum);
         }
-        List<StoredWorldEvent> feed = worldStore.readEventsSince(worldHost.worldId(), null,
-                0, FEED_LIMIT);
+        List<StoredWorldEvent> feed = worldHost.readRecentPublicEvents(FEED_LIMIT);
 
         Html html = Html.create()
                 .doctype()
@@ -100,6 +99,7 @@ public final class ChronicleRoutes {
                 .close("p")
                 .close("body")
                 .close("html");
+        ctx.exchange().getResponseHeaders().set("X-Content-Type-Options", "nosniff");
         ctx.respondText(200, "text/html; charset=utf-8", html.render());
     }
 

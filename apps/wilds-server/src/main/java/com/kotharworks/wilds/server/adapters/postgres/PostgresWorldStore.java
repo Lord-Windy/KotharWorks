@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.io.Writer;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -304,22 +305,52 @@ public final class PostgresWorldStore implements WorldStorePort {
         sql.append(" ORDER BY event_cursor LIMIT ?");
         binds.add(limit);
         return jdbi.withHandle(handle -> handle.select(sql.toString(), binds.toArray())
-                .map((rs, ctx) -> {
-                    long cursor = rs.getLong("event_cursor");
-                    long occurredMs = rs.getLong("occurred_ms");
-                    String kind = rs.getString("kind");
-                    String publicSummary = rs.getString("public_summary");
-                    String privateSummary = rs.getString("private_summary");
-                    if (seatIdOrNullForPublic != null) {
-                        return StoredWorldEvent.full(cursor, occurredMs, kind,
-                                rs.getLong("seat_id"), publicSummary, privateSummary,
-                                WorldEventPayloadCodec.decode(kind, cursor, occurredMs,
-                                        publicSummary, privateSummary, rs.getString("payload")));
-                    }
-                    return StoredWorldEvent.publicProjection(new StoredWorldEvent(cursor,
-                            occurredMs, kind, null, publicSummary, null, null));
-                })
+                .map((rs, ctx) -> eventRow(rs, seatIdOrNullForPublic != null))
                 .list());
+    }
+
+    @Override
+    public List<StoredWorldEvent> readRecentEvents(int worldId, Long seatIdOrNullForPublic,
+            int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be >= 1, got: " + limit);
+        }
+        StringBuilder sql = new StringBuilder("SELECT event_cursor, occurred_ms, kind, seat_id,"
+                + " public_summary, private_summary, payload_json::text AS payload"
+                + " FROM wilds_world.world_events WHERE world_id = ?");
+        List<Object> binds = new ArrayList<>(List.of(worldId));
+        if (seatIdOrNullForPublic != null) {
+            sql.append(" AND seat_id = ?");
+            binds.add(seatIdOrNullForPublic);
+        } else {
+            sql.append(" AND public_summary IS NOT NULL");
+        }
+        sql.append(" ORDER BY event_cursor DESC LIMIT ?");
+        binds.add(limit);
+        List<StoredWorldEvent> descending = jdbi.withHandle(handle ->
+                handle.select(sql.toString(), binds.toArray())
+                        .map((rs, ctx) -> eventRow(rs, seatIdOrNullForPublic != null))
+                        .list());
+        List<StoredWorldEvent> ascending = new ArrayList<>(descending);
+        Collections.reverse(ascending);
+        return List.copyOf(ascending);
+    }
+
+    private static StoredWorldEvent eventRow(java.sql.ResultSet rs, boolean privateSeatView)
+            throws SQLException {
+        long cursor = rs.getLong("event_cursor");
+        long occurredMs = rs.getLong("occurred_ms");
+        String kind = rs.getString("kind");
+        String publicSummary = rs.getString("public_summary");
+        String privateSummary = rs.getString("private_summary");
+        if (privateSeatView) {
+            return StoredWorldEvent.full(cursor, occurredMs, kind,
+                    rs.getLong("seat_id"), publicSummary, privateSummary,
+                    WorldEventPayloadCodec.decode(kind, cursor, occurredMs,
+                            publicSummary, privateSummary, rs.getString("payload")));
+        }
+        return StoredWorldEvent.publicProjection(new StoredWorldEvent(cursor,
+                occurredMs, kind, null, publicSummary, null, null));
     }
 
     // ------------------------------------------------------------------ checkpoints & recovery

@@ -103,27 +103,29 @@ public final class QueryRoutes {
     }
 
     private void observation(RouteContext ctx) throws IOException {
-        AuthorizedSeat authorized = authorize(ctx);
+        WorldView view = worldHost.view();
+        AuthorizedSeat authorized = authorize(ctx, ApiJson.query(ctx), view);
         if (authorized.owner() == null) {
             ApiJson.error(ctx, 404, "UNKNOWN_TARGET", "seat not yet in-world");
             return;
         }
-        var observation = ObservationProjector.projectOwner(worldHost.view(), authorized.owner(),
+        var observation = ObservationProjector.projectOwner(view, authorized.owner(),
                 StubDescriptionComposer.INSTANCE);
-        ctx.respondJson(200, ObservationJson.observation(observation, worldHost.view().nowMs()));
+        ctx.respondJson(200, ObservationJson.observation(observation, view.nowMs()));
     }
 
     private void examine(RouteContext ctx) throws IOException {
-        AuthorizedSeat authorized = authorize(ctx);
+        WorldView view = worldHost.view();
+        Map<String, String> query = ApiJson.query(ctx);
+        AuthorizedSeat authorized = authorize(ctx, query, view);
         if (authorized.owner() == null) {
             ApiJson.error(ctx, 404, "UNKNOWN_TARGET", "seat not yet in-world");
             return;
         }
-        Map<String, String> query = ApiJson.query(ctx);
         InspectTarget target = parseTarget(query);
         ZoomLevel zoom = parseZoom(query);
         try {
-            String text = ObservationProjector.examine(worldHost.view(), authorized.owner(),
+            String text = ObservationProjector.examine(view, authorized.owner(),
                     target, zoom, StubDescriptionComposer.INSTANCE);
             ctx.respondJson(200, JsonCodec.write(new JsonCodec.JsonObj(List.of(
                     JsonCodec.JsonObj.entry("text", ApiJson.str(text))))));
@@ -134,7 +136,7 @@ public final class QueryRoutes {
 
     private void events(RouteContext ctx) throws IOException {
         Map<String, String> query = ApiJson.query(ctx);
-        AuthorizedSeat authorized = authorize(ctx, query);
+        AuthorizedSeat authorized = authorize(ctx, query, worldHost.view());
         long since = parseSince(query);
         int limit = eventLimit(query);
         List<StoredWorldEvent> rows = worldHost.readSeatEventsSince(
@@ -153,15 +155,11 @@ public final class QueryRoutes {
 
     // ------------------------------------------------------------------ helpers
 
-    private AuthorizedSeat authorize(RouteContext ctx) {
-        return authorize(ctx, ApiJson.query(ctx));
-    }
-
-    private AuthorizedSeat authorize(RouteContext ctx, Map<String, String> query) {
+    private AuthorizedSeat authorize(RouteContext ctx, Map<String, String> query, WorldView view) {
         Long seatIdParam = query.containsKey("seatId") && !query.get("seatId").isBlank()
                 ? ApiJson.queryLong(query, "seatId", -1)
                 : null;
-        return seatAuthorizer.authorize(ctx.principal(), seatIdParam, worldHost.view());
+        return seatAuthorizer.authorize(ctx.principal(), seatIdParam, view);
     }
 
     private static long parseSince(Map<String, String> query) {

@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -84,6 +85,11 @@ class FullSpineIntegrationTest {
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
 
+    @AfterEach
+    void closeHttpClient() {
+        http.close();
+    }
+
     // ------------------------------------------------------------------ (1) auth, XSS, CSRF
 
     @Test
@@ -93,7 +99,22 @@ class FullSpineIntegrationTest {
         server.start();
         try {
             String base = base(server);
-            // (a) unauthenticated browsers are redirected, never 401-rejected.
+            // (a) static assets serve with nosniff; unknown asset paths return 404.
+            HttpResponse<String> js = http.send(get(base + "/assets/wilds-ui.js", null),
+                    ofString());
+            assertEquals(200, js.statusCode());
+            assertTrue(contentType(js).startsWith("text/javascript"), contentType(js));
+            assertEquals("nosniff",
+                    js.headers().firstValue("X-Content-Type-Options").orElse(""));
+            assertTrue(js.body().contains("wireButtons"), js.body());
+            HttpResponse<String> css = http.send(get(base + "/assets/wilds.css", null),
+                    ofString());
+            assertEquals(200, css.statusCode());
+            assertTrue(contentType(css).startsWith("text/css"), contentType(css));
+            assertEquals(404,
+                    http.send(get(base + "/assets/nonexistent.js", null), ofString()).statusCode());
+
+            // (b) unauthenticated browsers are redirected, never 401-rejected.
             HttpResponse<String> play = http.send(get(base + "/play", null), ofString());
             assertEquals(303, play.statusCode(), play.body());
             assertEquals("/auth/login", play.headers().firstValue("Location").orElse(""));
@@ -101,32 +122,81 @@ class FullSpineIntegrationTest {
             assertEquals(303, login.statusCode());
             assertEquals("/dev/login", login.headers().firstValue("Location").orElse(""));
 
-            // (b) dev-local sign in sets the HttpOnly session cookie.
+            // (c) dev-local sign in sets the HttpOnly session cookie; unseated /play has
+            //     no-store caching, notice area, POST claim form, and CSRF-guarded logout.
+            String firstSession = login(base, "dev-alice");
+            HttpResponse<String> unseated = http.send(get(base + "/play", firstSession),
+                    ofString());
+            assertEquals(200, unseated.statusCode(), unseated.body());
+            assertEquals("no-store",
+                    unseated.headers().firstValue("Cache-Control").orElse(""));
+            assertTrue(unseated.body().contains("id=\"claim-seat-form\" method=\"post\""),
+                    unseated.body());
+            assertTrue(unseated.body().contains("id=\"notice\""), unseated.body());
+            assertTrue(unseated.body().contains("action=\"/auth/logout\""), unseated.body());
+            String csrfToken = extractCsrfMeta(unseated.body());
+
+            // Form logout without valid csrf_token is blocked (403); valid csrf_token
+            // revokes the session, clears the cookie, and redirects browsers to /chronicle.
+            HttpResponse<String> badLogout = http.send(
+                    HttpRequest.newBuilder(URI.create(base + "/auth/logout"))
+                            .header("Cookie", firstSession)
+                            .header("Content-Type", "application/x-www-form-urlencoded")
+                            .POST(HttpRequest.BodyPublishers.ofString("csrf_token=forged",
+                                    StandardCharsets.UTF_8))
+                            .build(),
+                    ofString());
+            assertEquals(403, badLogout.statusCode(), badLogout.body());
+            assertTrue(badLogout.body().contains("CSRF_REJECTED"), badLogout.body());
+
+            HttpResponse<String> goodLogout = http.send(
+                    HttpRequest.newBuilder(URI.create(base + "/auth/logout"))
+                            .header("Cookie", firstSession)
+                            .header("Content-Type", "application/x-www-form-urlencoded")
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    "csrf_token=" + java.net.URLEncoder.encode(csrfToken,
+                                            StandardCharsets.UTF_8),
+                                    StandardCharsets.UTF_8))
+                            .build(),
+                    ofString());
+            assertEquals(303, goodLogout.statusCode(), goodLogout.body());
+            assertEquals("/chronicle",
+                    goodLogout.headers().firstValue("Location").orElse(""));
+            assertTrue(goodLogout.headers().firstValue("Set-Cookie").orElse("")
+                    .contains("Max-Age=0"), "logout must clear the session cookie");
+            assertEquals(303,
+                    http.send(get(base + "/play", firstSession), ofString()).statusCode(),
+                    "revoked session cookie must no longer authenticate /play");
+
             String alice = login(base, "dev-alice");
 
-            // (c) cross-origin seat charter is blocked by CsrfGuard.
+            // (d) cross-origin seat charter is blocked by CsrfGuard.
             HttpResponse<String> crossSite = http.send(postJson(base + "/api/v1/seats",
                     "{\"seatName\":\"Blocked House\",\"controllerKind\":\"HUMAN\"}", alice,
                     "https://evil.example"), ofString());
             assertEquals(403, crossSite.statusCode(), crossSite.body());
             assertTrue(crossSite.body().contains("CSRF_REJECTED"), crossSite.body());
 
-            // (d) the HTML-rich seat name charters fine under the printable rule.
+            // (e) the HTML-rich seat name charters fine under the printable rule.
             HttpResponse<String> seat = http.send(postJson(base + "/api/v1/seats",
                     "{\"seatName\":\"" + PAYLOAD_SEAT + "\",\"controllerKind\":\"HUMAN\"}",
                     alice, null), ofString());
             assertEquals(201, seat.statusCode(), seat.body());
 
-            // (e) /play renders the stored payload escaped, never raw.
+            // (f) /play renders the stored payload escaped, never raw, with timeScale & drawer.
             HttpResponse<String> console = http.send(get(base + "/play", alice), ofString());
             assertEquals(200, console.statusCode(), console.body());
             assertTrue(contentType(console).startsWith("text/html"), contentType(console));
+            assertEquals("no-store",
+                    console.headers().firstValue("Cache-Control").orElse(""));
+            assertTrue(console.body().contains("data-time-scale=\"20\""), console.body());
+            assertTrue(console.body().contains("id=\"drawer-text\""), console.body());
             assertTrue(console.body().contains(ESCAPED_SEAT),
                     "escaped seat name expected in /play:\n" + console.body());
             assertFalse(console.body().contains(PAYLOAD_SEAT),
                     "the raw payload must not survive /play");
 
-            // (f) /chronicle (public, no cookie) escapes the public feed too.
+            // (g) /chronicle (public, no cookie) escapes the public feed too.
             HttpResponse<String> chronicle = http.send(get(base + "/chronicle", null),
                     ofString());
             assertEquals(200, chronicle.statusCode(), chronicle.body());
@@ -153,10 +223,12 @@ class FullSpineIntegrationTest {
         try {
             String base = base(server);
             String alice = login(base, "dev-alice");
-            String aliceActor = jsonField(charter(base, alice, "Alice House"), "actorId");
+            String aliceSeatBody = charter(base, alice, "Alice House");
+            long aliceSeatId = jsonLong(aliceSeatBody, "seatId");
+            String aliceActor = jsonField(aliceSeatBody, "actorId");
 
             // Live SSE tail opened before the work is submitted (replay covers the gap).
-            aliceTail = new SseTail(base + "/api/v1/stream?since=0", alice);
+            aliceTail = new SseTail(http, base + "/api/v1/stream?since=0", alice, null);
             HttpResponse<String> submitted = http.send(postJson(base + "/api/v1/commands",
                     "{\"cmdId\":\"" + UUID.randomUUID() + "\",\"type\":\"enqueue\","
                             + "\"targetActor\":\"" + aliceActor + "\",\"expectedRevision\":null,"
@@ -181,30 +253,62 @@ class FullSpineIntegrationTest {
                     frame -> "task_batch_completed".equals(frame.kind())
                             && frame.data().contains("\"batchesLeftAfter\":0")));
 
-            // Second user stays fogged: plc:2:1 exists for Alice only.
+            // Second user (RESEARCHER) charters a bot seat first, then a HUMAN seat:
+            // /play defaults to Sam's HUMAN seat, renders the seat switcher, and stays fogged.
             String sam = login(base, "dev-sam");
-            charter(base, sam, "Sam Watch");
-            HttpResponse<String> samObs = http.send(get(base + "/api/v1/observation", sam),
+            HttpResponse<String> samBotCharter = http.send(postJson(base + "/api/v1/seats",
+                    "{\"seatName\":\"Sam Bot\",\"controllerKind\":\"SCRIPT_BOT\"}", sam, null),
+                    ofString());
+            assertEquals(201, samBotCharter.statusCode(), samBotCharter.body());
+            long samBotSeatId = jsonLong(samBotCharter.body(), "seatId");
+            String samHumanBody = charter(base, sam, "Sam Watch");
+            long samHumanSeatId = jsonLong(samHumanBody, "seatId");
+
+            HttpResponse<String> samObs = http.send(
+                    get(base + "/api/v1/observation?seatId=" + samHumanSeatId, sam),
                     ofString());
             assertEquals(200, samObs.statusCode(), samObs.body());
             assertTrue(samObs.body().contains("plc:0:1"), samObs.body());
             assertFalse(samObs.body().contains("plc:2:1"),
                     "fog must hide plc:2:1 from Sam's observation:\n" + samObs.body());
+            assertFalse(samObs.body().contains(aliceActor),
+                    "Sam's observation must not include Alice's actor:\n" + samObs.body());
             HttpResponse<String> samConsole = http.send(get(base + "/play", sam), ofString());
             assertEquals(200, samConsole.statusCode(), samConsole.body());
+            assertTrue(samConsole.body().contains("data-seat-id=\"" + samHumanSeatId + "\""),
+                    "/play must default to the first HUMAN seat even when a bot seat came first");
+            assertTrue(samConsole.body().contains("/play?seatId=" + samBotSeatId),
+                    "multi-seat /play must render the seat switcher");
             assertFalse(samConsole.body().contains("plc:2:1"),
                     "fog must hide plc:2:1 from Sam's console:\n" + samConsole.body());
+            assertFalse(samConsole.body().contains(aliceActor),
+                    "Sam's console must not expose Alice's actor");
+            assertEquals(200, http.send(get(base + "/play?seatId=" + samBotSeatId, sam),
+                    ofString()).statusCode());
+            assertEquals(403, http.send(get(base + "/play?seatId=" + aliceSeatId, sam),
+                    ofString()).statusCode(), "foreign ?seatId on /play must be 403");
 
-            // Sam cannot command Alice's actor (owner mismatch is a 409 FORBIDDEN).
-            HttpResponse<String> samCommand = http.send(postJson(base + "/api/v1/commands",
+            // Sam cannot examine or command Alice's actor; public chronicle leaks zero fog.
+            HttpResponse<String> samExamineAlice = http.send(get(
+                    base + "/api/v1/examine?type=actor&id=" + aliceActor + "&seatId="
+                            + samHumanSeatId, sam), ofString());
+            assertEquals(403, samExamineAlice.statusCode(), samExamineAlice.body());
+            HttpResponse<String> samCommand = http.send(postJson(
+                    base + "/api/v1/commands?seatId=" + samHumanSeatId,
                     "{\"cmdId\":\"" + UUID.randomUUID() + "\",\"type\":\"enqueue\","
                             + "\"targetActor\":\"" + aliceActor + "\",\"expectedRevision\":null,"
                             + "\"tasks\":[{\"type\":\"wait\",\"durationMs\":1000,\"batches\":1}]}",
                     sam, null), ofString());
             assertEquals(409, samCommand.statusCode(), samCommand.body());
             assertTrue(samCommand.body().contains("FORBIDDEN"), samCommand.body());
+            HttpResponse<String> publicChronicle = http.send(get(base + "/chronicle", null),
+                    ofString());
+            assertEquals(200, publicChronicle.statusCode());
+            assertFalse(publicChronicle.body().contains("plc:2:1"), publicChronicle.body());
+            assertFalse(publicChronicle.body().contains("arrived at"), publicChronicle.body());
 
-            // Catch-up: the full travel/wait history replays from cursor 1.
+            // Catch-up: the full travel/wait history replays from cursor 1; Last-Event-ID
+            // resumes SSE past already-seen cursors with immediate header flush.
             HttpResponse<String> events = http.send(get(base + "/api/v1/events?since=1", alice),
                     ofString());
             assertEquals(200, events.statusCode(), events.body());
@@ -212,7 +316,15 @@ class FullSpineIntegrationTest {
             assertTrue(events.body().contains("arrived at plc:2:1"), events.body());
             assertTrue(events.body().contains("completed a wait batch"), events.body());
             assertAscendingCursors(events.body());
-            assertTrue(jsonLong(events.body(), "nextSince") > 1, events.body());
+            long latestAliceCursor = jsonLong(events.body(), "nextSince");
+            assertTrue(latestAliceCursor > 1, events.body());
+            try (SseTail resumed = new SseTail(http, base + "/api/v1/stream?since=0", alice,
+                    String.valueOf(latestAliceCursor - 1))) {
+                resumed.awaitSequence("Last-Event-ID resume", List.of(
+                        frame -> frame.cursor() == latestAliceCursor));
+                assertEquals(latestAliceCursor, resumed.firstCursor(),
+                        "Last-Event-ID must advance past ?since=0");
+            }
             HttpResponse<String> catchUp = http.send(get(base + "/play?since=1", alice),
                     ofString());
             assertEquals(200, catchUp.statusCode(), catchUp.body());
@@ -246,7 +358,8 @@ class FullSpineIntegrationTest {
                     get(base1 + "/api/v1/events?since=0", alice), ofString());
             assertEquals(200, firstPage.statusCode(), firstPage.body());
             long replayFrom = jsonLong(firstPage.body(), "nextSince");
-            SseTail tail = new SseTail(base1 + "/api/v1/stream?since=" + replayFrom, alice);
+            SseTail tail = new SseTail(http, base1 + "/api/v1/stream?since=" + replayFrom,
+                    alice, null);
             try {
                 // Warm the logical clock up to wall time first: an idle world parks its
                 // clock, so an un-warmed first advance would fast-forward through BOTH
@@ -270,16 +383,16 @@ class FullSpineIntegrationTest {
                 assertEquals(200, submitted.statusCode(), submitted.body());
 
                 // Batch #1 lands at +5_000 logical ms (~250ms wall); batch #2 is due at
-                // +10_000 — the abort must land inside that ~250ms window.
+                // +10_000 — abort server1 IMMEDIATELY before joining the SSE reader so
+                // nothing races the ~250ms crash window!
                 tail.awaitSequence("batch #1", List.of(
                         frame -> "task_batch_completed".equals(frame.kind())
                                 && frame.data().contains("\"batchesLeftAfter\":1")));
+                server1.closeWithoutCheckpoint(); // abrupt kill -9 stand-in
+                server1Alive = false;
             } finally {
                 tail.close();
             }
-
-            server1.closeWithoutCheckpoint(); // abrupt kill -9 stand-in
-            server1Alive = false;
             long hashBeforeCrash = server1.worldHost().worldHash();
             long lastCommittedMs = scalar(testJdbi,
                     "SELECT max(admitted_ms) FROM wilds_world.command_wal"
@@ -312,8 +425,8 @@ class FullSpineIntegrationTest {
                 assertEquals(cursorBefore, jsonLong(recovered.body(), "nextSince"),
                         "the recovered event stream ends exactly at the pre-crash cursor");
 
-                SseTail tail2 = new SseTail(base2 + "/api/v1/stream?since=" + cursorBefore,
-                        alice);
+                SseTail tail2 = new SseTail(http,
+                        base2 + "/api/v1/stream?since=" + cursorBefore, alice, null);
                 try {
                     tail2.awaitSequence("batch #2 after recovery", List.of(
                             frame -> "task_batch_completed".equals(frame.kind())
@@ -487,6 +600,16 @@ class FullSpineIntegrationTest {
         }
     }
 
+    /** Extracts the {@code <meta name="csrf-token" content="...">} value from SSR HTML. */
+    private static String extractCsrfMeta(String html) {
+        String marker = "<meta name=\"csrf-token\" content=\"";
+        int start = html.indexOf(marker);
+        assertTrue(start >= 0, "csrf-token meta tag missing in:\n" + html);
+        int valueStart = start + marker.length();
+        int valueEnd = html.indexOf('"', valueStart);
+        return html.substring(valueStart, valueEnd);
+    }
+
     /** Crude top-level string field extraction (charter body). */
     private static String jsonField(String body, String field) {
         int key = body.indexOf("\"" + field + "\":\"");
@@ -542,9 +665,16 @@ class FullSpineIntegrationTest {
         private final AtomicLong firstCursor = new AtomicLong(0);
         private volatile String failure;
 
-        SseTail(String url, String cookie) throws Exception {
-            response = HttpClient.newHttpClient()
-                    .send(get(url, cookie), HttpResponse.BodyHandlers.ofInputStream());
+        SseTail(HttpClient client, String url, String cookie, String lastEventId)
+                throws Exception {
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url)).GET();
+            if (cookie != null) {
+                builder.header("Cookie", cookie);
+            }
+            if (lastEventId != null) {
+                builder.header("Last-Event-ID", lastEventId);
+            }
+            response = client.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
             assertEquals(200, response.statusCode());
             assertEquals("text/event-stream; charset=utf-8", contentType(response));
             reader = Thread.ofVirtual().name("wilds-sse-tail").start(this::drain);

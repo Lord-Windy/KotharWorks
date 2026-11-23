@@ -758,6 +758,12 @@ class CrashRecoveryTest {
         }
 
         @Override
+        public List<StoredWorldEvent> readRecentEvents(int worldId, Long seatIdOrNullForPublic,
+                int limit) {
+            return delegate.readRecentEvents(worldId, seatIdOrNullForPublic, limit);
+        }
+
+        @Override
         public void saveCheckpoint(int worldId, long upToWalSeq, long logicalMs, long worldHash,
                 String stateJson) {
             delegate.saveCheckpoint(worldId, upToWalSeq, logicalMs, worldHash, stateJson);

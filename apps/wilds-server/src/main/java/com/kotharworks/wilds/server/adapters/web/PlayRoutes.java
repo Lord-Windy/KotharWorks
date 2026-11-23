@@ -28,12 +28,14 @@ import com.kotharworks.auth.http.CookieCodec;
 import com.kotharworks.auth.principal.Principal;
 import com.kotharworks.auth.spi.SessionRecord;
 import com.kotharworks.wilds.observe.ActorDto;
-import com.kotharworks.wilds.observe.OwnerObservation;
 import com.kotharworks.wilds.observe.ObservationProjector;
+import com.kotharworks.wilds.observe.OwnerObservation;
 import com.kotharworks.wilds.observe.PlaceDto;
 import com.kotharworks.wilds.observe.WorldView;
 import com.kotharworks.wilds.server.adapters.http.ApiJson;
 import com.kotharworks.wilds.server.adapters.http.RouteGuard;
+import com.kotharworks.wilds.server.domain.ControllerKind;
+import com.kotharworks.wilds.server.domain.SeatAuthorizationException;
 import com.kotharworks.wilds.server.domain.WorldHost;
 import com.kotharworks.wilds.server.ports.AuthStorePort;
 import com.kotharworks.wilds.server.ports.SeatRecord;
@@ -60,17 +62,17 @@ import com.kotharworks.wilds.worldgen.StubDescriptionComposer;
  *
  * <p>Views: unseated humans get a Claim Seat form (the page's JS fetches
  * {@code POST /api/v1/seats}); freshly chartered seats get a self-refreshing
- * "entering the world" page; seated humans get the console — header bar,
- * catch-up banner, fogged place &amp; topology panel, actor &amp; task queue
- * panel with {@code expectedRevision}-stamped controls, and the live SSE
- * event log. Every dynamic value renders through {@link Html#text(CharSequence)}
- * or escaped {@link Html.Attr} values, so stored HTML-rich seat names can
- * never break out of the document.
+ * "entering the world" page; seated humans get the console — header bar (with
+ * a multi-seat switcher when the account owns more than one seat), catch-up
+ * banner, fogged place &amp; topology panel, actor &amp; task queue panel with
+ * {@code expectedRevision}-stamped controls, and the live SSE event log. Every
+ * dynamic value renders through {@link Html#text(CharSequence)} or escaped
+ * {@link Html.Attr} values, so stored HTML-rich seat names can never break out
+ * of the document.
  */
 public final class PlayRoutes {
 
     private static final int CATCH_UP_LIMIT = 50;
-    private static final int LOG_LIMIT = 1_000;
     private static final int LOG_TAIL = 30;
     private static final int QUEUE_SLOTS = 5;
 
@@ -78,13 +80,23 @@ public final class PlayRoutes {
     private final WorldStorePort worldStore;
     private final WorldHost worldHost;
     private final CookieCodec cookies;
+    private final long timeScale;
 
     public PlayRoutes(AuthStorePort authStore, WorldStorePort worldStore, WorldHost worldHost,
-            CookieCodec cookies) {
+            CookieCodec cookies, long timeScale) {
         this.authStore = Objects.requireNonNull(authStore, "authStore");
         this.worldStore = Objects.requireNonNull(worldStore, "worldStore");
         this.worldHost = Objects.requireNonNull(worldHost, "worldHost");
         this.cookies = Objects.requireNonNull(cookies, "cookies");
+        if (timeScale < 1) {
+            throw new IllegalArgumentException("timeScale must be >= 1, got: " + timeScale);
+        }
+        this.timeScale = timeScale;
+    }
+
+    public PlayRoutes(AuthStorePort authStore, WorldStorePort worldStore, WorldHost worldHost,
+            CookieCodec cookies) {
+        this(authStore, worldStore, worldHost, cookies, 1L);
     }
 
     /** Registers the console route. */
@@ -105,23 +117,52 @@ public final class PlayRoutes {
     }
 
     private void render(RouteContext ctx, Principal.HumanPrincipal human) throws IOException {
+        Map<String, String> query = ApiJson.query(ctx);
+        Long requestedSeatId = query.containsKey("seatId") && !query.get("seatId").isBlank()
+                ? ApiJson.queryLong(query, "seatId", -1)
+                : null;
+        long since = ApiJson.queryLong(query, "since", 0);
+        if (since < 0) {
+            throw new IllegalArgumentException(
+                    "query parameter \"since\" must be >= 0, got: " + since);
+        }
         String csrfToken = csrfTokenFor(ctx);
         List<SeatRecord> seats = worldStore.findSeatsByOwner(human.userId());
         if (seats.isEmpty()) {
-            respondHtml(ctx, unseatedPage(csrfToken));
+            if (requestedSeatId != null) {
+                throw new SeatAuthorizationException(403, "FORBIDDEN",
+                        "seat " + requestedSeatId + " is not owned by this account");
+            }
+            respondHtml(ctx, unseatedPage(human, csrfToken));
             return;
         }
-        SeatRecord seat = seats.getFirst();
+        SeatRecord seat = selectSeat(seats, requestedSeatId);
         WorldView view = worldHost.view();
         OwnerRow owner = view.findOwnerBySeatKey(seat.seatId()).orElse(null);
         if (owner == null) {
-            respondHtml(ctx, registeringPage(seat, csrfToken));
+            respondHtml(ctx, registeringPage(human, seat, seats, csrfToken));
             return;
         }
-        respondHtml(ctx, consolePage(ctx, human, seat, owner, view, csrfToken));
+        respondHtml(ctx, consolePage(human, seat, seats, owner, view, since, csrfToken));
+    }
+
+    private static SeatRecord selectSeat(List<SeatRecord> seats, Long requestedSeatId) {
+        if (requestedSeatId != null) {
+            return seats.stream()
+                    .filter(candidate -> candidate.seatId() == requestedSeatId)
+                    .findFirst()
+                    .orElseThrow(() -> new SeatAuthorizationException(403, "FORBIDDEN",
+                            "seat " + requestedSeatId + " is not owned by this account"));
+        }
+        return seats.stream()
+                .filter(candidate -> candidate.controllerKind() == ControllerKind.HUMAN)
+                .findFirst()
+                .orElseGet(seats::getFirst);
     }
 
     private static void respondHtml(RouteContext ctx, Html html) throws IOException {
+        ctx.exchange().getResponseHeaders().set("Cache-Control", "no-store");
+        ctx.exchange().getResponseHeaders().set("X-Content-Type-Options", "nosniff");
         ctx.respondText(200, "text/html; charset=utf-8", html.render());
     }
 
@@ -168,6 +209,29 @@ public final class PlayRoutes {
                 .close("form");
     }
 
+    private static Html seatSwitcher(Html html, SeatRecord current, List<SeatRecord> seats) {
+        if (seats.size() <= 1) {
+            return html;
+        }
+        html.open("nav", new Html.Attr("class", "seat-switcher"))
+                .text("Seats: ");
+        for (int i = 0; i < seats.size(); i++) {
+            if (i > 0) {
+                html.text(" · ");
+            }
+            SeatRecord candidate = seats.get(i);
+            String label = candidate.seatName() + " (" + candidate.controllerKind().name() + ")";
+            if (candidate.seatId() == current.seatId()) {
+                html.open("strong").text(label).close("strong");
+            } else {
+                html.open("a", new Html.Attr("href", "/play?seatId=" + candidate.seatId()))
+                        .text(label)
+                        .close("a");
+            }
+        }
+        return html.close("nav");
+    }
+
     private static Html noticeArea(Html html) {
         return html.open("div", new Html.Attr("id", "notice"), new Html.Attr("hidden", "hidden"))
                 .close("div");
@@ -175,19 +239,24 @@ public final class PlayRoutes {
 
     // ------------------------------------------------------------------ unseated view
 
-    private Html unseatedPage(String csrfToken) {
-        return head("Claim Seat", csrfToken, false)
+    private Html unseatedPage(Principal.HumanPrincipal human, String csrfToken) {
+        Html html = head("Claim Seat", csrfToken, false)
                 .open("body")
                 .open("header", new Html.Attr("class", "console-bar"))
                 .open("h1").text("Ironwood Wilds").close("h1")
-                .close("header")
-                .open("div", new Html.Attr("class", "panel"))
+                .open("span", new Html.Attr("class", "meta"))
+                .text(human.displayName())
+                .close("span");
+        signOutForm(html, csrfToken);
+        html.close("header");
+        noticeArea(html);
+        return html.open("div", new Html.Attr("class", "panel"))
                 .open("h2").text("Claim Seat").close("h2")
                 .open("p").text("You are signed in but hold no seat in the world yet. "
                         + "Charter one to enter the wilds.").close("p")
-                .open("form", new Html.Attr("id", "claim-seat-form"))
-                .voidTag("input", new Html.Attr("type", "hidden"),
-                        new Html.Attr("name", "csrf_token"), new Html.Attr("value", csrfToken))
+                .open("form", new Html.Attr("id", "claim-seat-form"),
+                        new Html.Attr("method", "post"),
+                        new Html.Attr("action", "/play"))
                 .voidTag("input", new Html.Attr("type", "hidden"),
                         new Html.Attr("name", "controllerKind"), new Html.Attr("value", "HUMAN"))
                 .open("label", new Html.Attr("for", "seat-name"))
@@ -209,12 +278,18 @@ public final class PlayRoutes {
 
     // ------------------------------------------------------------------ registering view
 
-    private Html registeringPage(SeatRecord seat, String csrfToken) {
-        return head("Entering", csrfToken, true)
+    private Html registeringPage(Principal.HumanPrincipal human, SeatRecord seat,
+            List<SeatRecord> seats, String csrfToken) {
+        Html html = head("Entering", csrfToken, true)
                 .open("body")
                 .open("header", new Html.Attr("class", "console-bar"))
                 .open("h1").text("Ironwood Wilds").close("h1")
-                .close("header")
+                .open("span", new Html.Attr("class", "meta"))
+                .text(human.displayName())
+                .close("span");
+        seatSwitcher(html, seat, seats);
+        signOutForm(html, csrfToken);
+        return html.close("header")
                 .open("div", new Html.Attr("class", "panel"))
                 .open("p").text("Seat \"" + seat.seatName()
                         + "\" is entering the world — this page refreshes itself.")
@@ -226,8 +301,9 @@ public final class PlayRoutes {
 
     // ------------------------------------------------------------------ seated console
 
-    private Html consolePage(RouteContext ctx, Principal.HumanPrincipal human, SeatRecord seat,
-            OwnerRow owner, WorldView view, String csrfToken) throws IOException {
+    private Html consolePage(Principal.HumanPrincipal human, SeatRecord seat,
+            List<SeatRecord> seats, OwnerRow owner, WorldView view, long since,
+            String csrfToken) {
         OwnerObservation observation = ObservationProjector.projectOwner(view, owner.id(),
                 StubDescriptionComposer.INSTANCE);
         ActorDto actor = observation.actors().getFirst();
@@ -243,10 +319,11 @@ public final class PlayRoutes {
                         new Html.Attr("data-actor-id", actor.id().toWire()),
                         new Html.Attr("data-expected-revision", String.valueOf(actor.revision())),
                         new Html.Attr("data-place-id", actor.placeId().toWire()),
-                        new Html.Attr("data-server-now-ms", String.valueOf(view.nowMs())));
-        headerBar(html, human, seat, view, csrfToken);
+                        new Html.Attr("data-server-now-ms", String.valueOf(view.nowMs())),
+                        new Html.Attr("data-time-scale", String.valueOf(timeScale)));
+        headerBar(html, human, seat, seats, view, csrfToken);
         noticeArea(html);
-        catchUpBanner(ctx, html, seat);
+        catchUpBanner(html, seat, seats.size() > 1, since);
         html.open("div", new Html.Attr("class", "panel"), new Html.Attr("id", "away-panel"),
                         new Html.Attr("hidden", "hidden"))
                 .open("h2").text("While You Were Away").close("h2")
@@ -256,6 +333,7 @@ public final class PlayRoutes {
         actorPanel(html, actor, view.nowMs());
         eventLogPanel(html, seat);
         return html.open("div", new Html.Attr("id", "drawer"), new Html.Attr("hidden", "hidden"))
+                .open("pre", new Html.Attr("id", "drawer-text")).close("pre")
                 .open("button", new Html.Attr("id", "drawer-close"),
                         new Html.Attr("type", "button"))
                 .text("Close")
@@ -266,7 +344,7 @@ public final class PlayRoutes {
     }
 
     private void headerBar(Html html, Principal.HumanPrincipal human, SeatRecord seat,
-            WorldView view, String csrfToken) {
+            List<SeatRecord> seats, WorldView view, String csrfToken) {
         // No title concept exists on WorldRecord (seed + version triple only), so the
         // header line carries world id/seed/clock instead of inventing a new field.
         html.open("header", new Html.Attr("class", "console-bar"))
@@ -274,26 +352,29 @@ public final class PlayRoutes {
                 .open("span", new Html.Attr("class", "meta"))
                 .text("Seat: " + seat.seatName())
                 .text(" — world " + worldHost.worldId() + ", seed " + view.seed().value()
-                        + ", nowMs " + view.nowMs())
+                        + ", nowMs ")
+                .open("span", new Html.Attr("id", "now-ms"))
+                .text(String.valueOf(view.nowMs()))
+                .close("span")
                 .text(" — " + human.displayName())
                 .close("span");
+        seatSwitcher(html, seat, seats);
         signOutForm(html, csrfToken);
         html.close("header");
     }
 
-    private void catchUpBanner(RouteContext ctx, Html html, SeatRecord seat) throws IOException {
-        Map<String, String> query = ApiJson.query(ctx);
-        long since = ApiJson.queryLong(query, "since", 0);
+    private void catchUpBanner(Html html, SeatRecord seat, boolean multiSeat, long since) {
         if (since <= 0) {
             return;
         }
-        List<StoredWorldEvent> missed = worldStore.readEventsSince(worldHost.worldId(),
+        List<StoredWorldEvent> missed = worldHost.readSeatEventsSince(
                 seat.seatId(), since, CATCH_UP_LIMIT);
         html.open("div", new Html.Attr("class", "panel"))
                 .open("h2").text("While You Were Away").close("h2");
         if (missed.isEmpty()) {
             html.open("p").text("No events since cursor " + since + ".").close("p");
         } else {
+            String liveHref = multiSeat ? "/play?seatId=" + seat.seatId() : "/play";
             html.open("ul", new Html.Attr("id", "catch-up"));
             for (StoredWorldEvent event : missed) {
                 html.open("li").text("#" + event.cursor() + " [" + event.kind() + "] ")
@@ -301,7 +382,7 @@ public final class PlayRoutes {
             }
             html.close("ul")
                     .open("p")
-                    .open("a", new Html.Attr("href", "/play"))
+                    .open("a", new Html.Attr("href", liveHref))
                     .text("Back to the live console")
                     .close("a")
                     .close("p");
@@ -326,6 +407,7 @@ public final class PlayRoutes {
                 .close("p")
                 .open("p", new Html.Attr("id", "place-look")).text(actor.look()).close("p");
         html.open("button", new Html.Attr("type", "button"),
+                        new Html.Attr("id", "examine-btn"),
                         new Html.Attr("data-examine-id", actor.placeId().toWire()))
                 .text("Examine")
                 .close("button");
@@ -365,7 +447,9 @@ public final class PlayRoutes {
                         actor.energyMilliAtNow())).close("span")
                 .close("dd")
                 .open("dt").text("Fail Policy").close("dt")
-                .open("dd").text(actor.failPolicy().name()).close("dd")
+                .open("dd", new Html.Attr("id", "fail-policy"))
+                .text(actor.failPolicy().name())
+                .close("dd")
                 .close("dl");
 
         ActiveTask task = actor.activeTask();
@@ -424,11 +508,8 @@ public final class PlayRoutes {
     }
 
     private void eventLogPanel(Html html, SeatRecord seat) {
-        List<StoredWorldEvent> rows = worldStore.readEventsSince(worldHost.worldId(),
-                seat.seatId(), 0, LOG_LIMIT);
-        List<StoredWorldEvent> tail = rows.subList(Math.max(0, rows.size() - LOG_TAIL),
-                rows.size());
-        long lastCursor = rows.isEmpty() ? 0 : rows.getLast().cursor();
+        List<StoredWorldEvent> tail = worldHost.readRecentSeatEvents(seat.seatId(), LOG_TAIL);
+        long lastCursor = tail.isEmpty() ? 0 : tail.getLast().cursor();
         html.open("div", new Html.Attr("class", "panel"))
                 .open("h2").text("Live Event Log").close("h2")
                 .open("ul", new Html.Attr("id", "event-log"),

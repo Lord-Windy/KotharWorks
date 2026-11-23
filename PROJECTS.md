@@ -159,27 +159,33 @@ exclusively through `libs/auth`'s deny-by-default `AuthenticatedRouter`. CLI fla
 rate limits. Run via
 `mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am`.
 Ticket 09 adds `adapters/web/` — an escape-by-default HTML builder (`Html`,
-`RawTrustedHtml` as the single explicit bypass, name-guarded tags/attrs) rendering
+`RawTrustedHtml` as the single explicit bypass, name- and HTML5-void-guarded
+tags/attrs) rendering
 the SSR structural console: `GET /play` (registered PUBLIC with HUMAN_ONLY
 enforced in-handler so anonymous browsers get the mandated 303 -> `/auth/login`
 instead of a bare 401; unseated users get a Claim Seat form, seated users the
-console — header bar, "While You Were Away" catch-up banner via `?since=`,
-fogged place & topology panel with [Examine] drawer, actor & task queue panel with
-integer-formatted energy/duration and `expectedRevision`-stamped controls routed
-strictly through `POST /api/v1/commands`, and an SSE-fed live event log) plus the
+console — header bar with multi-seat switcher (`?seatId=`, defaulting to the
+first `HUMAN` seat) and form logout redirecting to `/chronicle`, "While You Were
+Away" catch-up banner via `?since=`, fogged place & topology panel with
+`[Examine]` drawer, actor & task queue panel with integer-formatted
+energy/duration and `expectedRevision`-stamped controls routed strictly through
+`POST /api/v1/commands`, and an SSE-fed live event log tail) plus the
 public `GET /chronicle` observatory (world seed/version triple, logical clock,
-`ControllerKind` seat breakdown, publicSummary-only feed). Vanilla
+`ControllerKind` seat breakdown, newest-tail `publicSummary`-only feed). Vanilla
 `/assets/wilds-ui.js` (< 200 LOC) + `wilds.css` drive it: native `EventSource`
-with `localStorage` cursor resume, `requestAnimationFrame` progress-bar
-interpolation from `(startedMs, dueMs, serverNowMs)` with zero polling, and
-non-destructive `409 STALE_STATE` refreshes. Supporting changes:
-`WorldStorePort.findAllSeats` (public roster), and `WorldHost`/`WildsServer`
+with immediate header flush, `Last-Event-ID` reconnect, and seat-scoped
+`localStorage` cursor resume, `timeScale`-aware `requestAnimationFrame`
+progress-bar interpolation from `(startedMs, dueMs, serverNowMs)` with zero
+polling, coalesced observation refreshes, and non-destructive `409 STALE_STATE`
+recovery. Supporting changes: `WorldStorePort.findAllSeats` (public roster),
+`WorldStorePort.readRecentEvents` + `WorldHost.readRecentSeatEvents`/`readRecentPublicEvents`
+(indexed newest-tail queries), and `WorldHost`/`WildsServer`
 `closeWithoutCheckpoint()` — a deterministic in-process `kill -9` for the crash
 rig that skips the final anchor/checkpoint — all locked together by
 `FullSpineIntegrationTest` (Testcontainers PostgreSQL + loopback HTTP/SSE:
-auth/CSRF/XSS escaping E2E, two-user fog isolation with monotonic SSE cursors,
-mid-flight crash with `PAUSE_WHILE_DOWN` recovery and bit-for-bit
-`wilds-headless replay` `WorldHash` parity).
+auth/CSRF/logout/XSS escaping E2E, multi-seat & two-user fog isolation with
+monotonic SSE cursors, mid-flight crash with `PAUSE_WHILE_DOWN` recovery and
+bit-for-bit `wilds-headless replay` `WorldHash` parity).
 
 ## External dependencies
 

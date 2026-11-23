@@ -125,6 +125,18 @@ public interface WorldStorePort {
     List<StoredWorldEvent> readEventsSince(int worldId, Long seatIdOrNullForPublic,
             long sinceCursor, int limit);
 
+    /**
+     * Reads the most recent events (up to {@code limit} rows), returned in
+     * ascending {@code cursor} order so the last element carries the latest
+     * cursor.
+     *
+     * @param seatIdOrNullForPublic when non-null, that seat's private events;
+     *                              when null, only events carrying a
+     *                              {@code publicSummary}, projected to public
+     *                              fields only
+     */
+    List<StoredWorldEvent> readRecentEvents(int worldId, Long seatIdOrNullForPublic, int limit);
+
     // ------------------------------------------------------------- checkpoints & recovery
 
     /**

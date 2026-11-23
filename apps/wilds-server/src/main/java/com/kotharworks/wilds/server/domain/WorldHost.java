@@ -738,6 +738,52 @@ public final class WorldHost {
         return List.copyOf(merged);
     }
 
+    /**
+     * Reads the most recent {@code limit} private events for {@code seatId} in
+     * ascending {@code cursor} order, merging persisted rows with any newer
+     * WAL-committed events in {@code pendingEvents}.
+     */
+    public List<StoredWorldEvent> readRecentSeatEvents(long seatId, int limit) {
+        List<StoredWorldEvent> persisted = worldStore.readRecentEvents(worldId, seatId, limit);
+        List<StoredWorldEvent> deferred = pendingEventsSnapshot;
+        if (deferred.isEmpty()) {
+            return persisted;
+        }
+        long floor = persisted.isEmpty() ? 0L : persisted.getLast().cursor();
+        List<StoredWorldEvent> merged = new ArrayList<>(persisted);
+        for (StoredWorldEvent event : deferred) {
+            if (event.cursor() > floor && Objects.equals(event.seatId(), seatId)) {
+                merged.add(event);
+                floor = event.cursor();
+            }
+        }
+        int start = Math.max(0, merged.size() - limit);
+        return List.copyOf(merged.subList(start, merged.size()));
+    }
+
+    /**
+     * Reads the most recent {@code limit} public-projected world events in
+     * ascending {@code cursor} order, merging persisted rows with any newer
+     * WAL-committed public events in {@code pendingEvents}.
+     */
+    public List<StoredWorldEvent> readRecentPublicEvents(int limit) {
+        List<StoredWorldEvent> persisted = worldStore.readRecentEvents(worldId, null, limit);
+        List<StoredWorldEvent> deferred = pendingEventsSnapshot;
+        if (deferred.isEmpty()) {
+            return persisted;
+        }
+        long floor = persisted.isEmpty() ? 0L : persisted.getLast().cursor();
+        List<StoredWorldEvent> merged = new ArrayList<>(persisted);
+        for (StoredWorldEvent event : deferred) {
+            if (event.cursor() > floor && event.publicSummary() != null) {
+                merged.add(StoredWorldEvent.publicProjection(event));
+                floor = event.cursor();
+            }
+        }
+        int start = Math.max(0, merged.size() - limit);
+        return List.copyOf(merged.subList(start, merged.size()));
+    }
+
     /** The freshest published {@link WorldView} — deeply immutable, lock-free to read. */
     public WorldView view() {
         return view;

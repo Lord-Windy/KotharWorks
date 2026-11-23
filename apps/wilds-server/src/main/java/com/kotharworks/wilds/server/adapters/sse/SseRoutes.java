@@ -82,6 +82,20 @@ public final class SseRoutes {
             throw new IllegalArgumentException(
                     "query parameter \"since\" must be >= 0, got: " + since);
         }
+        String lastEventId = ctx.exchange().getRequestHeaders().getFirst("Last-Event-ID");
+        if (lastEventId != null && !lastEventId.isBlank()) {
+            try {
+                long parsedId = Long.parseLong(lastEventId.trim());
+                if (parsedId < 0) {
+                    throw new IllegalArgumentException(
+                            "header \"Last-Event-ID\" must be >= 0, got: " + parsedId);
+                }
+                since = Math.max(since, parsedId);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        "header \"Last-Event-ID\" must be an integer, got: " + lastEventId);
+            }
+        }
         AuthorizedSeat authorized = seatAuthorizer.authorize(ctx.principal(), seatIdParam,
                 worldHost.view());
         long seatId = authorized.seat().seatId();
@@ -98,10 +112,14 @@ public final class SseRoutes {
         try {
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
             exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+            exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
             // 0L (not -1L): chunked streaming mode on the JDK HttpServer.
             exchange.sendResponseHeaders(200, 0L);
             long lastSent = since;
             try (OutputStream out = exchange.getResponseBody()) {
+                // Flush the chunked 200 status/headers immediately even when catchUp is empty.
+                out.write((": connected\n\n").getBytes(StandardCharsets.UTF_8));
+                out.flush();
                 lastSent = catchUp(out, seatId, lastSent);
                 while (true) {
                     StoredWorldEvent event = queue.poll(KEEPALIVE_SECONDS, TimeUnit.SECONDS);

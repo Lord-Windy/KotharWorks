@@ -182,6 +182,8 @@ class AuthSecurityGateTest {
 
         assertEquals(403, get("/api/v1/observation?seatId=" + samSeat, alice).statusCode(),
                 "Alice must not read Sam's observation");
+        assertEquals(403, get("/play?seatId=" + samSeat, alice).statusCode(),
+                "Alice must not render Sam's seat on /play");
         HttpResponse<String> crossWrite = post("/api/v1/commands", "{\"cmdId\":\""
                 + UUID.randomUUID() + "\",\"type\":\"enqueue\",\"targetActor\":\"" + samActor
                 + "\",\"tasks\":[{\"type\":\"wait\",\"durationMs\":100,\"batches\":1}]}", alice);
@@ -268,6 +270,11 @@ class AuthSecurityGateTest {
                 + seatId + "/tokens/1")).header("Authorization", "Bearer " + token)
                 .DELETE().build(), HttpResponse.BodyHandlers.ofString()).statusCode(),
                 "bot token revocation must be 403");
+        HttpResponse<String> botPlay = get("/play", token);
+        assertEquals(403, botPlay.statusCode(), "bot token on human /play console must be 403");
+        assertEquals("FORBIDDEN", strField(json(botPlay.body()), "errorCode"));
+        assertEquals(403, post("/auth/logout", "{}", token).statusCode(),
+                "bot token on /auth/logout must be 403");
     }
 
     // ------------------------------------------------------------------ #11 instant suspension

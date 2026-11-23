@@ -16,6 +16,7 @@
 package com.kotharworks.wilds.server.adapters.web;
 
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Escape-by-default HTML builder for the server-rendered console: every
@@ -26,13 +27,18 @@ import java.util.Objects;
  * {@link RawTrustedHtml} and passing it to {@link #raw(RawTrustedHtml)},
  * which this package uses exclusively for static developer-authored markup
  * (the doctype). Tag and attribute names are developer constants, still
- * validated against {@code [a-z0-9-]+} so nothing dynamic can smuggle markup
- * through a name.
+ * validated against {@code [a-z][a-z0-9-]*} (and void vs non-void HTML5
+ * element sets) so nothing dynamic can smuggle markup through a name or emit
+ * an unclosed non-void element.
  *
  * <p>Zero template-engine reflection: the builder appends to one
  * {@link StringBuilder} and renders the accumulated document.
  */
 public final class Html {
+
+    private static final Set<String> VOID_TAGS = Set.of(
+            "area", "base", "br", "col", "embed", "hr", "img",
+            "input", "link", "meta", "source", "track", "wbr");
 
     private final StringBuilder out = new StringBuilder();
 
@@ -62,30 +68,41 @@ public final class Html {
     }
 
     /**
-     * HTML-escapes a dynamic value: {@code &} first (so the replacements
-     * themselves are never re-escaped), then {@code < > " '}.
+     * HTML-escapes a dynamic value in a single pass: {@code & < > " '}.
+     * Returns {@code value} unchanged when no HTML-significant character is
+     * present.
      */
     public static String escape(String value) {
         Objects.requireNonNull(value, "value");
-        if (needsNoEscape(value)) {
+        int first = firstIndexToEscape(value);
+        if (first < 0) {
             return value;
         }
-        return value.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
-                .replace("'", "&#39;");
+        StringBuilder escaped = new StringBuilder(value.length() + 16);
+        escaped.append(value, 0, first);
+        for (int i = first; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '&' -> escaped.append("&amp;");
+                case '<' -> escaped.append("&lt;");
+                case '>' -> escaped.append("&gt;");
+                case '"' -> escaped.append("&quot;");
+                case '\'' -> escaped.append("&#39;");
+                default -> escaped.append(c);
+            }
+        }
+        return escaped.toString();
     }
 
-    /** True when the value holds no HTML-significant character (fast path). */
-    private static boolean needsNoEscape(String value) {
+    /** First index holding an HTML-significant character, or {@code -1} (fast path). */
+    private static int firstIndexToEscape(String value) {
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
             if (c == '&' || c == '<' || c == '>' || c == '"' || c == '\'') {
-                return false;
+                return i;
             }
         }
-        return true;
+        return -1;
     }
 
     /** Appends pre-trusted markup (e.g. {@code RawTrustedHtml}). */
@@ -107,7 +124,7 @@ public final class Html {
 
     /** Appends an opening tag {@code <tag name="value" ...>}. */
     public Html open(String tag, Attr... attrs) {
-        requireName(tag);
+        requireNonVoidTag(tag);
         out.append('<').append(tag);
         appendAttrs(attrs);
         out.append('>');
@@ -116,14 +133,18 @@ public final class Html {
 
     /** Appends a closing tag {@code </tag>}. */
     public Html close(String tag) {
-        requireName(tag);
+        requireNonVoidTag(tag);
         out.append("</").append(tag).append('>');
         return this;
     }
 
-    /** Appends a self-closing void element {@code <tag name="value" ...>}. */
+    /** Appends an HTML5 void element {@code <tag name="value" ...>}. */
     public Html voidTag(String tag, Attr... attrs) {
         requireName(tag);
+        if (!VOID_TAGS.contains(tag)) {
+            throw new IllegalArgumentException(
+                    "not an HTML5 void element: \"" + tag + "\" (use open/close)");
+        }
         out.append('<').append(tag);
         appendAttrs(attrs);
         out.append('>');
@@ -154,17 +175,30 @@ public final class Html {
         }
     }
 
-    /** Developer-constant names only: lowercase letters, digits, hyphens. */
+    private static void requireNonVoidTag(String tag) {
+        requireName(tag);
+        if (VOID_TAGS.contains(tag)) {
+            throw new IllegalArgumentException(
+                    "HTML5 void element \"" + tag + "\" has no closing tag (use voidTag)");
+        }
+    }
+
+    /** Developer-constant names only: lowercase ASCII letter followed by [a-z0-9-]. */
     private static void requireName(String name) {
         Objects.requireNonNull(name, "name");
         if (name.isEmpty()) {
             throw new IllegalArgumentException("empty tag/attribute name");
         }
-        for (int i = 0; i < name.length(); i++) {
+        char first = name.charAt(0);
+        if (first < 'a' || first > 'z') {
+            throw new IllegalArgumentException(
+                    "tag/attribute names must match [a-z][a-z0-9-]*, got: \"" + name + "\"");
+        }
+        for (int i = 1; i < name.length(); i++) {
             char c = name.charAt(i);
             if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) {
                 throw new IllegalArgumentException(
-                        "tag/attribute names must be lowercase [a-z0-9-], got: \"" + name + "\"");
+                        "tag/attribute names must match [a-z][a-z0-9-]*, got: \"" + name + "\"");
             }
         }
     }
