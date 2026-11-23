@@ -18,22 +18,28 @@ package com.kotharworks.wilds.server.ports;
 import java.util.Objects;
 
 /**
- * Permanent metadata of one simulated world. The version triple is asserted at
- * every boot so a binary that cannot safely replay an existing WAL refuses to
- * start against it.
+ * Permanent metadata of one simulated world. The version triple (and the rules
+ * fingerprint, when recorded) is asserted at every boot so a binary that cannot
+ * safely replay an existing WAL refuses to start against it.
  *
- * @param worldId         stable world id (WAL/events/checkpoints key on it)
- * @param worldSeed       canonical seed the engine was (re)created with
- * @param rulesVersion    {@code RuleRegistry.WILDS_RULES_VERSION} at creation
- * @param engineVersion   {@code WildsEngine.API_VERSION} at creation
- * @param protocolVersion server wire-protocol version at creation
- * @param status          {@code ACTIVE} or {@code ARCHIVED}
+ * @param worldId          stable world id (WAL/events/checkpoints key on it)
+ * @param worldSeed        canonical seed the engine was (re)created with
+ * @param rulesVersion     {@code RuleRegistry.WILDS_RULES_VERSION} at creation
+ * @param engineVersion    {@code WildsEngine.API_VERSION} at creation
+ * @param protocolVersion  server wire-protocol version at creation
+ * @param rulesFingerprint {@code RuleRegistry.fingerprint()} of the creating binary, or
+ *                         {@code null} for a legacy world created before the fingerprint
+ *                         was recorded (such worlds are pinned by the version triple alone)
+ * @param status           {@code ACTIVE} or {@code ARCHIVED}
  */
 public record WorldRecord(int worldId, long worldSeed, int rulesVersion, int engineVersion,
-        int protocolVersion, String status) {
+        int protocolVersion, Long rulesFingerprint, String status) {
 
     /** Status of a world currently being simulated. */
     public static final String ACTIVE = "ACTIVE";
+
+    /** Status of a world retired by a version-mismatch rollover; its rows stay intact. */
+    public static final String ARCHIVED = "ARCHIVED";
 
     public WorldRecord {
         Objects.requireNonNull(status, "status");

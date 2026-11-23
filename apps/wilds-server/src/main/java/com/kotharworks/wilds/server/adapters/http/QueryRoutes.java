@@ -31,6 +31,8 @@ import com.kotharworks.wilds.observe.ObservationProjector.ObservationRejectedExc
 import com.kotharworks.wilds.observe.WorldView;
 import com.kotharworks.wilds.replay.JsonCodec;
 import com.kotharworks.wilds.rules.RuleRegistry;
+import com.kotharworks.wilds.rules.RulesFingerprint;
+import com.kotharworks.wilds.rules.RulesJson;
 import com.kotharworks.wilds.server.ServerConfig;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer.AuthorizedSeat;
@@ -93,12 +95,16 @@ public final class QueryRoutes {
                 JsonCodec.JsonObj.entry("rulesVersion", ApiJson.num(world.rulesVersion())),
                 JsonCodec.JsonObj.entry("engineVersion", ApiJson.num(world.engineVersion())),
                 JsonCodec.JsonObj.entry("protocolVersion", ApiJson.num(world.protocolVersion())),
+                // The running binary's fingerprint; the boot gate guarantees it equals the
+                // stored world's whenever that is recorded (non-null).
+                JsonCodec.JsonObj.entry("rulesFingerprint",
+                        ApiJson.str(RulesFingerprint.toHex(worldHost.rulesFingerprint()))),
                 JsonCodec.JsonObj.entry("timeScale", ApiJson.num(config.timeScale())),
                 JsonCodec.JsonObj.entry("pumpIntervalMs", ApiJson.num(config.pumpIntervalMs()))))));
     }
 
     private void rules(RouteContext ctx) throws IOException {
-        ctx.respondJson(200, ObservationJson.rules(RuleRegistry.minimalDefault(),
+        ctx.respondJson(200, RulesJson.write(RuleRegistry.minimalDefault(),
                 RuleRegistry.WILDS_RULES_VERSION));
     }
 

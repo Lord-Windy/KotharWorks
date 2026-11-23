@@ -60,6 +60,7 @@ import com.kotharworks.wilds.server.ServerConfig;
 import com.kotharworks.wilds.server.WildsServer;
 import com.kotharworks.wilds.server.adapters.postgres.PostgresWorldStore;
 import com.kotharworks.wilds.server.domain.ControllerKind;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 
 /**
  * Ticket 09: the full Phase-0 structural spine, end to end over real
@@ -508,7 +509,8 @@ class FullSpineIntegrationTest {
                 Files.writeString(walPath, export.toString());
                 List<String> lines = export.toString().lines().toList();
                 assertEquals(new WalHeader(1L, RuleRegistry.WILDS_RULES_VERSION,
-                        WildsEngine.API_VERSION).encode(), lines.get(0),
+                        WildsEngine.API_VERSION, RuleRegistry.minimalDefault().fingerprint())
+                        .encode(), lines.get(0),
                         "export starts with the canonical WAL header");
                 long expectedSeq = 1L;
                 for (int i = 1; i < lines.size(); i++) {
@@ -557,7 +559,7 @@ class FullSpineIntegrationTest {
         return WildsServer.open(new ServerConfig(0, 1L, 20L, 50L, AuthMode.DEV_LOCAL,
                 "http://127.0.0.1:0", null, null, null, null, null, null, 100L, 200L,
                 "127.0.0.1", ServerConfig.StorageMode.POSTGRES, db.jdbcUrl(), db.username(),
-                db.password(), CHECKPOINTS_DISABLED));
+                db.password(), CHECKPOINTS_DISABLED, OnVersionMismatch.REFUSE));
     }
 
     private static String base(WildsServer server) {

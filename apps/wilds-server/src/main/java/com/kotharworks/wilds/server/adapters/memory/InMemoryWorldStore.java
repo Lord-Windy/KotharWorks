@@ -39,6 +39,10 @@ import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.domain.PrintableText;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException.Pin;
+import com.kotharworks.wilds.server.ports.ActiveWorld;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
@@ -47,7 +51,8 @@ import com.kotharworks.wilds.server.ports.WorldStorePort;
 
 /**
  * Thread-safe in-memory reference {@link WorldStorePort}: seats with unique
- * names, one active world, an append-only WAL with strictly pre-mutation
+ * names, at most one active world (archived worlds keep their logs and stay
+ * exportable), an append-only WAL with strictly pre-mutation
  * parameters, an idempotent event log, and single-slot checkpoints. A test
  * fault hook can make {@code appendCommand} throw to prove
  * Commit-Before-Mutate leaves the engine untouched. Nothing here is durable —
@@ -61,7 +66,8 @@ public final class InMemoryWorldStore implements WorldStorePort {
 
     private final Map<Long, SeatRecord> seatsById = new LinkedHashMap<>();
     private final Set<String> seatNames = new HashSet<>();
-    private WorldRecord world;
+    private final TreeMap<Integer, WorldRecord> worlds = new TreeMap<>();
+    private int activeWorldId;
     private final Map<Integer, List<WalRecord>> walByWorld = new HashMap<>();
     private final Map<Integer, Map<String, WalRecord.CommandEntry>> cmdEntriesByWorld = new HashMap<>();
     private final Map<Integer, TreeMap<Long, StoredWorldEvent>> eventsByWorld = new HashMap<>();
@@ -113,28 +119,47 @@ public final class InMemoryWorldStore implements WorldStorePort {
     }
 
     @Override
-    public WorldRecord ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
-            int protocolVersion) {
+    public ActiveWorld ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
+            int protocolVersion, long rulesFingerprint, OnVersionMismatch onMismatch) {
+        Objects.requireNonNull(onMismatch, "onMismatch");
+        Pin running = new Pin(worldSeed, rulesVersion, engineVersion, protocolVersion,
+                rulesFingerprint);
         synchronized (lock) {
-            if (world == null) {
-                world = new WorldRecord(1, worldSeed, rulesVersion, engineVersion, protocolVersion,
-                        WorldRecord.ACTIVE);
-                walByWorld.put(world.worldId(), new ArrayList<>());
-                cmdEntriesByWorld.put(world.worldId(), new HashMap<>());
-                eventsByWorld.put(world.worldId(), new TreeMap<>());
-                return world;
+            WorldRecord active = worlds.get(activeWorldId);
+            if (active == null) {
+                return new ActiveWorld(createWorld(running), null);
             }
-            if (world.worldSeed() != worldSeed || world.rulesVersion() != rulesVersion
-                    || world.engineVersion() != engineVersion
-                    || world.protocolVersion() != protocolVersion) {
-                throw new IllegalStateException("active world version triple mismatch: stored "
-                        + world.worldSeed() + "/" + world.rulesVersion() + "/"
-                        + world.engineVersion() + "/" + world.protocolVersion()
-                        + " requested " + worldSeed + "/" + rulesVersion + "/" + engineVersion
-                        + "/" + protocolVersion);
+            Pin stored = Pin.of(active);
+            if (stored.admits(running)) {
+                return new ActiveWorld(active, null);
             }
-            return world;
+            return switch (onMismatch) {
+                case REFUSE -> throw new WorldVersionMismatchException(active.worldId(), stored,
+                        running);
+                case ARCHIVE -> {
+                    WorldRecord archived = new WorldRecord(active.worldId(), active.worldSeed(),
+                            active.rulesVersion(), active.engineVersion(),
+                            active.protocolVersion(), active.rulesFingerprint(),
+                            WorldRecord.ARCHIVED);
+                    worlds.put(archived.worldId(), archived);
+                    yield new ActiveWorld(createWorld(running), archived);
+                }
+            };
         }
+    }
+
+    /** Inserts a fresh ACTIVE world with id max+1 and empty per-world logs (caller holds lock). */
+    private WorldRecord createWorld(Pin pin) {
+        int worldId = worlds.isEmpty() ? 1 : worlds.lastKey() + 1;
+        WorldRecord created = new WorldRecord(worldId, pin.worldSeed(), pin.rulesVersion(),
+                pin.engineVersion(), pin.protocolVersion(), pin.rulesFingerprint(),
+                WorldRecord.ACTIVE);
+        worlds.put(worldId, created);
+        activeWorldId = worldId;
+        walByWorld.put(worldId, new ArrayList<>());
+        cmdEntriesByWorld.put(worldId, new HashMap<>());
+        eventsByWorld.put(worldId, new TreeMap<>());
+        return created;
     }
 
     @Override
@@ -286,9 +311,12 @@ public final class InMemoryWorldStore implements WorldStorePort {
     @Override
     public void exportWalJsonl(int worldId, Writer out) throws IOException {
         synchronized (lock) {
-            requireWorld(worldId);
+            WorldRecord world = worlds.get(worldId);
+            if (world == null) {
+                throw new IllegalStateException("no world row to export: " + worldId);
+            }
             out.write(new WalHeader(world.worldSeed(), world.rulesVersion(),
-                    world.engineVersion()).encode());
+                    world.engineVersion(), world.rulesFingerprint()).encode());
             out.write('\n');
             for (WalRecord record : walByWorld.get(worldId)) {
                 out.write(CommandCodec.encodeWal(record));
@@ -319,7 +347,7 @@ public final class InMemoryWorldStore implements WorldStorePort {
     }
 
     private void requireWorld(int worldId) {
-        if (world == null || world.worldId() != worldId) {
+        if (!worlds.containsKey(worldId)) {
             throw new IllegalArgumentException("unknown world: " + worldId);
         }
     }

@@ -34,7 +34,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -203,10 +202,9 @@ class BootstrapTopologyTest {
     @Test
     void bootstrapRequiresRegisteredPlaceKinds() {
         WorldState state = new WorldState(new WorldSeed(7), RuleRegistry.WILDS_RULES_VERSION);
-        RuleRegistry incomplete = new RuleRegistry(
-                Map.of(new RuleId("camp"), new RuleRegistry.PlaceKindDef(
-                        new RuleId("camp"), "Camp")),
-                Map.of());
+        RuleRegistry incomplete = RuleRegistry.builder()
+                .placeKind(new RuleRegistry.PlaceKindDef(new RuleId("camp"), "Camp"))
+                .build();
         assertThrows(IllegalArgumentException.class,
                 () -> MinimalSeedTopologyBootstrap.INSTANCE.populateInitialTopology(state, incomplete));
     }

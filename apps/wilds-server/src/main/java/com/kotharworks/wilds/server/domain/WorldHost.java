@@ -16,6 +16,7 @@
 package com.kotharworks.wilds.server.domain;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,8 +37,11 @@ import com.kotharworks.wilds.observe.WorldView;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.rules.RuleRegistry;
 import com.kotharworks.wilds.seed.WorldSeed;
+import com.kotharworks.wilds.server.ports.ActiveWorld;
 import com.kotharworks.wilds.server.ports.ClockPort;
 import com.kotharworks.wilds.server.ports.EventBusPort;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
+import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
 import com.kotharworks.wilds.server.ports.WorldRecord;
@@ -59,6 +63,15 @@ import com.kotharworks.wilds.server.ports.WorldStorePort;
  * &rarr; {@code 503 STORAGE_UNAVAILABLE}, RAM untouched); (5) advance to
  * {@code admittedMs}, apply, persist events, publish the fresh view, complete
  * the caller's {@link ReplySlot}, then fan events out to the bus.
+ *
+ * <p><strong>Rollover seat carry-over.</strong> When boot archives a
+ * mismatched world ({@link OnVersionMismatch#ARCHIVE}), the primary
+ * constructor, after the writer thread starts, submits one {@code RegisterOwner}
+ * per existing seat through that same mailbox, in ascending {@code seatId}
+ * order. {@link #submit} is synchronous, so the constructor returns only once
+ * every seat has been processed; {@code WildsServer} constructs this host
+ * before {@code start()} opens the HTTP listener, so no player command can
+ * race the re-registration.
  */
 public final class WorldHost {
 
@@ -85,7 +98,9 @@ public final class WorldHost {
     private final long timeScale;
     private final long quietAdvanceMs;
     private final long checkpointIntervalMs;
+    private final long rulesFingerprint;
     private final WorldRecord world;
+    private final WorldRecord archivedWorld;
     private final int worldId;
     private final WildsEngine engine;
     private final ArrayBlockingQueue<HostMessage> mailbox = new ArrayBlockingQueue<>(1024);
@@ -160,10 +175,32 @@ public final class WorldHost {
 
     /**
      * Boots (or recovers) the world and starts the writer virtual thread over
-     * an injected monotonic {@link ClockPort}.
+     * an injected monotonic {@link ClockPort}, refusing a stored world pinned by
+     * a different binary.
+     *
+     * @throws WorldVersionMismatchException when the stored active world's pin
+     *                                       differs from this binary's
      */
     public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, ClockPort clockPort,
             long worldSeed, long timeScale, long quietAdvanceMs, long checkpointIntervalMs) {
+        this(worldStore, eventBus, clockPort, worldSeed, timeScale, quietAdvanceMs,
+                checkpointIntervalMs, OnVersionMismatch.REFUSE);
+    }
+
+    /**
+     * Primary constructor: applies the version gate through
+     * {@link WorldStorePort#ensureActiveWorld(long, int, int, int, long, OnVersionMismatch)},
+     * boots (or recovers) the active world, and starts the writer virtual thread
+     * over an injected monotonic {@link ClockPort}.
+     *
+     * @param onVersionMismatch {@code REFUSE} to fail boot on a mismatched stored world, or
+     *                          {@code ARCHIVE} to archive it and start a fresh world
+     * @throws WorldVersionMismatchException on a mismatch in {@code REFUSE} mode
+     */
+    public WorldHost(WorldStorePort worldStore, EventBusPort eventBus, ClockPort clockPort,
+            long worldSeed, long timeScale, long quietAdvanceMs, long checkpointIntervalMs,
+            OnVersionMismatch onVersionMismatch) {
+        Objects.requireNonNull(onVersionMismatch, "onVersionMismatch");
         this.worldStore = Objects.requireNonNull(worldStore, "worldStore");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         this.clockPort = Objects.requireNonNull(clockPort, "clockPort");
@@ -177,9 +214,23 @@ public final class WorldHost {
         this.timeScale = timeScale;
         this.quietAdvanceMs = quietAdvanceMs;
         this.checkpointIntervalMs = checkpointIntervalMs;
-        this.world = worldStore.ensureActiveWorld(worldSeed, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION, WILDS_PROTOCOL_VERSION);
+        WorldVersionMismatchException.Pin running = runningPin(worldSeed);
+        this.rulesFingerprint = running.rulesFingerprint();
+        ActiveWorld active = worldStore.ensureActiveWorld(running.worldSeed(),
+                running.rulesVersion(), running.engineVersion(), running.protocolVersion(),
+                running.rulesFingerprint(), onVersionMismatch);
+        this.world = active.world();
+        this.archivedWorld = active.archived();
         this.worldId = world.worldId();
+        if (active.rolledOver()) {
+            LOG.log(System.Logger.Level.INFO,
+                    "archived world {0} (seed {1}, rulesVersion {2}) on version mismatch;"
+                            + " started world {3} (seed {4}, rulesVersion {5})",
+                    Integer.toString(archivedWorld.worldId()),
+                    Long.toString(archivedWorld.worldSeed()),
+                    Integer.toString(archivedWorld.rulesVersion()), Integer.toString(worldId),
+                    Long.toString(world.worldSeed()), Integer.toString(world.rulesVersion()));
+        }
         StoredCheckpoint checkpoint = worldStore.loadLatestCheckpoint(worldId).orElse(null);
         if (checkpoint != null) {
             this.engine = WildsEngine.fromSnapshotJson(checkpoint.stateJson());
@@ -198,6 +249,73 @@ public final class WorldHost {
         this.view = engine.view();
         publishClockAnchor();
         this.writerThread = Thread.ofVirtual().name("wilds-world-host").start(this::runWriter);
+        if (active.rolledOver()) {
+            reRegisterSeatsAfterRollover();
+        }
+    }
+
+    /**
+     * The pin this binary runs with for {@code worldSeed}: the rules, engine and
+     * protocol versions it simulates and its rules catalog fingerprint. It is the
+     * single source for both the post-migration gate in the primary constructor
+     * ({@link WorldStorePort#ensureActiveWorld(long, int, int, int, long, OnVersionMismatch)})
+     * and the read-only pre-migration gate {@code WildsServer} runs in
+     * {@link OnVersionMismatch#REFUSE} mode, so the two checks cannot drift apart.
+     */
+    public static WorldVersionMismatchException.Pin runningPin(long worldSeed) {
+        return new WorldVersionMismatchException.Pin(worldSeed, RuleRegistry.WILDS_RULES_VERSION,
+                WildsEngine.API_VERSION, WILDS_PROTOCOL_VERSION,
+                RuleRegistry.minimalDefault().fingerprint());
+    }
+
+    /**
+     * Seat carry-over after an archive rollover (ticket 11 §3.6): seats are
+     * permanent, but their owners lived in the archived world, so every seat is
+     * re-registered in ascending {@code seatId} order through the ordinary
+     * mailbox ({@link #submit}), getting a WAL row before any mutation. A seat
+     * that fails is logged and left on the {@code /play} "Retry registration"
+     * path, which dedupes on the same {@link SeatCharter#registerCmdId}; it
+     * never aborts boot.
+     */
+    private void reRegisterSeatsAfterRollover() {
+        List<SeatRecord> seats;
+        try {
+            seats = worldStore.findAllSeats().stream()
+                    .sorted(Comparator.comparingLong(SeatRecord::seatId))
+                    .toList();
+        } catch (RuntimeException storeFailure) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "world {0} could not list seats to re-register after rollover; seats stay"
+                            + " on the retry-registration path: {1}",
+                    Integer.toString(worldId), storeFailure.getMessage());
+            return;
+        }
+        int registered = 0;
+        for (SeatRecord seat : seats) {
+            CommandOutcome outcome = submit(seat.seatId(),
+                    SeatCharter.registerCmdId(worldId, seat.seatId()),
+                    new WorldCommand.RegisterOwner(seat.seatId(), seat.seatName(),
+                            SeatCharter.defaultActorLabel(seat.seatName())));
+            switch (outcome) {
+                case CommandOutcome.Ok _ -> registered++;
+                case CommandOutcome.Rejected rejected -> LOG.log(System.Logger.Level.WARNING,
+                        "world {0} rejected re-registering seat {1} after rollover ({2}: {3});"
+                                + " the seat stays on the retry-registration path",
+                        Integer.toString(worldId), Long.toString(seat.seatId()),
+                        rejected.errorCode(),
+                        rejected.message());
+                case CommandOutcome.StorageUnavailable unavailable -> LOG.log(
+                        System.Logger.Level.WARNING,
+                        "world {0} could not re-register seat {1} after rollover ({2});"
+                                + " the seat stays on the retry-registration path",
+                        Integer.toString(worldId), Long.toString(seat.seatId()),
+                        unavailable.message());
+            }
+        }
+        LOG.log(System.Logger.Level.INFO,
+                "re-registered {0} of {1} seats into world_id {2} after rollover",
+                Integer.toString(registered), Integer.toString(seats.size()),
+                Integer.toString(worldId));
     }
 
     /**
@@ -899,6 +1017,16 @@ public final class WorldHost {
     /** The permanent world metadata (id + version triple). */
     public WorldRecord worldRecord() {
         return world;
+    }
+
+    /** The world this boot archived on a version mismatch, or empty when none was. */
+    public Optional<WorldRecord> archivedWorld() {
+        return Optional.ofNullable(archivedWorld);
+    }
+
+    /** {@code RuleRegistry.fingerprint()} of the rules catalog this binary simulates. */
+    public long rulesFingerprint() {
+        return rulesFingerprint;
     }
 
     /** The world id every store row keys on. */

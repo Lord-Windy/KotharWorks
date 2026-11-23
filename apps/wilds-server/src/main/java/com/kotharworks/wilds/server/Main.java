@@ -16,12 +16,16 @@
 package com.kotharworks.wilds.server;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.util.concurrent.TimeUnit;
+
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException;
 
 /**
  * Thin entry point: parse flags, boot the hexagonal server, print the listen
  * line, and park the main thread until the process is killed (the shutdown
- * hook checkpoints the world through {@code WorldHost#close}).
+ * hook checkpoints the world through {@code WorldHost#close}). Exit codes:
+ * {@code 2} usage error, {@code 3} stored world/binary version mismatch.
  */
 public final class Main {
 
@@ -47,28 +51,59 @@ public final class Main {
               --db-user <user>                  PostgreSQL user (postgres storage)
               --db-password <pass>              PostgreSQL password (postgres storage)
               --checkpoint-interval-ms <long>   uptime ms between checkpoints (default 300000)
+              --on-version-mismatch refuse|archive
+                                                on a stored world/binary mismatch: refuse (exit 3,
+                                                default) or archive the old world and start fresh
             """;
+
+    /** Exit code for an unparseable or invalid command line. */
+    public static final int EXIT_USAGE = 2;
+
+    /** Exit code when the stored world was pinned by a different binary (refuse mode). */
+    public static final int EXIT_VERSION_MISMATCH = 3;
 
     private Main() {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
+        System.exit(run(args, System.out, System.err));
+    }
+
+    /**
+     * The whole entry point minus {@code System.exit} — the test seam. Parses and
+     * validates flags (usage error: message + usage on {@code err}, returns
+     * {@link #EXIT_USAGE}), boots the server (a stored world pinned by a different
+     * binary: one diagnostic on {@code err} with no stack trace, returns
+     * {@link #EXIT_VERSION_MISMATCH}), then starts it, prints the listen line on
+     * {@code out}, and parks until the process is killed. Never calls
+     * {@code System.exit}.
+     *
+     * @return the process exit code
+     */
+    public static int run(String[] args, PrintStream out, PrintStream err)
+            throws IOException, InterruptedException {
         ServerConfig config;
         try {
             config = ServerConfig.parse(args).validated();
         } catch (IllegalArgumentException e) {
-            System.err.println("wilds-server: " + e.getMessage());
-            System.err.print(USAGE);
-            System.exit(2);
-            return;
+            err.println("wilds-server: " + e.getMessage());
+            err.print(USAGE);
+            return EXIT_USAGE;
         }
-        try (WildsServer server = new WildsServer(config)) {
+        WildsServer booted;
+        try {
+            booted = new WildsServer(config);
+        } catch (WorldVersionMismatchException mismatch) {
+            err.println("wilds-server: " + mismatch.diagnostic());
+            return EXIT_VERSION_MISMATCH;
+        }
+        try (WildsServer server = booted) {
             server.start();
             String displayHost = config.bindAddress().contains(":")
                     && !config.bindAddress().startsWith("[")
                     ? "[" + config.bindAddress() + "]"
                     : config.bindAddress();
-            System.out.println("wilds-server listening on http://" + displayHost + ":" + server.port()
+            out.println("wilds-server listening on http://" + displayHost + ":" + server.port()
                     + " (mode=" + config.authMode().name().toLowerCase(java.util.Locale.ROOT)
                     + ", timeScale=" + config.timeScale() + ", world=" + config.worldSeed()
                     + ", storage=" + config.storage().name().toLowerCase(java.util.Locale.ROOT)
@@ -77,5 +112,6 @@ public final class Main {
                     Thread.ofVirtual().name("wilds-server-shutdown").unstarted(server::close));
             TimeUnit.DAYS.sleep(365_000L); // park main; virtual-thread executors are daemons
         }
+        return 0;
     }
 }

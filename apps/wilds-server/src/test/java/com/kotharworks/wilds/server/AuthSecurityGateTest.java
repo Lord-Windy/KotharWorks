@@ -34,6 +34,9 @@ import com.kotharworks.wilds.replay.JsonCodec;
 import com.kotharworks.wilds.replay.JsonCodec.JsonInt;
 import com.kotharworks.wilds.replay.JsonCodec.JsonObj;
 import com.kotharworks.wilds.replay.JsonCodec.JsonStr;
+import com.kotharworks.wilds.rules.RuleRegistry;
+import com.kotharworks.wilds.rules.RulesFingerprint;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -66,7 +69,8 @@ class AuthSecurityGateTest {
         stopServer();
         ServerConfig config = new ServerConfig(0, 1L, 1L, 60_000L, AuthMode.DEV_LOCAL,
                 "http://127.0.0.1:0", null, null, null, null, null, null, 100L, 200L,
-                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, 300_000L);
+                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, 300_000L,
+                OnVersionMismatch.REFUSE);
         server = new WildsServer(config);
         server.start();
         base = "http://127.0.0.1:" + server.port();
@@ -349,7 +353,8 @@ class AuthSecurityGateTest {
         stopServer();
         ServerConfig tightRateConfig = new ServerConfig(0, 1L, 1L, 60_000L, AuthMode.DEV_LOCAL,
                 "http://127.0.0.1:0", null, null, null, null, null, null, 1L, 4L,
-                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, 300_000L);
+                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, 300_000L,
+                OnVersionMismatch.REFUSE);
         server = new WildsServer(tightRateConfig);
         server.start();
         base = "http://127.0.0.1:" + server.port();
@@ -469,9 +474,27 @@ class AuthSecurityGateTest {
         HttpResponse<String> rules = get("/api/v1/rules", sam);
         assertEquals(200, rules.statusCode());
         assertEquals(1, intField(json(rules.body()), "rulesVersion"));
+        // Review Focus 3: the pre-ticket-11 body byte for byte, plus only a trailing
+        // rulesFingerprint (prefix verified against the deleted ObservationJson.rules).
+        String fingerprint = RulesFingerprint.toHex(RuleRegistry.minimalDefault().fingerprint());
+        assertEquals("{\"rulesVersion\":1,\"placeKinds\":[{\"id\":\"camp\",\"name\":\"Camp\"},"
+                + "{\"id\":\"landmark\",\"name\":\"Landmark\"},{\"id\":\"trail\",\"name\":\"Trail\"}],"
+                + "\"taskKinds\":[{\"id\":\"travel\",\"name\":\"Travel\",\"minDurationMs\":0,"
+                + "\"maxDurationMs\":9223372036854775807,\"maxBatches\":1},"
+                + "{\"id\":\"wait\",\"name\":\"Wait\",\"minDurationMs\":1000,"
+                + "\"maxDurationMs\":3600000,\"maxBatches\":10}],"
+                + "\"rulesFingerprint\":\"" + fingerprint + "\"}", rules.body());
 
         HttpResponse<String> meta = get("/api/v1/meta", null);
         assertEquals(200, meta.statusCode(), "meta is public");
-        assertEquals(1, intField(json(meta.body()), "worldId"));
+        JsonObj metaBody = json(meta.body());
+        assertEquals(1, intField(metaBody, "worldId"));
+        String metaFingerprint = strField(metaBody, "rulesFingerprint");
+        assertTrue(metaFingerprint.matches("^0x[0-9a-f]{16}$"), metaFingerprint);
+        assertEquals(strField(json(rules.body()), "rulesFingerprint"), metaFingerprint,
+                "/api/v1/rules and /api/v1/meta report the same running fingerprint");
+        assertTrue(meta.body().contains("\"protocolVersion\":1,\"rulesFingerprint\":\""
+                + metaFingerprint + "\""), "rulesFingerprint follows protocolVersion: "
+                + meta.body());
     }
 }

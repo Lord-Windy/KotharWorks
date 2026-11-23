@@ -15,16 +15,31 @@
  */
 package com.kotharworks.wilds.replay;
 
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 
 /**
  * Optional first line of a {@code .jsonl} write-ahead log:
- * {@code {"type":"WAL_HEADER","worldSeed":4805198,"rulesVersion":1,"engineVersion":1}}.
+ * {@code {"type":"WAL_HEADER","worldSeed":4805198,"rulesVersion":1,"engineVersion":1,"rulesFingerprint":2767350039571331759}}.
  * Shared by {@code wilds-headless} and {@code wilds-server} so exported WAL streams
  * carry a canonical seed + version-triple compatibility header with zero codec drift.
+ *
+ * <p>{@code rulesFingerprint} (the writing binary's {@code RuleRegistry.fingerprint()}) is
+ * optional: it is encoded as the last key, as a signed 64-bit JSON integer, only when
+ * present, and headers written before it existed decode with a {@code null} fingerprint.
+ * A present field must be a JSON integer; explicit JSON {@code null} is rejected.
+ *
+ * @param rulesFingerprint the writer's rules fingerprint, or {@code null} when absent
  */
-public record WalHeader(long worldSeed, int rulesVersion, int engineVersion) {
+public record WalHeader(long worldSeed, int rulesVersion, int engineVersion,
+                        Long rulesFingerprint) {
+
+    /** Legacy three-field header with no {@code rulesFingerprint}. */
+    public WalHeader(long worldSeed, int rulesVersion, int engineVersion) {
+        this(worldSeed, rulesVersion, engineVersion, null);
+    }
 
     /** The {@code type} discriminator marking a header line. */
     public static final String TYPE = "WAL_HEADER";
@@ -49,7 +64,8 @@ public record WalHeader(long worldSeed, int rulesVersion, int engineVersion) {
 
     /**
      * Decodes a header JSON object; missing, wrong-typed, or out-of-range fields are
-     * rejected with {@link IllegalArgumentException}.
+     * rejected with {@link IllegalArgumentException}. An absent {@code rulesFingerprint}
+     * decodes to {@code null}; a present one must be a JSON integer.
      */
     public static WalHeader decode(JsonCodec.JsonObj obj) {
         if (!isHeader(obj)) {
@@ -58,16 +74,27 @@ public record WalHeader(long worldSeed, int rulesVersion, int engineVersion) {
         return new WalHeader(
                 longField(obj, "worldSeed"),
                 intField(obj, "rulesVersion"),
-                intField(obj, "engineVersion"));
+                intField(obj, "engineVersion"),
+                obj.getOrNull("rulesFingerprint") == null
+                        ? null : longField(obj, "rulesFingerprint"));
     }
 
-    /** Canonical compact JSON line for this header (fixed key order). */
+    /**
+     * Canonical compact JSON line for this header (fixed key order); {@code rulesFingerprint}
+     * is appended as the last key only when present, so a header without it is
+     * byte-identical to the legacy three-field form.
+     */
     public String encode() {
-        return JsonCodec.write(new JsonCodec.JsonObj(List.of(
+        List<JsonCodec.JsonObj.Entry> entries = new ArrayList<>(List.of(
                 JsonCodec.JsonObj.entry("type", new JsonCodec.JsonStr(TYPE)),
                 JsonCodec.JsonObj.entry("worldSeed", new JsonCodec.JsonInt(worldSeed())),
                 JsonCodec.JsonObj.entry("rulesVersion", new JsonCodec.JsonInt(rulesVersion())),
-                JsonCodec.JsonObj.entry("engineVersion", new JsonCodec.JsonInt(engineVersion())))));
+                JsonCodec.JsonObj.entry("engineVersion", new JsonCodec.JsonInt(engineVersion()))));
+        if (rulesFingerprint() != null) {
+            entries.add(JsonCodec.JsonObj.entry("rulesFingerprint",
+                    new JsonCodec.JsonInt(rulesFingerprint())));
+        }
+        return JsonCodec.write(new JsonCodec.JsonObj(entries));
     }
 
     private static long longField(JsonCodec.JsonObj obj, String key) {
@@ -88,10 +115,17 @@ public record WalHeader(long worldSeed, int rulesVersion, int engineVersion) {
         }
     }
 
-    /** Compact display form for diagnostics. */
+    /**
+     * Compact display form for diagnostics; a present fingerprint renders as {@code 0x} +
+     * 16 lowercase hex digits (the {@code RulesFingerprint.toHex} form, formatted here
+     * directly to keep {@code replay} free of a dependency on {@code rules}).
+     */
     @Override
     public String toString() {
         return "WAL_HEADER(worldSeed=" + worldSeed() + ", rulesVersion=" + rulesVersion()
-                + ", engineVersion=" + engineVersion() + ")";
+                + ", engineVersion=" + engineVersion()
+                + (rulesFingerprint() == null ? ""
+                        : ", rulesFingerprint=0x" + HexFormat.of().toHexDigits(rulesFingerprint()))
+                + ")";
     }
 }

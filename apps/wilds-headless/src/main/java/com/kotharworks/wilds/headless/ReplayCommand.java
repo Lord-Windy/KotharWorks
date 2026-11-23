@@ -22,6 +22,7 @@ import com.kotharworks.wilds.replay.JsonCodec;
 import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.rules.RuleRegistry;
+import com.kotharworks.wilds.rules.RulesFingerprint;
 import com.kotharworks.wilds.seed.WorldSeed;
 
 import java.io.BufferedReader;
@@ -37,9 +38,10 @@ import java.util.List;
  * {@code replay --seed <long|0xHex> --wal <file> [--to-ms <ms>] [--hash]}: streams a
  * {@code .jsonl} write-ahead log deterministically against a fresh engine over
  * {@code --seed}. An optional leading {@link WalHeader} line must carry the running
- * engine's version triple (else exit code {@code 2}) and match {@code --seed} (else exit
- * code {@code 3}). Every body record advances the clock to its {@code admittedMs},
- * applies its command (which must be admissible — a WAL only records admitted entries),
+ * engine's version triple and, when present, its rules fingerprint (else exit code
+ * {@code 2}; a legacy header without a fingerprint skips that check) and match
+ * {@code --seed} (else exit code {@code 3}). Every body record advances the clock to its
+ * {@code admittedMs}, applies its command (which must be admissible — a WAL only records admitted entries),
  * and — when the record pins a {@code worldHash} — verifies the live hash inline
  * bit-for-bit. {@code --to-ms} stops before the first record admitted beyond that time;
  * {@code --hash} prints the final {@code worldHash=0x<16-hex>} line on success.
@@ -136,6 +138,18 @@ final class ReplayCommand {
                                     + " but this rig runs rulesVersion="
                                     + RuleRegistry.WILDS_RULES_VERSION + " engineVersion="
                                     + WildsEngine.API_VERSION);
+                            return HeadlessMain.EXIT_VERSION_MISMATCH;
+                        }
+                        long ownFingerprint = RuleRegistry.minimalDefault().fingerprint();
+                        if (header.rulesFingerprint() != null
+                                && header.rulesFingerprint() != ownFingerprint) {
+                            err.println("replay: WAL rules fingerprint mismatch: header "
+                                    + "rulesFingerprint="
+                                    + RulesFingerprint.toHex(header.rulesFingerprint())
+                                    + " but this rig runs rulesFingerprint="
+                                    + RulesFingerprint.toHex(ownFingerprint)
+                                    + " (rulesVersion=" + RuleRegistry.WILDS_RULES_VERSION
+                                    + ")");
                             return HeadlessMain.EXIT_VERSION_MISMATCH;
                         }
                         if (header.worldSeed() != seed) {

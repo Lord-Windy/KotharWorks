@@ -47,7 +47,7 @@ Two decisions are fixed for the whole phase:
 | # | Ticket | Depends on | Milestone | Key (`st`) |
 | :---: | :--- | :---: | :---: | :---: |
 | 10 | Planning reconciliation & Phase 1 index *(this ticket)* — `done/10-planning-reconciliation-and-phase1-index.md` | — | — | `0fac031c` |
-| 11 | Rules-version gate: `RulesFingerprint` pin, clean boot refusal & world rollover — [`11-rules-version-gate-and-world-rollover.md`](11-rules-version-gate-and-world-rollover.md) | 10 | M2 prep | `181c8f17` |
+| 11 | Rules-version gate: `RulesFingerprint` pin, clean boot refusal & world rollover — [`done/11-rules-version-gate-and-world-rollover.md`](done/11-rules-version-gate-and-world-rollover.md) | 10 | M2 prep | `181c8f17` |
 | 12 | Items, stockpiles, carry & `Deposit` | 11 | M1b | *planned* |
 | 13 | Resource nodes, `Gather` ×N & fail-soft `DEPLETED` | 12 | M1b | *planned* |
 | 14 | Restore `libs/procgen`: `NameGrammar`, `PersonaGenerator`, 3-settler charter | 10 | M1b | *planned* |

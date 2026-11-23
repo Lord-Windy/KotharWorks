@@ -3,8 +3,9 @@
 #
 #   run-live.sh <phase> [junit console args...]
 #
-# phase "main"          everything except @Tag("after-restart")
-# phase "after-restart" only @Tag("after-restart") (fresh JVM, post kill -9)
+# phase "main"           everything except @Tag("after-restart") and @Tag("after-rollover")
+# phase "after-restart"  only @Tag("after-restart") (fresh JVM, post kill -9)
+# phase "after-rollover" only @Tag("after-rollover") (fresh JVM, after the refuse + archive boots)
 # Extra args are passed straight to the launcher (e.g. --include-tag bot,
 # --include-classname '.*Human.*').
 set -uo pipefail
@@ -26,8 +27,9 @@ cp=/out/systest/classes
 for jar in /out/systest/lib/*.jar; do cp="$cp:$jar"; done
 
 case "$phase" in
-    main) phase_args=(--exclude-tag after-restart) ;;
+    main) phase_args=(--exclude-tag after-restart --exclude-tag after-rollover) ;;
     after-restart) phase_args=(--include-tag after-restart) ;;
+    after-rollover) phase_args=(--include-tag after-rollover) ;;
     *) echo "unknown phase: $phase" >&2; exit 2 ;;
 esac
 

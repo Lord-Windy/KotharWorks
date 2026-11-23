@@ -266,6 +266,53 @@ class HeadlessCliTest {
                 () -> "stderr must report seed mismatch:\n" + wrongSeed.err());
     }
 
+    @Test
+    void runWritesRulesFingerprintInWalHeader() throws IOException {
+        Path wal = writeRunWal();
+        String first = Files.readAllLines(wal, StandardCharsets.UTF_8).get(0);
+        WalHeader header = WalHeader.decode(first);
+        assertEquals(RuleRegistry.minimalDefault().fingerprint(), header.rulesFingerprint());
+    }
+
+    @Test
+    void tamperedHeaderFingerprintExitsWithVersionMismatchAndDiagnostic() throws IOException {
+        Path wal = writeRunWal();
+        List<String> lines = Files.readAllLines(wal, StandardCharsets.UTF_8);
+        WalHeader good = WalHeader.decode(lines.get(0));
+        Path tampered = tempDir.resolve("bad-fingerprint.jsonl");
+        writeTamperedWal(tampered, lines, 0, new WalHeader(good.worldSeed(),
+                good.rulesVersion(), good.engineVersion(),
+                good.rulesFingerprint() ^ 1L).encode());
+
+        CliResult replay = execute("replay", "--seed", SEED_ARG, "--wal", tampered.toString());
+        assertEquals(HeadlessMain.EXIT_VERSION_MISMATCH, replay.exitCode(),
+                () -> "fingerprint mismatch must exit 2, stderr:\n" + replay.err());
+        assertTrue(replay.err().contains("fingerprint"),
+                () -> "stderr must carry a fingerprint diagnostic:\n" + replay.err());
+    }
+
+    @Test
+    void legacyHeaderWithoutFingerprintAndCorrectFingerprintBothReplay() throws IOException {
+        Path wal = writeRunWal();
+        List<String> lines = Files.readAllLines(wal, StandardCharsets.UTF_8);
+        WalHeader good = WalHeader.decode(lines.get(0));
+        assertTrue(lines.get(0).contains("rulesFingerprint"));
+
+        Path legacy = tempDir.resolve("legacy-header.jsonl");
+        String legacyLine = new WalHeader(good.worldSeed(), good.rulesVersion(),
+                good.engineVersion()).encode();
+        assertFalse(legacyLine.contains("rulesFingerprint"));
+        writeTamperedWal(legacy, lines, 0, legacyLine);
+        CliResult legacyReplay = execute("replay", "--seed", SEED_ARG, "--wal",
+                legacy.toString());
+        assertEquals(HeadlessMain.EXIT_OK, legacyReplay.exitCode(),
+                () -> "legacy header must replay, stderr:\n" + legacyReplay.err());
+
+        CliResult current = execute("replay", "--seed", SEED_ARG, "--wal", wal.toString());
+        assertEquals(HeadlessMain.EXIT_OK, current.exitCode(),
+                () -> "correct fingerprint must replay, stderr:\n" + current.err());
+    }
+
     // ------------------------------------------------------------- criterion 5
 
     @Test

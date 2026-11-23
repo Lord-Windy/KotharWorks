@@ -21,72 +21,198 @@ import com.kotharworks.wilds.rules.RuleRegistry.TaskKindDef;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for {@link RuleRegistry} stock catalog ordering, unmodifiable views, and
- * constructor validation invariants.
+ * Unit tests for {@link RuleRegistry}: stock catalog content, builder validation,
+ * ascending iteration regardless of insertion order, {@code definitions()} order and
+ * unmodifiable views.
  */
 class RuleRegistryTest {
 
+    private static PlaceKindDef place(String slug, String name) {
+        return new PlaceKindDef(new RuleId(slug), name);
+    }
+
+    private static TaskKindDef task(String slug, String name, long min, long max, int batches) {
+        return new TaskKindDef(new RuleId(slug), name, min, max, batches);
+    }
+
+    private static List<RuleId> ids(String... slugs) {
+        List<RuleId> ids = new ArrayList<>();
+        for (String slug : slugs) {
+            ids.add(new RuleId(slug));
+        }
+        return ids;
+    }
+
     @Test
-    void minimalDefaultExposesSortedUnmodifiableCatalog() {
+    void minimalDefaultContentIsUnchangedFieldByField() {
         RuleRegistry registry = RuleRegistry.minimalDefault();
         assertEquals(1, RuleRegistry.WILDS_RULES_VERSION);
 
-        assertEquals(
-                List.of(new RuleId("camp"), new RuleId("landmark"), new RuleId("trail")),
+        assertEquals(List.of(place("camp", "Camp"), place("landmark", "Landmark"),
+                        place("trail", "Trail")),
+                List.copyOf(registry.placeKinds().values()));
+        assertEquals(ids("camp", "landmark", "trail"),
                 List.copyOf(registry.placeKinds().keySet()));
-        assertEquals(
-                List.of(new RuleId("travel"), new RuleId("wait")),
-                List.copyOf(registry.taskKinds().keySet()));
+        assertEquals("Camp", registry.placeKinds().get(new RuleId("camp")).name());
+        assertEquals("Landmark", registry.placeKinds().get(new RuleId("landmark")).name());
+        assertEquals("Trail", registry.placeKinds().get(new RuleId("trail")).name());
+
+        assertEquals(ids("travel", "wait"), List.copyOf(registry.taskKinds().keySet()));
+        TaskKindDef travel = registry.taskKinds().get(new RuleId("travel"));
+        assertEquals(new RuleId("travel"), travel.id());
+        assertEquals("Travel", travel.name());
+        assertEquals(0L, travel.minDurationMs());
+        assertEquals(Long.MAX_VALUE, travel.maxDurationMs());
+        assertEquals(1, travel.maxBatches());
 
         TaskKindDef wait = registry.taskKinds().get(new RuleId("wait"));
+        assertEquals(new RuleId("wait"), wait.id());
+        assertEquals("Wait", wait.name());
         assertEquals(1_000L, wait.minDurationMs());
         assertEquals(3_600_000L, wait.maxDurationMs());
         assertEquals(10, wait.maxBatches());
+    }
 
-        TaskKindDef travel = registry.taskKinds().get(new RuleId("travel"));
-        assertEquals(1, travel.maxBatches());
-
+    @Test
+    void viewsAreUnmodifiable() {
+        RuleRegistry registry = RuleRegistry.minimalDefault();
         assertThrows(UnsupportedOperationException.class,
-                () -> registry.placeKinds().put(new RuleId("ruin"),
-                        new PlaceKindDef(new RuleId("ruin"), "Ruin")));
+                () -> registry.placeKinds().put(new RuleId("ruin"), place("ruin", "Ruin")));
         assertThrows(UnsupportedOperationException.class,
                 () -> registry.taskKinds().remove(new RuleId("wait")));
+        assertThrows(UnsupportedOperationException.class,
+                () -> registry.definitions().add(place("ruin", "Ruin")));
+        assertThrows(UnsupportedOperationException.class,
+                () -> registry.definitions().removeFirst());
     }
 
     @Test
     void defConstructorsValidateBoundsAndBlankNames() {
+        assertThrows(IllegalArgumentException.class, () -> place("camp", "   "));
+        assertThrows(IllegalArgumentException.class, () -> task("wait", "", 1_000L, 2_000L, 1));
+        assertThrows(IllegalArgumentException.class, () -> task("wait", "Wait", -1L, 2_000L, 1));
         assertThrows(IllegalArgumentException.class,
-                () -> new PlaceKindDef(new RuleId("camp"), "   "));
+                () -> task("wait", "Wait", 5_000L, 2_000L, 1));
         assertThrows(IllegalArgumentException.class,
-                () -> new TaskKindDef(new RuleId("wait"), "", 1_000L, 2_000L, 1));
-        assertThrows(IllegalArgumentException.class,
-                () -> new TaskKindDef(new RuleId("wait"), "Wait", -1L, 2_000L, 1));
-        assertThrows(IllegalArgumentException.class,
-                () -> new TaskKindDef(new RuleId("wait"), "Wait", 5_000L, 2_000L, 1));
-        assertThrows(IllegalArgumentException.class,
-                () -> new TaskKindDef(new RuleId("wait"), "Wait", 1_000L, 2_000L, 0));
+                () -> task("wait", "Wait", 1_000L, 2_000L, 0));
     }
 
     @Test
-    void registryRejectsMismatchedKeysAndNullEntries() {
-        assertThrows(IllegalArgumentException.class, () -> new RuleRegistry(
-                Map.of(new RuleId("camp"), new PlaceKindDef(new RuleId("trail"), "Trail")),
-                Map.of()));
-        assertThrows(IllegalArgumentException.class, () -> new RuleRegistry(
-                Map.of(),
-                Map.of(new RuleId("wait"),
-                        new TaskKindDef(new RuleId("travel"), "Travel", 0L, 10L, 1))));
+    void builderRejectsDuplicatePlaceKindIdNamingFamilyAndSlug() {
+        RuleRegistry.Builder builder = RuleRegistry.builder().placeKind(place("camp", "Camp"));
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> builder.placeKind(place("camp", "Other Camp")));
+        assertTrue(thrown.getMessage().contains("placeKinds"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("camp"), thrown.getMessage());
+    }
 
-        Map<RuleId, PlaceKindDef> withNullValue = new HashMap<>();
-        withNullValue.put(new RuleId("camp"), null);
-        assertThrows(NullPointerException.class, () -> new RuleRegistry(withNullValue, Map.of()));
+    @Test
+    void builderRejectsDuplicateTaskKindIdNamingFamilyAndSlug() {
+        RuleRegistry.Builder builder = RuleRegistry.builder()
+                .taskKind(task("wait", "Wait", 1L, 2L, 1));
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> builder.taskKind(task("wait", "Wait", 1L, 2L, 1)));
+        assertTrue(thrown.getMessage().contains("taskKinds"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("wait"), thrown.getMessage());
+    }
+
+    @Test
+    void builderRejectsNullDefs() {
+        assertThrows(NullPointerException.class, () -> RuleRegistry.builder().placeKind(null));
+        assertThrows(NullPointerException.class, () -> RuleRegistry.builder().taskKind(null));
+    }
+
+    @Test
+    void sameSlugInDifferentFamiliesIsAllowed() {
+        RuleRegistry registry = RuleRegistry.builder()
+                .placeKind(place("camp", "Camp"))
+                .taskKind(task("camp", "Make Camp", 1L, 2L, 1))
+                .build();
+        assertEquals(1, registry.placeKinds().size());
+        assertEquals(1, registry.taskKinds().size());
+        assertEquals(2, registry.definitions().size());
+    }
+
+    @Test
+    void iterationIsAscendingRegardlessOfInsertionOrder() {
+        RuleRegistry reversed = RuleRegistry.builder()
+                .placeKind(place("trail", "Trail"))
+                .taskKind(task("wait", "Wait", 1_000L, 3_600_000L, 10))
+                .placeKind(place("landmark", "Landmark"))
+                .taskKind(task("travel", "Travel", 0L, Long.MAX_VALUE, 1))
+                .placeKind(place("camp", "Camp"))
+                .build();
+        RuleRegistry shuffled = RuleRegistry.builder()
+                .placeKind(place("landmark", "Landmark"))
+                .placeKind(place("camp", "Camp"))
+                .taskKind(task("travel", "Travel", 0L, Long.MAX_VALUE, 1))
+                .placeKind(place("trail", "Trail"))
+                .taskKind(task("wait", "Wait", 1_000L, 3_600_000L, 10))
+                .build();
+        RuleRegistry stock = RuleRegistry.minimalDefault();
+        for (RuleRegistry registry : List.of(reversed, shuffled)) {
+            assertEquals(ids("camp", "landmark", "trail"),
+                    List.copyOf(registry.placeKinds().keySet()));
+            assertEquals(ids("travel", "wait"), List.copyOf(registry.taskKinds().keySet()));
+            assertEquals(List.copyOf(stock.definitions()), List.copyOf(registry.definitions()));
+        }
+
+        RuleRegistry manyTasks = RuleRegistry.builder()
+                .taskKind(task("zeta", "Zeta", 1L, 2L, 1))
+                .taskKind(task("alpha", "Alpha", 1L, 2L, 1))
+                .taskKind(task("mid_2", "Mid", 1L, 2L, 1))
+                .taskKind(task("mid", "Mid", 1L, 2L, 1))
+                .build();
+        assertEquals(ids("alpha", "mid", "mid_2", "zeta"),
+                List.copyOf(manyTasks.taskKinds().keySet()));
+    }
+
+    @Test
+    void definitionsListPlaceKindsThenTaskKindsEachAscending() {
+        List<RuleDef> expected = List.of(
+                place("camp", "Camp"),
+                place("landmark", "Landmark"),
+                place("trail", "Trail"),
+                task("travel", "Travel", 0L, Long.MAX_VALUE, 1),
+                task("wait", "Wait", 1_000L, 3_600_000L, 10));
+        assertEquals(expected, List.copyOf(RuleRegistry.minimalDefault().definitions()));
+
+        // Family order wins over slug order: task "aaa" still follows place "zzz".
+        RuleRegistry crossFamily = RuleRegistry.builder()
+                .taskKind(task("aaa", "Aaa", 1L, 2L, 1))
+                .placeKind(place("zzz", "Zzz"))
+                .build();
+        assertEquals(List.of(place("zzz", "Zzz"), task("aaa", "Aaa", 1L, 2L, 1)),
+                List.copyOf(crossFamily.definitions()));
+    }
+
+    @Test
+    void builderIsReusableWithoutAliasingBuiltRegistries() {
+        RuleRegistry.Builder builder = RuleRegistry.builder().placeKind(place("camp", "Camp"));
+        RuleRegistry first = builder.build();
+        builder.placeKind(place("trail", "Trail"));
+        RuleRegistry second = builder.build();
+
+        assertEquals(ids("camp"), List.copyOf(first.placeKinds().keySet()));
+        assertEquals(ids("camp", "trail"), List.copyOf(second.placeKinds().keySet()));
+        assertNotEquals(first.fingerprint(), second.fingerprint());
+        assertEquals(first.fingerprint(), RulesFingerprint.of(first));
+    }
+
+    @Test
+    void emptyRegistryIsValid() {
+        RuleRegistry empty = RuleRegistry.builder().build();
+        assertTrue(empty.placeKinds().isEmpty());
+        assertTrue(empty.taskKinds().isEmpty());
+        assertTrue(empty.definitions().isEmpty());
     }
 }

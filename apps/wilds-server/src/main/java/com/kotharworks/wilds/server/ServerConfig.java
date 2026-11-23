@@ -18,6 +18,7 @@ package com.kotharworks.wilds.server;
 import java.util.Objects;
 
 import com.kotharworks.auth.AuthMode;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 
 /**
  * Immutable server configuration parsed from CLI flags. Integer-only values
@@ -45,13 +46,15 @@ import com.kotharworks.auth.AuthMode;
  * @param dbUser                    PostgreSQL user (optional)
  * @param dbPassword                PostgreSQL password (optional)
  * @param checkpointIntervalMs      wall-time uptime cadence between checkpoints
+ * @param onVersionMismatch         {@code REFUSE} (default: exit 3) or {@code ARCHIVE} (archive
+ *                                  the mismatched stored world and start a fresh one)
  */
 public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIntervalMs,
         AuthMode authMode, String publicOrigin, String oidcIssuerUrl, String oidcClientId,
         String oidcClientSecret, String oidcAuthorizationEndpoint, String oidcTokenEndpoint,
         String oidcJwksUri, long ratePerSec, long rateBurst, String bindAddress,
         StorageMode storage, String jdbcUrl, String dbUser, String dbPassword,
-        long checkpointIntervalMs) {
+        long checkpointIntervalMs, OnVersionMismatch onVersionMismatch) {
 
     /** Persistence backend selected by {@code --storage}. */
     public enum StorageMode {
@@ -65,7 +68,8 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
     public static ServerConfig defaults() {
         return new ServerConfig(8080, 1L, 1L, 1_000L, AuthMode.DEV_LOCAL,
                 "http://127.0.0.1:8080", null, null, null, null, null, null, 10L, 20L,
-                "127.0.0.1", StorageMode.MEMORY, null, null, null, 300_000L);
+                "127.0.0.1", StorageMode.MEMORY, null, null, null, 300_000L,
+                OnVersionMismatch.REFUSE);
     }
 
     public ServerConfig {
@@ -73,6 +77,7 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         Objects.requireNonNull(publicOrigin, "publicOrigin");
         Objects.requireNonNull(bindAddress, "bindAddress");
         Objects.requireNonNull(storage, "storage");
+        Objects.requireNonNull(onVersionMismatch, "onVersionMismatch");
         if (port < 0 || port > 65_535) {
             throw new IllegalArgumentException("port out of range: " + port);
         }
@@ -122,6 +127,7 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         String dbUser = null;
         String dbPassword = null;
         long checkpointIntervalMs = 300_000L;
+        OnVersionMismatch onVersionMismatch = OnVersionMismatch.REFUSE;
 
         for (int i = 0; i < rawArgs.length; i++) {
             String raw = rawArgs[i];
@@ -175,6 +181,8 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
                         inlineValue != null ? inlineValue : next(rawArgs, ++i, flag);
                 case "--checkpoint-interval-ms" -> checkpointIntervalMs = parseLong(
                         inlineValue != null ? inlineValue : next(rawArgs, ++i, flag), flag);
+                case "--on-version-mismatch" -> onVersionMismatch = parseOnVersionMismatch(
+                        inlineValue != null ? inlineValue : next(rawArgs, ++i, flag));
                 default -> throw new IllegalArgumentException("unknown flag: " + flag);
             }
         }
@@ -182,7 +190,23 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
         return new ServerConfig(port, worldSeed, timeScale, pumpIntervalMs, authMode, origin,
                 oidcIssuerUrl, oidcClientId, oidcClientSecret, oidcAuthorizationEndpoint,
                 oidcTokenEndpoint, oidcJwksUri, ratePerSec, rateBurst, bindAddress, storage,
-                jdbcUrl, dbUser, dbPassword, checkpointIntervalMs);
+                jdbcUrl, dbUser, dbPassword, checkpointIntervalMs, onVersionMismatch);
+    }
+
+    /** This configuration with a different {@code --on-version-mismatch} policy. */
+    public ServerConfig withOnVersionMismatch(OnVersionMismatch policy) {
+        return new ServerConfig(port, worldSeed, timeScale, pumpIntervalMs, authMode,
+                publicOrigin, oidcIssuerUrl, oidcClientId, oidcClientSecret,
+                oidcAuthorizationEndpoint, oidcTokenEndpoint, oidcJwksUri, ratePerSec, rateBurst,
+                bindAddress, storage, jdbcUrl, dbUser, dbPassword, checkpointIntervalMs, policy);
+    }
+
+    /** This configuration with a different world seed. */
+    public ServerConfig withWorldSeed(long seed) {
+        return new ServerConfig(port, seed, timeScale, pumpIntervalMs, authMode, publicOrigin,
+                oidcIssuerUrl, oidcClientId, oidcClientSecret, oidcAuthorizationEndpoint,
+                oidcTokenEndpoint, oidcJwksUri, ratePerSec, rateBurst, bindAddress, storage,
+                jdbcUrl, dbUser, dbPassword, checkpointIntervalMs, onVersionMismatch);
     }
 
     /** Validates the OIDC-mode and POSTGRES-storage required fields. */
@@ -253,6 +277,15 @@ public record ServerConfig(int port, long worldSeed, long timeScale, long pumpIn
             case "postgres" -> StorageMode.POSTGRES;
             default -> throw new IllegalArgumentException(
                     "--storage expects memory|postgres, got: " + value);
+        };
+    }
+
+    private static OnVersionMismatch parseOnVersionMismatch(String value) {
+        return switch (value) {
+            case "refuse" -> OnVersionMismatch.REFUSE;
+            case "archive" -> OnVersionMismatch.ARCHIVE;
+            default -> throw new IllegalArgumentException(
+                    "--on-version-mismatch expects refuse|archive, got: " + value);
         };
     }
 

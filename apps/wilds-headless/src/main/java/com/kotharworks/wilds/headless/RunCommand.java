@@ -115,7 +115,8 @@ final class RunCommand {
                 : Files.newBufferedWriter(Path.of(outWal), StandardCharsets.UTF_8)) {
             if (walWriter != null) {
                 walWriter.write(new WalHeader(seed, RuleRegistry.WILDS_RULES_VERSION,
-                        WildsEngine.API_VERSION).encode());
+                        WildsEngine.API_VERSION,
+                        RuleRegistry.minimalDefault().fingerprint()).encode());
                 walWriter.write('\n');
             }
 

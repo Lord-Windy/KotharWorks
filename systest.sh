@@ -12,13 +12,16 @@
 #                    security, regression, soak, restart, headless
 #   --test NAME      only test classes whose name contains NAME (or matches a regex)
 #   --no-restart     skip the kill -9 / restart / after-restart phase
+#   --no-rollover    skip the rules-version refuse (exit 3) / archive rollover phase that
+#                    follows the restart phase (it only runs when the restart phase does)
 #   --with-restart   run the restart phase even when --tag/--test filters are given
 #   --soak SECONDS   bot fleet soak duration (default 20)
 #   --keep           leave the stack running afterwards (inspect, then ./systest.sh down)
 #   -- ARGS...       pass remaining args straight to the JUnit console launcher
 #
 # Reports land in systest/reports/ (unit/, live/main/, live/after-restart/,
-# live/artifacts/ for browser screenshots + traces, live/*.log for server logs).
+# live/after-rollover/, live/artifacts/ for browser screenshots + traces, live/*.log
+# for server logs incl. rollover-refuse.log).
 # Exit code is 0 only if every selected stage passed.
 set -euo pipefail
 
@@ -41,6 +44,7 @@ esac
 junit_args=()
 filtered=0
 restart=auto
+rollover=yes
 keep=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -51,6 +55,7 @@ while [[ $# -gt 0 ]]; do
             junit_args+=(--include-classname "$pattern"); filtered=1; shift 2 ;;
         --no-restart) restart=no; shift ;;
         --with-restart) restart=yes; shift ;;
+        --no-rollover) rollover=no; shift ;;
         --soak) export SYSTEST_SOAK_SECONDS=$2; shift 2 ;;
         --keep) keep=1; shift ;;
         --) shift; junit_args+=("$@"); filtered=1; break ;;
@@ -124,6 +129,7 @@ if ! compose up -d --wait server; then
 fi
 
 status=0
+restart_ok=0
 say "live suite: main phase"
 compose run --rm runner main ${junit_args[@]+"${junit_args[@]}"} || status=1
 
@@ -145,8 +151,54 @@ if [[ $restart == yes ]]; then
         fi
         say "server back (down ${SYSTEST_DOWNTIME_MS}ms before restart); live suite: after-restart phase"
         compose run --rm runner after-restart ${junit_args[@]+"${junit_args[@]}"} || status=1
+        restart_ok=1
     else
         fail "server did not recover after SIGKILL"
+        status=1
+    fi
+fi
+
+# Rules-version gate: boot the same database with a different world seed. The default
+# policy (refuse) must exit 3 with a one-block diagnostic; --on-version-mismatch=archive
+# must roll the database over to a fresh world and carry every existing seat across.
+# Postgres (tmpfs) survives because only the `server` service's config changes, so
+# compose recreates just that container.
+if [[ $restart == yes && $rollover == yes && $restart_ok == 1 ]]; then
+    dump_logs server-before-rollover
+    rollover_seed=$(( ${WILDS_SEED:-1} + 1 ))
+    say "rollover phase: boot on seed $rollover_seed — default policy must refuse (exit 3)"
+    # No --wait: a refusing container exits non-zero, which --wait reports as a failure.
+    # The wait below is bounded (60s); the exit code itself is asserted by WorldRolloverTest.
+    WILDS_SEED=$rollover_seed compose up -d server >/dev/null || true
+    server_cid=$(compose ps -aq server | head -1 || true)
+    refuse_state=
+    for _ in $(seq 1 60); do
+        refuse_state=$(docker inspect -f '{{.State.Status}}' "$server_cid" 2>/dev/null || true)
+        [[ $refuse_state == exited ]] && break
+        sleep 1
+    done
+    if [[ $refuse_state == exited ]]; then
+        export SYSTEST_REFUSE_EXIT_CODE
+        SYSTEST_REFUSE_EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "$server_cid" 2>/dev/null || true)
+    else
+        fail "server on a mismatched seed neither exited nor refused within 60s (state: ${refuse_state:-unknown})"
+        export SYSTEST_REFUSE_EXIT_CODE="never-exited"
+        status=1
+    fi
+    dump_logs rollover-refuse
+    say "refusing boot exited with code ${SYSTEST_REFUSE_EXIT_CODE} (expected 3) — see systest/reports/live/rollover-refuse.log"
+
+    say "rollover phase: boot again with --on-version-mismatch=archive"
+    # Keep both variables exported for the runner too: it joins the server's network
+    # namespace, and compose recreates the server if its interpolated config differs.
+    export WILDS_SEED=$rollover_seed WILDS_ON_VERSION_MISMATCH=archive
+    if compose up -d --wait server; then
+        export SYSTEST_ROLLOVER_SEED=$rollover_seed
+        say "archive boot healthy; live suite: after-rollover phase"
+        compose run --rm runner after-rollover ${junit_args[@]+"${junit_args[@]}"} || status=1
+    else
+        dump_logs rollover-archive-boot
+        fail "server did not boot with --on-version-mismatch=archive — see systest/reports/live/rollover-archive-boot.log"
         status=1
     fi
 fi

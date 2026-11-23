@@ -1,7 +1,7 @@
 # Ticket 11 — Rules-Version Gate: `RulesFingerprint` Pin, Clean Boot Refusal & World Rollover
 
 - **`st` Key:** `181c8f17` (`KOTHARWORKS` · `tech-wilds`)
-- **Status:** Backlog *(auto-promotes when `0fac031c` completes)*
+- **Status:** Done
 - **Depends on:** Ticket `10` (`0fac031c`)
 - **Modules touched:** `libs/wilds` (`rules`, `replay`), `apps/wilds-headless`, `apps/wilds-server` (`domain`, `ports`, `adapters/{memory,postgres,http}`, `Main`, `db/V004__*.sql`), `systest/`, `PROJECTS.md`
 

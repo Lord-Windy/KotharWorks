@@ -64,14 +64,44 @@ public interface WorldStorePort {
     // ------------------------------------------------------------- world metadata
 
     /**
-     * Returns the single active world, creating it on first call with the
-     * given version triple; later calls must pass the identical triple.
+     * Returns the single active world, creating it on first call with the running
+     * binary's pin, and applies the version gate against an existing one.
      *
-     * @throws IllegalStateException on a version-triple mismatch with the
-     *                               stored active world
+     * <p>The stored active world <em>matches</em> when its seed, rules, engine and
+     * protocol versions all equal the arguments and, <strong>only when the stored
+     * fingerprint is non-null</strong>, its {@code rulesFingerprint} equals
+     * {@code rulesFingerprint}. A legacy row with a {@code NULL} fingerprint matches on
+     * the versions alone and is <em>not</em> backfilled: a matching world is returned
+     * unchanged with zero writes. On a mismatch:
+     * <ul>
+     *   <li>{@link OnVersionMismatch#REFUSE} throws {@code WorldVersionMismatchException}
+     *       and writes nothing;</li>
+     *   <li>{@link OnVersionMismatch#ARCHIVE}, in one atomic step, marks the active world
+     *       {@code ARCHIVED} (with {@code ended_at}) and inserts a new {@code ACTIVE}
+     *       world carrying the running pin. It never touches the WAL, checkpoint or event
+     *       rows of any world, so the archived world stays exportable.</li>
+     * </ul>
+     * Concurrent callers serialize: two archiving boots with the same running pin
+     * archive the old world once, and the second sees the new world as a plain match.
+     *
+     * @throws com.kotharworks.wilds.server.domain.WorldVersionMismatchException on a
+     *         mismatch in {@code REFUSE} mode
      */
-    WorldRecord ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
-            int protocolVersion);
+    ActiveWorld ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
+            int protocolVersion, long rulesFingerprint, OnVersionMismatch onMismatch);
+
+    /**
+     * {@link #ensureActiveWorld(long, int, int, int, long, OnVersionMismatch)} in
+     * {@link OnVersionMismatch#REFUSE} mode, returning the active world.
+     *
+     * @throws com.kotharworks.wilds.server.domain.WorldVersionMismatchException on a
+     *         mismatch with the stored active world
+     */
+    default WorldRecord ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
+            int protocolVersion, long rulesFingerprint) {
+        return ensureActiveWorld(worldSeed, rulesVersion, engineVersion, protocolVersion,
+                rulesFingerprint, OnVersionMismatch.REFUSE).world();
+    }
 
     // ------------------------------------------------------------- command WAL
 
@@ -155,11 +185,12 @@ public interface WorldStorePort {
 
     /**
      * Exports the world's full WAL as JSONL for {@code wilds-headless replay}:
-     * line 1 is the canonical {@code WAL_HEADER} (world seed + version
-     * triple), then one canonical {@link WalRecord} line per WAL row in
-     * ascending {@code walSeq} order.
+     * line 1 is the canonical {@code WAL_HEADER} (world seed, version triple
+     * and the stored rules fingerprint when recorded), then one canonical
+     * {@link WalRecord} line per WAL row in ascending {@code walSeq} order.
+     * Works for {@code ACTIVE} and {@code ARCHIVED} worlds alike.
      *
-     * @throws IllegalStateException when the world has no active row (nothing
+     * @throws IllegalStateException when no world row has this id (nothing
      *                               to export)
      */
     void exportWalJsonl(int worldId, Writer out) throws IOException;

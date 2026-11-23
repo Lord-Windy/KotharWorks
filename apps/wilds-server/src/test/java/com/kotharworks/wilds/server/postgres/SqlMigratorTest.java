@@ -50,9 +50,9 @@ import org.jdbi.v3.core.Jdbi;
 import com.kotharworks.wilds.server.adapters.postgres.SqlMigrator;
 
 /**
- * Ticket 08 acceptance (1): fresh schema creation applies V001..V003 exactly
- * once, a second boot re-runs zero migrations, a database newer than the
- * binary is refused at boot, pooled connections do not leak session settings
+ * Ticket 08 acceptance (1): fresh schema creation applies V001..V004 exactly
+ * once (Ticket 11 V004 upgrades a V003 database in place), a second boot re-runs
+ * zero migrations, a database newer than the binary is refused at boot, pooled connections do not leak session settings
  * or advisory locks, non-SQL throwables never auto-commit partial DDL, and
  * space-containing JAR paths and duplicate/out-of-order scripts are handled.
  */
@@ -60,11 +60,11 @@ import com.kotharworks.wilds.server.adapters.postgres.SqlMigrator;
 class SqlMigratorTest {
 
     @Test
-    void freshDatabaseAppliesAllThreeMigrations() throws SQLException {
+    void freshDatabaseAppliesAllFourMigrations() throws SQLException {
         SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
         Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
-        assertEquals(3, new SqlMigrator(jdbi).migrate(),
-                "V001..V003 must all apply on a fresh database");
+        assertEquals(4, new SqlMigrator(jdbi).migrate(),
+                "V001..V004 must all apply on a fresh database");
 
         List<Integer> versions = new ArrayList<>();
         List<String> filenames = new ArrayList<>();
@@ -94,9 +94,12 @@ class SqlMigratorTest {
                 }
             }
         }
-        assertEquals(List.of(1, 2, 3), versions, "exactly V001..V003 recorded");
-        assertEquals(List.of("V001__auth.sql", "V002__wilds_meta.sql", "V003__wilds_world.sql"),
+        assertEquals(List.of(1, 2, 3, 4), versions, "exactly V001..V004 recorded");
+        assertEquals(List.of("V001__auth.sql", "V002__wilds_meta.sql", "V003__wilds_world.sql",
+                "V004__worlds_rules_fingerprint.sql"),
                 filenames, "filenames recorded verbatim");
+        assertEquals("bigint YES", worldsColumn(db, "rules_fingerprint"),
+                "V004 adds a nullable BIGINT rules_fingerprint to wilds_meta.worlds");
         assertEquals(new TreeSet<>(List.of("api_tokens", "command_wal", "identity_links",
                         "seats", "users", "web_sessions", "world_checkpoints", "world_events",
                         "worlds")),
@@ -111,14 +114,14 @@ class SqlMigratorTest {
     void secondBootRunsZeroMigrations() throws SQLException {
         SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
         Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
-        assertEquals(3, new SqlMigrator(jdbi).migrate(), "first boot applies all three");
+        assertEquals(4, new SqlMigrator(jdbi).migrate(), "first boot applies all four");
         assertEquals(0, new SqlMigrator(jdbi).migrate(), "second boot is a no-op");
         try (Connection connection = DriverManager.getConnection(db.jdbcUrl(), db.username(),
                 db.password());
                 ResultSet rs = connection.createStatement().executeQuery(
                         "SELECT count(*) FROM public.schema_migrations")) {
             assertTrue(rs.next());
-            assertEquals(3, rs.getInt(1), "row count unchanged by the re-boot");
+            assertEquals(4, rs.getInt(1), "row count unchanged by the re-boot");
         }
     }
 
@@ -126,7 +129,7 @@ class SqlMigratorTest {
     void refusesToBootWhenDatabaseIsNewerThanBinary() throws SQLException {
         SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
         Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
-        assertEquals(3, new SqlMigrator(jdbi).migrate());
+        assertEquals(4, new SqlMigrator(jdbi).migrate());
         try (Connection connection = DriverManager.getConnection(db.jdbcUrl(), db.username(),
                 db.password());
                 PreparedStatement insert = connection.prepareStatement(
@@ -144,7 +147,7 @@ class SqlMigratorTest {
     void deadConnectionDuringUnlockDoesNotMaskPrimaryMigrationFailure() throws SQLException {
         SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
         Jdbi seedJdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
-        assertEquals(3, new SqlMigrator(seedJdbi).migrate());
+        assertEquals(4, new SqlMigrator(seedJdbi).migrate());
         try (Connection connection = DriverManager.getConnection(db.jdbcUrl(), db.username(),
                 db.password());
                 PreparedStatement insert = connection.prepareStatement(
@@ -191,7 +194,7 @@ class SqlMigratorTest {
         hikari.setMaximumPoolSize(1);
         try (HikariDataSource pool = new HikariDataSource(hikari)) {
             Jdbi jdbi = Jdbi.create(pool);
-            assertEquals(3, new SqlMigrator(jdbi).migrate());
+            assertEquals(4, new SqlMigrator(jdbi).migrate());
             String lockTimeout = jdbi.withHandle(handle -> handle.select("SHOW lock_timeout")
                     .mapTo(String.class).one());
             assertEquals("0", lockTimeout,
@@ -320,5 +323,44 @@ class SqlMigratorTest {
         IllegalStateException gap = assertThrows(IllegalStateException.class,
                 () -> new SqlMigrator(gapJdbi).migrate());
         assertTrue(gap.getMessage().contains("out-of-order"), gap.getMessage());
+    }
+
+    @Test
+    void v004UpgradesAV003DatabaseLeavingExistingWorldsUnfingerprinted(@TempDir Path tempDir)
+            throws IOException, SQLException {
+        // A database migrated by a pre-ticket-11 binary (V001..V003 only) holding a world.
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+        try (URLClassLoader legacyLoader =
+                VersionGateFixtures.preTicket11MigrationLoader(tempDir)) {
+            assertEquals(3, new SqlMigrator(jdbi, legacyLoader).migrate());
+        }
+        jdbi.useHandle(handle -> handle.execute("INSERT INTO wilds_meta.worlds (title,"
+                + " world_seed, rules_version, engine_version, protocol_version, jvm_version)"
+                + " VALUES ('Ironwood Wilds', 1, 1, 1, 1, '25')"));
+
+        assertEquals(1, new SqlMigrator(jdbi).migrate(), "the current binary applies only V004");
+        assertEquals("bigint YES", worldsColumn(db, "rules_fingerprint"));
+        long unfingerprinted = jdbi.withHandle(handle -> handle.select(
+                        "SELECT count(*) FROM wilds_meta.worlds WHERE rules_fingerprint IS NULL")
+                .mapTo(long.class).one());
+        assertEquals(1L, unfingerprinted, "the pre-existing world keeps a NULL fingerprint");
+    }
+
+    /** {@code "<data_type> <is_nullable>"} of a {@code wilds_meta.worlds} column. */
+    private static String worldsColumn(SharedPostgresContainer.FreshDatabase db, String column)
+            throws SQLException {
+        try (Connection connection = DriverManager.getConnection(db.jdbcUrl(), db.username(),
+                db.password());
+                PreparedStatement query = connection.prepareStatement(
+                        "SELECT data_type, is_nullable FROM information_schema.columns"
+                                + " WHERE table_schema = 'wilds_meta' AND table_name = 'worlds'"
+                                + " AND column_name = ?")) {
+            query.setString(1, column);
+            try (ResultSet rs = query.executeQuery()) {
+                assertTrue(rs.next(), "column wilds_meta.worlds." + column + " exists");
+                return rs.getString("data_type") + " " + rs.getString("is_nullable");
+            }
+        }
     }
 }

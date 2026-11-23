@@ -158,7 +158,7 @@ The original 19-item decomposition is superseded. The authoritative, current ind
 | 08 | [Postgres migrator, JDBI, crash recovery](../../tickets/done/08-postgres-schemas-migrator-and-jdbi-adapters.md) | M4c | Done |
 | 09 | [Minimal SSR `/play` + `/chronicle` console and full-spine E2E](../../tickets/done/09-minimal-ssr-console-and-end-to-end-system-tests.md) | M4b (partial) + E2E | Done |
 | 10 | Planning reconciliation & Phase 1 index (`tickets/done/10-planning-reconciliation-and-phase1-index.md`) | — | Done |
-| 11 | [Rules-version gate: `RulesFingerprint` pin, clean boot refusal & world rollover](../../tickets/11-rules-version-gate-and-world-rollover.md) | M2 prep | Planned |
+| 11 | [Rules-version gate: `RulesFingerprint` pin, clean boot refusal & world rollover](../../tickets/done/11-rules-version-gate-and-world-rollover.md) | M2 prep | Done |
 | 12 | Items, stockpiles, carry & `Deposit` | M1b | Planned |
 | 13 | Resource nodes, `Gather` ×N & fail-soft `DEPLETED` | M1b | Planned |
 | 14 | Restore `libs/procgen`: `NameGrammar`, `PersonaGenerator`, 3-settler charter | M1b | Planned |
@@ -181,7 +181,7 @@ Every ticket completed by the coding agent is reviewed against seven non-negotia
 3. **No Cross-Entity Object Pointers:** Entities hold only generational value IDs (`ActorId`, `OwnerId`, `PlaceId`).
 4. **Single-Writer & Commit-Before-Mutate Discipline (Server/DB Tickets):** Pure read-only Phase-1 validation (including `expectedRevision` -> `409 STALE_STATE`) runs inside `WorldHost`; `command_wal` (`WorldCommand` and `CLOCK_ADVANCE`) commits synchronously **before** `WorldState` mutates or SSE emits; `wilds_world` contains zero mutable entity-sync `UPDATE` tables.
 5. **Fog Security:** Client responses come exclusively through `ObservationProjector` DTOs, never serializing internal `*Row` records.
-6. **Determinism Proof:** Any rule/mechanic change updates or adds a deterministic story/golden hash test and bumps `WILDS_RULES_VERSION` if intentional. Once Ticket [`11`](../../tickets/11-rules-version-gate-and-world-rollover.md) lands, the pin is mechanical ("…bumps `WILDS_RULES_VERSION`; `RulesVersionPinTest` enforces this"); until then the test does not exist and this is a review-time check.
+6. **Determinism Proof:** Any rule/mechanic change updates or adds a deterministic story/golden hash test and bumps `WILDS_RULES_VERSION`; `RulesVersionPinTest` (Ticket [`11`](../../tickets/done/11-rules-version-gate-and-world-rollover.md)) enforces this mechanically.
 7. **AuthN/AuthZ & Crypto Safety (Auth/Server Tickets):** Zero password storage or hand-rolled JWT crypto (`nimbus-jose-jwt` asymmetric allowlist only); every route declares an explicit `AccessPolicy`; `dev-local` aborts boot on non-loopback addresses; the `AuthSecurityGateTest` negative checks stay green.
 
 ---

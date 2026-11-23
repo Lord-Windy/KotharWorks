@@ -11,4 +11,5 @@ exec java -XX:+UseCompactObjectHeaders -cp '/out/server/lib/*' com.kotharworks.w
     --checkpoint-interval-ms "${WILDS_CHECKPOINT_INTERVAL_MS:-15000}" \
     --rate-per-sec "${WILDS_RATE_PER_SEC:-10}" --rate-burst "${WILDS_RATE_BURST:-20}" \
     --storage postgres \
-    --jdbc-url "jdbc:postgresql://postgres:5432/wilds" --db-user wilds --db-password wilds
+    --jdbc-url "jdbc:postgresql://postgres:5432/wilds" --db-user wilds --db-password wilds \
+    ${WILDS_ON_VERSION_MISMATCH:+--on-version-mismatch "$WILDS_ON_VERSION_MISMATCH"}

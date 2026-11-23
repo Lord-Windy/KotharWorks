@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.StringWriter;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -36,14 +37,22 @@ import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.event.WorldEvent;
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.OwnerId;
+import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
+import com.kotharworks.wilds.rules.RuleRegistry;
+import com.kotharworks.wilds.rules.RulesFingerprint;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryAuthStore;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryWorldStore;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.domain.SeatRateLimiter;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException.Pin;
+import com.kotharworks.wilds.server.ports.ActiveWorld;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
+import com.kotharworks.wilds.server.ports.WorldRecord;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -52,6 +61,8 @@ import org.junit.jupiter.api.Test;
  * {@code cmdId} existence, and checkpoint/WAL round-trips.
  */
 class InMemoryStoresTest {
+
+    private static final long FP = RuleRegistry.minimalDefault().fingerprint();
 
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-02-01T00:00:00Z"),
             ZoneOffset.UTC);
@@ -107,20 +118,103 @@ class InMemoryStoresTest {
     // ------------------------------------------------------------------ world + WAL
 
     @Test
-    void ensureActiveWorldCreatesOnceAndAssertsTriple() {
+    void ensureActiveWorldCreatesOnceAndRefusesAVersionMismatchWithTypedPins() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        var world = store.ensureActiveWorld(7L, 1, 1, 1);
+        var world = store.ensureActiveWorld(7L, 1, 1, 1, FP);
         assertEquals(1, world.worldId());
         assertEquals(7L, world.worldSeed());
-        assertEquals(store.ensureActiveWorld(7L, 1, 1, 1), world);
-        assertThrows(IllegalStateException.class,
-                () -> store.ensureActiveWorld(8L, 1, 1, 1));
+        assertEquals(FP, world.rulesFingerprint());
+        assertEquals(WorldRecord.ACTIVE, world.status());
+        assertEquals(store.ensureActiveWorld(7L, 1, 1, 1, FP), world);
+
+        WorldVersionMismatchException seed = assertThrows(WorldVersionMismatchException.class,
+                () -> store.ensureActiveWorld(8L, 1, 1, 1, FP));
+        assertEquals(1, seed.storedWorldId());
+        assertEquals(new Pin(7L, 1, 1, 1, FP), seed.stored());
+        assertEquals(new Pin(8L, 1, 1, 1, FP), seed.running());
+
+        WorldVersionMismatchException versions = assertThrows(
+                WorldVersionMismatchException.class,
+                () -> store.ensureActiveWorld(7L, 2, 3, 4, FP));
+        assertEquals(new Pin(7L, 1, 1, 1, FP), versions.stored());
+        assertEquals(new Pin(7L, 2, 3, 4, FP), versions.running());
+        String diagnostic = versions.diagnostic();
+        assertTrue(diagnostic.contains("--on-version-mismatch=archive"), diagnostic);
+        assertTrue(diagnostic.contains(RulesFingerprint.toHex(FP)), diagnostic);
+        assertEquals(world, store.ensureActiveWorld(7L, 1, 1, 1, FP),
+                "a refusal leaves the active world untouched");
+    }
+
+    @Test
+    void presentFingerprintMismatchIsRefusedAndWritesNothing() {
+        InMemoryWorldStore store = new InMemoryWorldStore();
+        int worldId = store.ensureActiveWorld(7L, 1, 1, 1, FP).worldId();
+        store.appendClockAdvance(worldId, 100L, null);
+        WorldVersionMismatchException refused = assertThrows(
+                WorldVersionMismatchException.class,
+                () -> store.ensureActiveWorld(7L, 1, 1, 1, FP + 1, OnVersionMismatch.REFUSE));
+        assertEquals(FP, refused.stored().rulesFingerprint());
+        assertEquals(FP + 1, refused.running().rulesFingerprint());
+        assertEquals(1, store.totalWalRows());
+        ActiveWorld again = store.ensureActiveWorld(7L, 1, 1, 1, FP, OnVersionMismatch.ARCHIVE);
+        assertEquals(worldId, again.world().worldId(), "the original world is still active");
+        assertFalse(again.rolledOver());
+    }
+
+    @Test
+    void archiveRollsOverToAFreshWorldAndKeepsTheOldLogsExportable() throws Exception {
+        InMemoryWorldStore store = new InMemoryWorldStore();
+        int oldId = store.ensureActiveWorld(7L, 1, 1, 1, FP).worldId();
+        store.appendCommand(oldId, 0L, 3L, UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(3L, "Seat", "Actor"), null);
+        store.appendClockAdvance(oldId, 500L, null);
+        store.appendEvents(oldId, List.of(StoredWorldEvent.full(1L, 5L, "owner_registered", 3L,
+                "pub", "priv", sampleEvent())));
+        store.saveCheckpoint(oldId, 2L, 500L, -5L, "{\"state\":1}");
+        StringWriter before = new StringWriter();
+        store.exportWalJsonl(oldId, before);
+
+        ActiveWorld rolled = store.ensureActiveWorld(7L, 2, 1, 1, FP + 1,
+                OnVersionMismatch.ARCHIVE);
+        assertTrue(rolled.rolledOver());
+        assertEquals(oldId, rolled.archived().worldId());
+        assertEquals(WorldRecord.ARCHIVED, rolled.archived().status());
+        assertEquals(1, rolled.archived().rulesVersion());
+        assertEquals(2, rolled.world().worldId(), "new world id is max + 1");
+        assertEquals(WorldRecord.ACTIVE, rolled.world().status());
+        assertEquals(2, rolled.world().rulesVersion());
+        assertEquals(FP + 1, rolled.world().rulesFingerprint());
+
+        StringWriter after = new StringWriter();
+        store.exportWalJsonl(oldId, after);
+        assertEquals(before.toString(), after.toString(),
+                "the archived world's WAL export is byte-identical after the rollover");
+        assertEquals(new WalHeader(7L, 1, 1, FP).encode(),
+                after.toString().lines().findFirst().orElseThrow());
+        assertEquals(2, store.loadWalAfter(oldId, 0L).size());
+        assertEquals(1, store.eventCount(oldId));
+        assertEquals(2L, store.loadLatestCheckpoint(oldId).orElseThrow().upToWalSeq());
+
+        int newId = rolled.world().worldId();
+        assertTrue(store.loadWalAfter(newId, 0L).isEmpty(), "fresh WAL");
+        assertEquals(0, store.eventCount(newId));
+        assertTrue(store.loadLatestCheckpoint(newId).isEmpty());
+        assertEquals(1L, store.appendClockAdvance(newId, 10L, null), "fresh dense wal_seq");
+        StringWriter fresh = new StringWriter();
+        store.exportWalJsonl(newId, fresh);
+        assertEquals(new WalHeader(7L, 2, 1, FP + 1).encode(),
+                fresh.toString().lines().findFirst().orElseThrow());
+
+        ActiveWorld match = store.ensureActiveWorld(7L, 2, 1, 1, FP + 1,
+                OnVersionMismatch.ARCHIVE);
+        assertFalse(match.rolledOver(), "a matching boot in archive mode is a plain match");
+        assertEquals(rolled.world(), match.world());
     }
 
     @Test
     void existsByCmdIdAndAppendCommandRejectDuplicates() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         UUID cmdId = UUID.randomUUID();
         assertFalse(store.existsByCmdId(worldId, cmdId));
         long walSeq = store.appendCommand(worldId, 10L, 3L, cmdId,
@@ -134,7 +228,7 @@ class InMemoryStoresTest {
     @Test
     void faultInjectionThrowsOnAppendCommand() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         store.setAppendCommandFault(new IllegalStateException("disk down"));
         assertThrows(IllegalStateException.class,
                 () -> store.appendCommand(worldId, 1L, 1L, UUID.randomUUID(),
@@ -149,7 +243,7 @@ class InMemoryStoresTest {
     @Test
     void loadWalAfterReturnsTailAscending() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         store.appendClockAdvance(worldId, 5L, null);
         long second = store.appendCommand(worldId, 5L, 1L, UUID.randomUUID(),
                 new WorldCommand.RegisterOwner(1L, "S", "A"), null);
@@ -165,7 +259,7 @@ class InMemoryStoresTest {
     @Test
     void appendEventsIsIdempotentOnCursor() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         StoredWorldEvent row = StoredWorldEvent.full(1L, 5L, "owner_registered", 1L,
                 "pub", "priv", sampleEvent());
         store.appendEvents(worldId, List.of(row));
@@ -176,7 +270,7 @@ class InMemoryStoresTest {
     @Test
     void publicProjectionCarriesNoPrivateFields() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         store.appendEvents(worldId, List.of(
                 StoredWorldEvent.full(1L, 5L, "owner_registered", 1L, "pub-1", "priv-1",
                         sampleEvent()),
@@ -195,7 +289,7 @@ class InMemoryStoresTest {
     @Test
     void privateReadReturnsOnlyThatSeatsEventsAscending() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         store.appendEvents(worldId, List.of(
                 StoredWorldEvent.full(1L, 5L, "task_started", 7L, null, "priv-a", sampleEvent()),
                 StoredWorldEvent.full(2L, 6L, "task_started", 8L, null, "priv-b", sampleEvent()),
@@ -211,7 +305,7 @@ class InMemoryStoresTest {
     @Test
     void readEventsSinceHonorsLimitAndMaxCursorAndEventKindSanitization() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         store.appendEvents(worldId, List.of(
                 StoredWorldEvent.full(1L, 1L, "task_started", 1L, null, "p", sampleEvent()),
                 StoredWorldEvent.full(2L, 2L, "task_started", 1L, null, "p", sampleEvent())));
@@ -225,7 +319,7 @@ class InMemoryStoresTest {
     @Test
     void readRecentEventsReturnsNewestTailInAscendingCursorOrder() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(1L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(1L, 1, 1, 1, FP).worldId();
         java.util.ArrayList<StoredWorldEvent> batch = new java.util.ArrayList<>();
         for (long c = 1; c <= 60; c++) {
             String pub = (c % 2 == 0) ? "pub-" + c : null;
@@ -252,7 +346,7 @@ class InMemoryStoresTest {
     @Test
     void checkpointRoundTripAndWalTail() {
         InMemoryWorldStore store = new InMemoryWorldStore();
-        int worldId = store.ensureActiveWorld(3L, 1, 1, 1).worldId();
+        int worldId = store.ensureActiveWorld(3L, 1, 1, 1, FP).worldId();
         assertTrue(store.loadLatestCheckpoint(worldId).isEmpty());
         store.saveCheckpoint(worldId, 5L, 500L, -88L, "{\"state\":1}");
         store.saveCheckpoint(worldId, 9L, 900L, -77L, "{\"state\":2}");

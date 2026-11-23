@@ -12,11 +12,12 @@ dependencies (a few minutes); later runs reuse both.
 
 | Command | What runs |
 | --- | --- |
-| `./systest.sh` | `mvn install` with every regular test (incl. Testcontainers Postgres ITs), then the live suite incl. the crash/restart phase |
+| `./systest.sh` | `mvn install` with every regular test (incl. Testcontainers Postgres ITs), then the live suite incl. the crash/restart and rules-version rollover phases |
 | `./systest.sh unit` | only the regular Maven suite |
 | `./systest.sh live` | only the live suite (build skips unit tests) |
 | `./systest.sh live --tag bot` | live tests tagged `bot` (repeatable) |
 | `./systest.sh live --test Human` | live test classes whose name contains `Human` |
+| `./systest.sh live --no-rollover` | skip the refuse/archive rollover phase (`--no-restart` skips it too) |
 | `./systest.sh live --keep` | leave the stack running afterwards; `./systest.sh down` to remove |
 | `./systest.sh live --soak 120` | longer bot-fleet soak |
 | `./systest.sh live -- --select-method com.kotharworks.systest.bot.BotProtocolTest#rateLimit` | raw JUnit console launcher args |
@@ -35,10 +36,25 @@ scripts, hooks and agent loops.
   │                           unit + integration suite (Testcontainers via host socket)
   │                           stage server / headless / systest classpaths in a volume
   ├─ up    postgres + server  wilds-server --storage postgres, time-scale 10, seed 1
-  ├─ runner phase "main"      every live test except @Tag("after-restart")
+  ├─ runner phase "main"      every live test except @Tag("after-restart") / @Tag("after-rollover")
   ├─ kill -9 server, boot it again on the same database
-  └─ runner phase "after-restart"   only @Tag("after-restart"), in a fresh JVM
+  ├─ runner phase "after-restart"   only @Tag("after-restart"), in a fresh JVM
+  ├─ boot the same database with seed+1: default policy refuses, container exits 3
+  │                           (stderr kept in reports/live/rollover-refuse.log)
+  ├─ boot again with --on-version-mismatch=archive: old world archived, new world
+  │                           served, every existing seat re-registered
+  └─ runner phase "after-rollover"  only @Tag("after-rollover"), in a fresh JVM
 ```
+
+The rollover phase runs only when the restart phase ran (and passed its boot), and
+`--no-rollover` skips it. It exercises the rules-version gate end to end: a database
+whose active world differs from the running server's (here: another `WILDS_SEED`) is
+refused with exit code 3 and a one-block diagnostic, or rolled over with
+`--on-version-mismatch=archive`. Postgres is tmpfs-backed and survives because
+compose recreates only the `server` container. `WILDS_ON_VERSION_MISMATCH`
+(`refuse`|`archive`, empty = server default `refuse`) is the server container's knob
+for that flag; `systest.sh` sets it for the archive boot, and hands the runner
+`SYSTEST_REFUSE_EXIT_CODE` and `SYSTEST_ROLLOVER_SEED`.
 
 The runner container shares the server container's network namespace, so tests
 reach the server on real `127.0.0.1:8080`. The dev-local auth startup fuse (loopback
@@ -65,22 +81,23 @@ Mixed scenarios run both at once in the same world (`mixed/`).
 | `smoke/` | `smoke` | stack alive, clock moving, login redirect chain, public pages |
 | `headless/` | `headless` `smoke` | packaged `wilds-headless` CLI as a real process, cross-JVM determinism (pinned hash) |
 | `human/` | `human` | first session (find game → login → claim seat → wait → travel → examine → sign out), STALE_STATE recovery, "While You Were Away", two devices |
-| `bot/` | `bot` `soak` | travel lifecycle over SSE, REST/SSE parity, idempotency, stale revisions, cancel, fail policy, malformed-input fuzz (never 5xx), rate limiting, concurrent fleet soak |
+| `bot/` | `bot` `soak` | `/meta` and `/rules` rulesVersion + rulesFingerprint agreement, travel lifecycle over SSE, REST/SSE parity, idempotency, stale revisions, cancel, fail policy, malformed-input fuzz (never 5xx), rate limiting, concurrent fleet soak |
 | `mixed/` | `mixed` | humans + bots simultaneously: fog isolation both ways, two humans, public chronicle |
 | `security/` | `security` | anonymous/bad-token refusal, quotas, token scoping, cross-owner commands, CSRF, revocation, logout |
 | `regression/` | `regression` | one test per fixed bug, named after the commit/ticket |
-| `restart/` | `restart` `before-restart` / `after-restart` | kill -9 recovery: tokens, sessions, in-flight tasks, cursors, PAUSE_WHILE_DOWN clock |
+| `restart/` | `restart` `before-restart` / `after-restart` / `before-rollover` / `after-rollover` | kill -9 recovery: tokens, sessions, in-flight tasks, cursors, PAUSE_WHILE_DOWN clock; rules-version gate: refuse (exit 3) on a mismatched world, archive rollover keeps seats and tokens |
 
 ## When something fails
 
 Everything lands in `systest/reports/` (gitignored):
 
 - `unit/<module>/` — surefire XML + text for the Maven suite
-- `live/main/`, `live/after-restart/` — JUnit XML for the live phases
+- `live/main/`, `live/after-restart/`, `live/after-rollover/` — JUnit XML for the live phases
 - `live/artifacts/<TestClass>/<method>/` — **for failed human-mode tests**: full-page
   screenshot (`.png`), page HTML, browser console log, and a Playwright trace
   (`npx playwright show-trace <file>-trace.zip` for a step-by-step replay)
-- `live/server.log`, `live/server-before-crash.log` — server + Postgres logs
+- `live/server.log`, `live/server-before-crash.log`, `live/server-before-rollover.log` — server + Postgres logs
+- `live/rollover-refuse.log` — the refused boot's output (exit 3 diagnostic; `after-rollover` asserts it names `on-version-mismatch` and has no stack trace)
 
 Iterating on one failing test: `./systest.sh live --test BotProtocol --keep`, read
 the reports, then re-run. Use `--keep` to poke the live server:
@@ -110,10 +127,12 @@ the browser. New classes are picked up automatically.
    test even if its assertions passed.
 5. Crash coverage: record facts with `RunState.put` in a `@Tag("before-restart")`
    method; assert them in a `@Tag("after-restart")` method (see `CrashRestartTest`).
-6. Run `./systest.sh live --test YourClass` until green, then the full `./systest.sh`.
+6. Rollover coverage: the same pattern with `@Tag("before-rollover")` / `@Tag("after-rollover")`
+   (see `WorldRolloverTest`); the after-rollover phase sees a *new* world on a different seed.
+7. Run `./systest.sh live --test YourClass` until green, then the full `./systest.sh`.
 
 Knobs (env vars, all optional): `SYSTEST_SOAK_SECONDS`, `SYSTEST_EVENTUALLY_SECONDS`
-(default 20 — the "eventually" ceiling), `WILDS_TIME_SCALE`, `WILDS_SEED`,
+(default 20 — the "eventually" ceiling), `WILDS_TIME_SCALE`, `WILDS_SEED`, `WILDS_ON_VERSION_MISMATCH`,
 `MVN_EXTRA_ARGS` (e.g. `-Dtest=WildsEngineTest -Dsurefire.failIfNoSpecifiedTests=false`
 for the unit stage), `DOCKER_SOCK` (non-default Docker socket path).
 

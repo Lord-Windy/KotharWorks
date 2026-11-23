@@ -55,6 +55,7 @@ import com.kotharworks.wilds.server.adapters.http.SuspendedUserRejectingAuthenti
 import com.kotharworks.wilds.server.adapters.memory.InMemoryAuthStore;
 import com.kotharworks.wilds.server.adapters.postgres.PostgresAuthStore;
 import com.kotharworks.wilds.server.adapters.postgres.PostgresWorldStore;
+import com.kotharworks.wilds.server.adapters.postgres.PreMigrationVersionGate;
 import com.kotharworks.wilds.server.adapters.postgres.SqlMigrator;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryWorldStore;
@@ -66,7 +67,9 @@ import com.kotharworks.wilds.server.domain.SeatAuthorizer;
 import com.kotharworks.wilds.server.domain.SeatRateLimiter;
 import com.kotharworks.wilds.server.domain.WorldHost;
 import com.kotharworks.wilds.server.ports.AuthStorePort;
+import com.kotharworks.wilds.server.ports.ClockPort;
 import com.kotharworks.wilds.server.ports.EventBusPort;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import com.kotharworks.wilds.server.ports.WorldStorePort;
 import com.sun.net.httpserver.HttpServer;
 
@@ -131,7 +134,15 @@ public final class WildsServer implements AutoCloseable {
                 }
                 migrationProps.setProperty("connectTimeout", "3");
                 migrationProps.setProperty("socketTimeout", "0");
-                new SqlMigrator(Jdbi.create(this.config.jdbcUrl(), migrationProps)).migrate();
+                Jdbi migrationJdbi = Jdbi.create(this.config.jdbcUrl(), migrationProps);
+                if (this.config.onVersionMismatch() == OnVersionMismatch.REFUSE) {
+                    // Refuse a mismatched stored world read-only, before any pending
+                    // migration runs, so the matching older binary can still boot this
+                    // database. ARCHIVE mode migrates first and lets ensureActiveWorld archive.
+                    PreMigrationVersionGate.check(migrationJdbi,
+                            WorldHost.runningPin(this.config.worldSeed()));
+                }
+                new SqlMigrator(migrationJdbi).migrate();
                 HikariConfig hikari = new HikariConfig();
                 hikari.setJdbcUrl(this.config.jdbcUrl());
                 if (this.config.dbUser() != null) {
@@ -199,9 +210,16 @@ public final class WildsServer implements AutoCloseable {
                     this.config.authMode(), () -> server.getAddress().getPort());
             this.router = new AuthenticatedRouter(server, authenticator, csrfGuard);
 
-            openedHost = new WorldHost(this.worldStore, this.eventBus, this.config.worldSeed(),
-                    this.config.timeScale(), WorldHost.DEFAULT_QUIET_ADVANCE_MS,
-                    this.config.checkpointIntervalMs());
+            // A WorldVersionMismatchException unwinds through the boot-failure cleanup below
+            // before reaching Main (exit 3). In REFUSE mode on Postgres it can already come
+            // from PreMigrationVersionGate above, before migrations, the pool or the
+            // HttpServer exist (nothing to close yet); from here it comes from the
+            // authoritative post-migration ensureActiveWorld check (HttpServer stopped,
+            // pool closed).
+            openedHost = new WorldHost(this.worldStore, this.eventBus, ClockPort.SYSTEM,
+                    this.config.worldSeed(), this.config.timeScale(),
+                    WorldHost.DEFAULT_QUIET_ADVANCE_MS, this.config.checkpointIntervalMs(),
+                    this.config.onVersionMismatch());
             this.worldHost = openedHost;
             this.pump = new ClockPump(worldHost, this.config.pumpIntervalMs());
             SeatRateLimiter rateLimiter = new SeatRateLimiter(this.config.ratePerSec(),

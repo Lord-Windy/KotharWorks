@@ -33,6 +33,10 @@ import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.domain.PrintableText;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException.Pin;
+import com.kotharworks.wilds.server.ports.ActiveWorld;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
@@ -56,6 +60,8 @@ public final class PostgresWorldStore implements WorldStorePort {
     private static final long WORLD_META_LOCK_KEY = 0x6B77_574D_4554_4101L;
     private static final int WAL_LOCK_NAMESPACE = 0x6B77_5741;
     private static final int WAL_STREAM_FETCH_SIZE = 1_000;
+    private static final String WORLD_COLUMNS = "world_id, world_seed, rules_version,"
+            + " engine_version, protocol_version, rules_fingerprint, status";
 
     private final Jdbi jdbi;
 
@@ -131,46 +137,71 @@ public final class PostgresWorldStore implements WorldStorePort {
 
     // ------------------------------------------------------------------ world metadata
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One transaction under {@code pg_advisory_xact_lock(WORLD_META_LOCK_KEY)}: the
+     * lookup, the {@code ARCHIVED} update and the new-world {@code INSERT} commit or roll
+     * back together, so a crash between them leaves the old world {@code ACTIVE} and two
+     * concurrent archiving boots archive the old world exactly once. Only
+     * {@code wilds_meta.worlds} is read or written; a refusal rolls back with zero writes.
+     */
     @Override
-    public WorldRecord ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
-            int protocolVersion) {
+    public ActiveWorld ensureActiveWorld(long worldSeed, int rulesVersion, int engineVersion,
+            int protocolVersion, long rulesFingerprint, OnVersionMismatch onMismatch) {
+        Objects.requireNonNull(onMismatch, "onMismatch");
+        Pin running = new Pin(worldSeed, rulesVersion, engineVersion, protocolVersion,
+                rulesFingerprint);
         return jdbi.inTransaction(handle -> {
             handle.execute("SELECT pg_advisory_xact_lock(?)", WORLD_META_LOCK_KEY);
-            Optional<WorldRecord> active = selectActiveWorld(handle);
-            if (active.isPresent()) {
-                WorldRecord world = active.get();
-                if (world.worldSeed() != worldSeed || world.rulesVersion() != rulesVersion
-                        || world.engineVersion() != engineVersion
-                        || world.protocolVersion() != protocolVersion) {
-                    throw new IllegalStateException("active world version triple mismatch: stored "
-                            + world.worldSeed() + "/" + world.rulesVersion() + "/"
-                            + world.engineVersion() + "/" + world.protocolVersion()
-                            + " requested " + worldSeed + "/" + rulesVersion + "/"
-                            + engineVersion + "/" + protocolVersion);
-                }
-                return world;
+            Optional<WorldRecord> found = selectActiveWorld(handle);
+            if (found.isEmpty()) {
+                return new ActiveWorld(insertWorld(handle, running), null);
             }
-            return handle.select("INSERT INTO wilds_meta.worlds (title, world_seed,"
-                            + " rules_version, engine_version, protocol_version, jvm_version)"
-                            + " VALUES (?, ?, ?, ?, ?, ?) RETURNING world_id, world_seed,"
-                            + " rules_version, engine_version, protocol_version",
-                    "Ironwood Wilds", worldSeed, rulesVersion, engineVersion, protocolVersion,
-                    Runtime.version().toString())
-                    .map((rs, ctx) -> worldRow(rs))
-                    .one();
+            WorldRecord active = found.get();
+            Pin stored = Pin.of(active);
+            if (stored.admits(running)) {
+                return new ActiveWorld(active, null);
+            }
+            if (onMismatch == OnVersionMismatch.REFUSE) {
+                throw new WorldVersionMismatchException(active.worldId(), stored, running);
+            }
+            int archivedRows = handle.createUpdate("UPDATE wilds_meta.worlds"
+                            + " SET status = 'ARCHIVED', ended_at = now()"
+                            + " WHERE world_id = :worldId AND status = 'ACTIVE'")
+                    .bind("worldId", active.worldId())
+                    .execute();
+            if (archivedRows != 1) {
+                throw new IllegalStateException("archiving world " + active.worldId()
+                        + " updated " + archivedRows + " rows, expected exactly 1");
+            }
+            WorldRecord archived = new WorldRecord(active.worldId(), active.worldSeed(),
+                    active.rulesVersion(), active.engineVersion(), active.protocolVersion(),
+                    active.rulesFingerprint(), WorldRecord.ARCHIVED);
+            return new ActiveWorld(insertWorld(handle, running), archived);
         });
+    }
+
+    private static WorldRecord insertWorld(org.jdbi.v3.core.Handle handle, Pin pin) {
+        return handle.select("INSERT INTO wilds_meta.worlds (title, world_seed,"
+                        + " rules_version, engine_version, protocol_version, rules_fingerprint,"
+                        + " jvm_version) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING " + WORLD_COLUMNS,
+                "Ironwood Wilds", pin.worldSeed(), pin.rulesVersion(), pin.engineVersion(),
+                pin.protocolVersion(), pin.rulesFingerprint(), Runtime.version().toString())
+                .map((rs, ctx) -> worldRow(rs))
+                .one();
     }
 
     private static WorldRecord worldRow(java.sql.ResultSet rs) throws SQLException {
         return new WorldRecord(rs.getInt("world_id"), rs.getLong("world_seed"),
                 rs.getInt("rules_version"), rs.getInt("engine_version"),
-                rs.getInt("protocol_version"), WorldRecord.ACTIVE);
+                rs.getInt("protocol_version"), rs.getObject("rules_fingerprint", Long.class),
+                rs.getString("status"));
     }
 
     private static Optional<WorldRecord> selectActiveWorld(org.jdbi.v3.core.Handle handle) {
-        return handle.select("SELECT world_id, world_seed, rules_version, engine_version,"
-                        + " protocol_version FROM wilds_meta.worlds WHERE status = 'ACTIVE'"
-                        + " ORDER BY world_id DESC LIMIT 1")
+        return handle.select("SELECT " + WORLD_COLUMNS + " FROM wilds_meta.worlds"
+                        + " WHERE status = 'ACTIVE' ORDER BY world_id DESC LIMIT 1")
                 .map((rs, ctx) -> worldRow(rs))
                 .findFirst();
     }
@@ -402,15 +433,15 @@ public final class PostgresWorldStore implements WorldStorePort {
         Objects.requireNonNull(out, "out");
         jdbi.useTransaction(handle -> {
             WorldRecord world = handle.select(
-                            "SELECT world_id, world_seed, rules_version, engine_version,"
-                                    + " protocol_version FROM wilds_meta.worlds WHERE world_id = ?",
+                            "SELECT " + WORLD_COLUMNS + " FROM wilds_meta.worlds"
+                                    + " WHERE world_id = ?",
                             worldId)
                     .map((rs, ctx) -> worldRow(rs))
                     .findFirst()
                     .orElseThrow(() -> new IllegalStateException(
                             "no world row to export: " + worldId));
             out.write(new WalHeader(world.worldSeed(), world.rulesVersion(),
-                    world.engineVersion()).encode());
+                    world.engineVersion(), world.rulesFingerprint()).encode());
             out.write('\n');
             try (var iter = handle.select(
                             "SELECT wal_seq, admitted_ms, seat_id, cmd_id::text AS cmd_id,"

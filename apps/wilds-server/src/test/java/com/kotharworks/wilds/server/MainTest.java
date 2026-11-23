@@ -20,7 +20,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+
 import com.kotharworks.auth.AuthMode;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import org.junit.jupiter.api.Test;
 
 /** {@link ServerConfig} parsing and defaults (the rewritten {@code Main} entry). */
@@ -44,6 +49,7 @@ class MainTest {
         assertNull(config.dbUser());
         assertNull(config.dbPassword());
         assertEquals(300_000L, config.checkpointIntervalMs());
+        assertEquals(OnVersionMismatch.REFUSE, config.onVersionMismatch());
     }
 
     @Test
@@ -176,5 +182,59 @@ class MainTest {
                 () -> ServerConfig.parse(new String[] {"--seed", "0x"}));
         assertThrows(IllegalArgumentException.class,
                 () -> ServerConfig.parse(new String[] {"--checkpoint-interval-ms", "0"}));
+    }
+
+    // ------------------------------------------------------------------ --on-version-mismatch
+
+    @Test
+    void onVersionMismatchParsesBothFlagFormsAndDefaultsToRefuse() {
+        assertEquals(OnVersionMismatch.ARCHIVE, ServerConfig.parse(
+                new String[] {"--on-version-mismatch", "archive"}).onVersionMismatch());
+        assertEquals(OnVersionMismatch.ARCHIVE, ServerConfig.parse(
+                new String[] {"--on-version-mismatch=archive"}).onVersionMismatch());
+        assertEquals(OnVersionMismatch.REFUSE, ServerConfig.parse(
+                new String[] {"--on-version-mismatch", "refuse"}).onVersionMismatch());
+        assertEquals(OnVersionMismatch.REFUSE, ServerConfig.parse(
+                new String[] {"--on-version-mismatch=refuse"}).onVersionMismatch());
+        assertEquals(OnVersionMismatch.REFUSE,
+                ServerConfig.parse(new String[] {"--port", "9000"}).onVersionMismatch());
+    }
+
+    @Test
+    void unknownOnVersionMismatchValueIsRejectedNotDefaulted() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> ServerConfig.parse(new String[] {"--on-version-mismatch", "bogus"}));
+        assertEquals("--on-version-mismatch expects refuse|archive, got: bogus", e.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> ServerConfig.parse(new String[] {"--on-version-mismatch=ARCHIVE"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> ServerConfig.parse(new String[] {"--on-version-mismatch"}));
+    }
+
+    @Test
+    void withersReplaceOnlyTheirComponent() {
+        ServerConfig base = ServerConfig.defaults();
+        ServerConfig archive = base.withOnVersionMismatch(OnVersionMismatch.ARCHIVE);
+        assertEquals(OnVersionMismatch.ARCHIVE, archive.onVersionMismatch());
+        assertEquals(base, archive.withOnVersionMismatch(OnVersionMismatch.REFUSE));
+        ServerConfig reseeded = base.withWorldSeed(99L);
+        assertEquals(99L, reseeded.worldSeed());
+        assertEquals(base, reseeded.withWorldSeed(base.worldSeed()));
+    }
+
+    @Test
+    void runReturnsExitUsageOnABadOnVersionMismatchValue() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int code = Main.run(new String[] {"--on-version-mismatch=bogus"},
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+        assertEquals(2, code);
+        assertEquals(Main.EXIT_USAGE, code);
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertTrue(stderr.contains("refuse|archive"), stderr);
+        assertTrue(stderr.contains("usage: wilds-server"), stderr);
+        assertTrue(stderr.contains("--on-version-mismatch refuse|archive"), stderr);
+        assertEquals("", out.toString(StandardCharsets.UTF_8));
     }
 }

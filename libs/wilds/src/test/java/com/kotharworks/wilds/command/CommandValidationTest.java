@@ -31,7 +31,6 @@ import com.kotharworks.wilds.worldgen.MinimalSeedTopologyBootstrap;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -256,16 +255,14 @@ class CommandValidationTest {
 
     @Test
     void unknownRuleIsRejectedWithoutMutationAndReportsCurrentRevision() {
-        RuleRegistry waitOnlyRules = new RuleRegistry(
-                Map.of(
-                        new RuleId("camp"), new RuleRegistry.PlaceKindDef(
-                                new RuleId("camp"), "Camp"),
-                        new RuleId("trail"), new RuleRegistry.PlaceKindDef(
-                                new RuleId("trail"), "Trail"),
-                        new RuleId("landmark"), new RuleRegistry.PlaceKindDef(
-                                new RuleId("landmark"), "Landmark")),
-                Map.of(new RuleId("wait"), new RuleRegistry.TaskKindDef(
-                        new RuleId("wait"), "Wait", 1_000L, 3_600_000L, 10)));
+        RuleRegistry.Builder places = RuleRegistry.builder()
+                .placeKind(new RuleRegistry.PlaceKindDef(new RuleId("camp"), "Camp"))
+                .placeKind(new RuleRegistry.PlaceKindDef(new RuleId("trail"), "Trail"))
+                .placeKind(new RuleRegistry.PlaceKindDef(new RuleId("landmark"), "Landmark"));
+        RuleRegistry waitOnlyRules = places
+                .taskKind(new RuleRegistry.TaskKindDef(
+                        new RuleId("wait"), "Wait", 1_000L, 3_600_000L, 10))
+                .build();
         WildsEngine engine = new WildsEngine(SEED, waitOnlyRules,
                 MinimalSeedTopologyBootstrap.INSTANCE);
         assertInstanceOf(Phase1Result.Accepted.class, engine.apply(
@@ -281,10 +278,12 @@ class CommandValidationTest {
                         List.of(new TaskSpec.Travel(new PlaceId(1, 1)))),
                 ErrorCode.UNKNOWN_RULE, 1L);
 
-        RuleRegistry travelOnlyRules = new RuleRegistry(
-                waitOnlyRules.placeKinds(),
-                Map.of(new RuleId("travel"), new RuleRegistry.TaskKindDef(
-                        new RuleId("travel"), "Travel", 0L, Long.MAX_VALUE, 1)));
+        RuleRegistry.Builder travelOnly = RuleRegistry.builder();
+        waitOnlyRules.placeKinds().values().forEach(travelOnly::placeKind);
+        RuleRegistry travelOnlyRules = travelOnly
+                .taskKind(new RuleRegistry.TaskKindDef(
+                        new RuleId("travel"), "Travel", 0L, Long.MAX_VALUE, 1))
+                .build();
         WildsEngine travelEngine = new WildsEngine(SEED, travelOnlyRules,
                 MinimalSeedTopologyBootstrap.INSTANCE);
         assertInstanceOf(Phase1Result.Accepted.class, travelEngine.apply(

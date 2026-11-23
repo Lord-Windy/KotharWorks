@@ -67,11 +67,12 @@ import com.kotharworks.wilds.server.adapters.postgres.SqlMigrator;
 import com.kotharworks.wilds.server.domain.CommandOutcome;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.domain.WorldHost;
+import com.kotharworks.wilds.server.ports.ActiveWorld;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
 import com.kotharworks.wilds.server.ports.UserRecord;
-import com.kotharworks.wilds.server.ports.WorldRecord;
 import com.kotharworks.wilds.server.ports.WorldStorePort;
 import com.kotharworks.wilds.replay.WalHeader;
 import com.zaxxer.hikari.HikariDataSource;
@@ -139,7 +140,8 @@ class CrashRecoveryTest {
         FaultyWorldStore store = new FaultyWorldStore(pg);
         ServerConfig config = new ServerConfig(0, 1L, 1L, 60_000L, AuthMode.DEV_LOCAL,
                 "http://127.0.0.1:0", null, null, null, null, null, null, 100L, 200L,
-                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, Long.MAX_VALUE);
+                "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null, Long.MAX_VALUE,
+                OnVersionMismatch.REFUSE);
         WildsServer server = new WildsServer(config, Clock.systemUTC(), auth, store,
                 new InMemoryEventBus(), new ApiTokenCodec(new SecureRandom()));
         server.start();
@@ -522,7 +524,8 @@ class CrashRecoveryTest {
         pg.exportWalJsonl(worldId, out);
         List<String> lines = out.toString().lines().toList();
         assertEquals(new WalHeader(1L, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION).encode(), lines.get(0));
+                WildsEngine.API_VERSION, RuleRegistry.minimalDefault().fingerprint()).encode(),
+                lines.get(0));
         long expectedSeq = 1L;
         for (int i = 1; i < lines.size(); i++) {
             WalRecord record = CommandCodec.decodeWal(lines.get(i));
@@ -810,7 +813,8 @@ class CrashRecoveryTest {
         PostgresWorldStore regressedStore = new PostgresWorldStore(regressedDb);
         int regressedWorldId = regressedStore.ensureActiveWorld(3L,
                 RuleRegistry.WILDS_RULES_VERSION, WildsEngine.API_VERSION,
-                WorldHost.WILDS_PROTOCOL_VERSION).worldId();
+                WorldHost.WILDS_PROTOCOL_VERSION, RuleRegistry.minimalDefault().fingerprint())
+                .worldId();
         regressedStore.appendClockAdvance(regressedWorldId, 5_000L, null);
         regressedStore.appendClockAdvance(regressedWorldId, 4_999L, null);
         assertThrows(IllegalStateException.class,
@@ -934,10 +938,11 @@ class CrashRecoveryTest {
         }
 
         @Override
-        public WorldRecord ensureActiveWorld(long worldSeed, int rulesVersion,
-                int engineVersion, int protocolVersion) {
+        public ActiveWorld ensureActiveWorld(long worldSeed, int rulesVersion,
+                int engineVersion, int protocolVersion, long rulesFingerprint,
+                OnVersionMismatch onMismatch) {
             return delegate.ensureActiveWorld(worldSeed, rulesVersion, engineVersion,
-                    protocolVersion);
+                    protocolVersion, rulesFingerprint, onMismatch);
         }
 
         @Override

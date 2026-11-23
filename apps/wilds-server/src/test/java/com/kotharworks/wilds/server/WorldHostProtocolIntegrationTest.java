@@ -18,6 +18,7 @@ package com.kotharworks.wilds.server;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedReader;
@@ -40,6 +41,7 @@ import java.util.concurrent.Future;
 import com.kotharworks.auth.AuthMode;
 import com.kotharworks.auth.dev.DevPersona;
 import com.kotharworks.auth.token.ApiTokenCodec;
+import com.kotharworks.wilds.WildsEngine;
 import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.id.ActorId;
 import com.kotharworks.wilds.id.OwnerId;
@@ -48,10 +50,15 @@ import com.kotharworks.wilds.replay.JsonCodec.JsonInt;
 import com.kotharworks.wilds.replay.JsonCodec.JsonObj;
 import com.kotharworks.wilds.replay.JsonCodec.JsonStr;
 import com.kotharworks.wilds.replay.WalRecord;
+import com.kotharworks.wilds.rules.RuleRegistry;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.adapters.memory.InMemoryWorldStore;
 import com.kotharworks.wilds.server.domain.CommandOutcome;
 import com.kotharworks.wilds.server.domain.WorldHost;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException;
+import com.kotharworks.wilds.server.ports.ClockPort;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
+import com.kotharworks.wilds.server.ports.WorldRecord;
 import com.kotharworks.wilds.state.TaskSpec;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -95,7 +102,7 @@ class WorldHostProtocolIntegrationTest {
         ServerConfig config = new ServerConfig(0, 1L, timeScale, pumpIntervalMs,
                 AuthMode.DEV_LOCAL, "http://127.0.0.1:0", null, null, null, null, null, null,
                 100L, 200L, "127.0.0.1", ServerConfig.StorageMode.MEMORY, null, null, null,
-                300_000L);
+                300_000L, OnVersionMismatch.REFUSE);
         store = new InMemoryWorldStore();
         server = new WildsServer(config, Clock.systemUTC(), null, store, null,
                 new ApiTokenCodec(new SecureRandom()));
@@ -415,6 +422,49 @@ class WorldHostProtocolIntegrationTest {
             } finally {
                 host.close();
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ Ticket 11 version gate
+
+    @Test
+    void hostRefusesAMismatchedStoredWorldByDefaultAndArchivesItOnRequest() {
+        InMemoryWorldStore memStore = new InMemoryWorldStore();
+        int staleId = memStore.ensureActiveWorld(1L, RuleRegistry.WILDS_RULES_VERSION + 1,
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION,
+                RuleRegistry.minimalDefault().fingerprint()).worldId();
+        memStore.appendClockAdvance(staleId, 1_000L, null);
+
+        WorldVersionMismatchException refused = assertThrows(
+                WorldVersionMismatchException.class,
+                () -> new WorldHost(memStore, new InMemoryEventBus(), 1L, 1L));
+        assertEquals(staleId, refused.storedWorldId());
+        assertEquals(1, memStore.totalWalRows(), "refusal writes nothing");
+
+        WorldHost host = new WorldHost(memStore, new InMemoryEventBus(), ClockPort.SYSTEM, 1L,
+                1L, WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE,
+                OnVersionMismatch.ARCHIVE);
+        try {
+            assertEquals(staleId, host.archivedWorld().orElseThrow().worldId());
+            assertEquals(WorldRecord.ARCHIVED, host.archivedWorld().orElseThrow().status());
+            assertNotEquals(staleId, host.worldId());
+            assertEquals(RuleRegistry.WILDS_RULES_VERSION, host.worldRecord().rulesVersion());
+            assertEquals(RuleRegistry.minimalDefault().fingerprint(), host.rulesFingerprint());
+            assertEquals(host.rulesFingerprint(), host.worldRecord().rulesFingerprint());
+            assertEquals(0L, host.view().nowMs(), "the fresh world starts from a fresh engine");
+            assertEquals(1, memStore.loadWalAfter(staleId, 0L).size(),
+                    "the archived world's WAL is untouched");
+        } finally {
+            host.close();
+        }
+        WorldHost matching = new WorldHost(memStore, new InMemoryEventBus(), ClockPort.SYSTEM,
+                1L, 1L, WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE,
+                OnVersionMismatch.ARCHIVE);
+        try {
+            assertTrue(matching.archivedWorld().isEmpty(), "a matching boot never rolls over");
+            assertEquals(host.worldId(), matching.worldId());
+        } finally {
+            matching.close();
         }
     }
 

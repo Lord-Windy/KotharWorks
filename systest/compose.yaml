@@ -61,6 +61,8 @@ services:
       WILDS_SEED: ${WILDS_SEED:-1}
       WILDS_TIME_SCALE: ${WILDS_TIME_SCALE:-10}
       WILDS_PUMP_INTERVAL_MS: ${WILDS_PUMP_INTERVAL_MS:-100}
+      # Empty = server default (refuse). systest.sh sets "archive" for the rollover boot.
+      WILDS_ON_VERSION_MISMATCH: ${WILDS_ON_VERSION_MISMATCH:-}
     volumes:
       - out:/out:ro
       - ./docker/bin:/systest-bin:ro
@@ -84,6 +86,8 @@ services:
       SYSTEST_SOAK_SECONDS: ${SYSTEST_SOAK_SECONDS:-20}
       SYSTEST_DOWNTIME_MS: ${SYSTEST_DOWNTIME_MS:-0}
       SYSTEST_EVENTUALLY_SECONDS: ${SYSTEST_EVENTUALLY_SECONDS:-20}
+      SYSTEST_REFUSE_EXIT_CODE: ${SYSTEST_REFUSE_EXIT_CODE:-}
+      SYSTEST_ROLLOVER_SEED: ${SYSTEST_ROLLOVER_SEED:-}
     volumes:
       - out:/out:ro
       - state:/state

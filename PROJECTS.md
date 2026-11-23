@@ -45,7 +45,15 @@ fog-of-war `ObservationProjector` (`com.kotharworks.wilds.observe`), the
 `CommandCodec`/`WalHeader`/`WalRecord` replay codecs, the `EventPayloadCodec` that owns the
 at-rest `WorldEvent` format (stable lowercase kinds, variant payload plus embedded
 `scopeOwner`, pinned byte-for-byte by `EventPayloadCodecTest`), and the golden replay +
-5,000-step seeded fuzz harnesses. See
+5,000-step seeded fuzz harnesses. Ticket 11 adds sealed `RuleDef` families (`PlaceKindDef`,
+`TaskKindDef`) assembled through `RuleRegistry.builder()` (duplicate ids per family rejected,
+ascending `RuleId` storage), the single canonical catalog writer `RulesJson` (also behind
+`GET /api/v1/rules`), and `RulesFingerprint`: `RuleRegistry.fingerprint()` is the first 8 bytes
+of SHA-256 over the `RulesJson` catalog without `rulesVersion`, and `toHex` renders `0x` + 16 hex
+digits. `RulesVersionPinTest` pins `rulesVersion`, the fingerprint and the golden hash in
+`golden/rules-version.pin`, so a rules/mechanics change without a `WILDS_RULES_VERSION` bump fails
+the build; after bumping, re-bless with `mvnd test -pl libs/wilds -DblessGolden=true`. `WalHeader`
+gains an optional `rulesFingerprint` (written as a JSON integer; legacy headers still decode). See
 [`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 
@@ -98,7 +106,9 @@ fast-forwards 24 logical hours in milliseconds via `advanceToNextEvent()`;
 `commandEntry` entries, optional `WAL_HEADER` version triple) and verifies pinned
 `WorldHash` values inline bit-for-bit; `inspect` prints the seeded bootstrap place
 graph with edge travel times and `glance`/`look`/`examine` stub descriptions. Seeds
-accept signed decimal or full 64-bit unsigned `0x`/`0X` hex. Run via
+accept signed decimal or full 64-bit unsigned `0x`/`0X` hex. Ticket 11: `run --out-wal` writes the
+`rulesFingerprint` into the WAL header, and `replay` exits `2` with a fingerprint diagnostic when a
+present fingerprint differs from this binary's (legacy headers without one still replay). Run via
 `mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-headless -am
 -Dexec.args="inspect --seed 0x49524F4E"`.
 
@@ -129,7 +139,8 @@ anchor so sub-quiet uptime survives rolling restarts and the exported WAL replay
 to the exact shutdown hash.
 `adapters/postgres/` ships the zero-framework `SqlMigrator` (plain versioned
 `V###__*.sql` under `db/`: `V001__auth.sql`, `V002__wilds_meta.sql`,
-`V003__wilds_world.sql` — gameplay-neutral `auth`/`wilds_meta` schemas and a
+`V003__wilds_world.sql`, `V004__worlds_rules_fingerprint.sql` (nullable `rules_fingerprint` on
+`wilds_meta.worlds`; legacy rows match on versions alone) — gameplay-neutral `auth`/`wilds_meta` schemas and a
 100% append-only `wilds_world` (`command_wal` with dense per-world `wal_seq`,
 `world_checkpoints`, indexed `world_events`), `pg_advisory_lock` serialized with
 pooled-session cleanup, run at boot on a dedicated connection without the runtime
@@ -164,7 +175,7 @@ responses with replay, live fan-out, keepalives and clean shutdown — all regis
 exclusively through `libs/auth`'s deny-by-default `AuthenticatedRouter`. CLI flags:
 `--port`, `--seed`, `--time-scale`, `--pump-interval-ms`, `--bind` (127.0.0.1),
 `--auth-mode dev-local|oidc`, `--storage memory|postgres`, `--jdbc-url`, `--db-user`,
-`--db-password`, `--checkpoint-interval-ms` (300000), OIDC endpoints, and per-seat
+`--db-password`, `--checkpoint-interval-ms` (300000), `--on-version-mismatch refuse|archive` (default `refuse`), OIDC endpoints, and per-seat
 rate limits. Run via
 `mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am`.
 Ticket 09 adds `adapters/web/` — an escape-by-default HTML builder (`Html`,
@@ -197,6 +208,19 @@ rig that skips the final anchor/checkpoint — all locked together by
 auth/CSRF/logout/XSS escaping E2E, multi-seat & two-user fog isolation with
 monotonic SSE cursors, mid-flight crash with `PAUSE_WHILE_DOWN` recovery and
 bit-for-bit `wilds-headless replay` `WorldHash` parity).
+Ticket 11 adds the rules-version gate: `ensureActiveWorld` compares seed, rules/engine/protocol
+versions and (when stored) `rules_fingerprint`, and a mismatch raises the typed
+`domain/WorldVersionMismatchException`. `Main` prints one diagnostic to stderr (stored vs. running
+values and both remediations) and exits with code `3`, with no stack trace and no writes. In refuse
+mode on PostgreSQL, `adapters/postgres/PreMigrationVersionGate` runs the same comparison read-only
+(a `READ ONLY` transaction, always rolled back) *before* pending schema migrations, so a refused
+boot writes nothing to any schema, including `public.schema_migrations`, and the matching older
+binary can still boot; the post-migration, advisory-locked `ensureActiveWorld` check stays
+authoritative. With
+`--on-version-mismatch=archive`, one advisory-locked transaction marks the old world `ARCHIVED` and
+starts a fresh `ACTIVE` world without touching any `wilds_world` row; permanent seats are then
+re-registered through the `WorldHost` mailbox (WAL-logged, `seat_id` order) before the listener
+starts. `/api/v1/meta` and `/api/v1/rules` expose `rulesFingerprint` as `0x` + 16 hex digits.
 
 ## System tests (`systest/`)
 
@@ -214,7 +238,10 @@ Live tests mix **bot mode** (scripted `SCRIPT_BOT` agents over REST/SSE with sco
 SSR `/play` console and `wilds-ui.js`), plus mixed scenarios, security, regression and
 crash-recovery suites. The runner joins the server's network namespace, so the
 dev-local loopback fuse is untouched. Failure artifacts (screenshots, traces, page
-HTML, server logs) land in `systest/reports/`. See [`systest/README.md`](systest/README.md).
+HTML, server logs) land in `systest/reports/`. Ticket 11 adds a bot-mode check that `/api/v1/rules`
+and `/api/v1/meta` expose matching `rulesVersion` and `rulesFingerprint`, plus a rollover restart
+phase: a server restarted with a different `--seed` exits `3` (refuse), then the
+`--on-version-mismatch=archive` boot carries the existing bot seat into the new world. See [`systest/README.md`](systest/README.md).
 
 ## External dependencies
 

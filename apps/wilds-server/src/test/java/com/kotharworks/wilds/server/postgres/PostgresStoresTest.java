@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static com.kotharworks.wilds.server.postgres.VersionGateFixtures.worldsSnapshot;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -72,6 +73,10 @@ import com.kotharworks.wilds.server.adapters.postgres.PostgresWorldStore;
 import com.kotharworks.wilds.server.domain.CommandOutcome;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.domain.WorldHost;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException;
+import com.kotharworks.wilds.server.domain.WorldVersionMismatchException.Pin;
+import com.kotharworks.wilds.server.ports.ActiveWorld;
+import com.kotharworks.wilds.server.ports.OnVersionMismatch;
 import com.kotharworks.wilds.server.ports.SeatRecord;
 import com.kotharworks.wilds.server.ports.StoredCheckpoint;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
@@ -89,6 +94,8 @@ import com.kotharworks.wilds.state.TaskSpec;
  */
 @Timeout(120)
 class PostgresStoresTest {
+
+    private static final long FP = RuleRegistry.minimalDefault().fingerprint();
 
     // ------------------------------------------------------------------ (2) concurrent JIT
 
@@ -159,7 +166,7 @@ class PostgresStoresTest {
             boots.add(() -> {
                 gate.await();
                 return store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
-                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION);
+                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP);
             });
         }
         List<Future<WorldRecord>> futures;
@@ -169,20 +176,266 @@ class PostgresStoresTest {
         }
         WorldRecord world = futures.getFirst().get();
         assertTrue(world.worldId() >= 1);
+        assertEquals(FP, world.rulesFingerprint(), "a new world records the fingerprint");
+        assertEquals(WorldRecord.ACTIVE, world.status());
         for (Future<WorldRecord> future : futures) {
             assertEquals(world, future.get(), "every concurrent boot resolves the same world row");
         }
 
         WorldRecord again = store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION);
-        assertEquals(world, again, "the same triple re-reads the same world row");
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP);
+        assertEquals(world, again, "the same pin re-reads the same world row");
 
-        IllegalStateException mismatch = assertThrows(IllegalStateException.class,
+        WorldVersionMismatchException mismatch = assertThrows(
+                WorldVersionMismatchException.class,
                 () -> store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION + 1,
-                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION),
+                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP),
                 "a different version triple refuses to boot");
-        assertTrue(mismatch.getMessage().contains("version triple"),
-                "message mirrors the in-memory store: " + mismatch.getMessage());
+        assertEquals(world.worldId(), mismatch.storedWorldId());
+        assertEquals(new Pin(7L, RuleRegistry.WILDS_RULES_VERSION, WildsEngine.API_VERSION,
+                WorldHost.WILDS_PROTOCOL_VERSION, FP), mismatch.stored());
+        assertEquals(new Pin(7L, RuleRegistry.WILDS_RULES_VERSION + 1, WildsEngine.API_VERSION,
+                WorldHost.WILDS_PROTOCOL_VERSION, FP), mismatch.running());
+    }
+
+    // ------------------------------------------------------------------ version gate (Ticket 11)
+
+    @Test
+    void legacyNullFingerprintRowMatchesOnVersionsAndIsNotBackfilled() throws Exception {
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+        new SqlMigrator(jdbi).migrate();
+        int legacyId = insertWorldRow(jdbi, 7L, RuleRegistry.WILDS_RULES_VERSION, null);
+        PostgresWorldStore store = new PostgresWorldStore(jdbi);
+
+        WorldRecord world = store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP);
+        assertEquals(legacyId, world.worldId());
+        assertEquals(null, world.rulesFingerprint(), "a legacy row reports an unset fingerprint");
+        ActiveWorld archiveMode = store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP,
+                OnVersionMismatch.ARCHIVE);
+        assertFalse(archiveMode.rolledOver(), "a legacy match never rolls over");
+        try (var handle = jdbi.open()) {
+            assertEquals(1L, count(handle, "SELECT count(*) FROM wilds_meta.worlds"
+                    + " WHERE rules_fingerprint IS NULL AND status = 'ACTIVE'"),
+                    "no backfill: the legacy row keeps rules_fingerprint NULL");
+            assertEquals(1L, count(handle, "SELECT count(*) FROM wilds_meta.worlds"));
+        }
+
+        // A legacy row still refuses a version mismatch.
+        WorldVersionMismatchException refused = assertThrows(WorldVersionMismatchException.class,
+                () -> store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION + 1,
+                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP));
+        assertEquals(null, refused.stored().rulesFingerprint());
+        assertTrue(refused.diagnostic().contains("unset"), refused.diagnostic());
+
+        // The full host boot works against the legacy row.
+        WorldHost host = new WorldHost(store, new InMemoryEventBus(), 7L, 1L);
+        try {
+            assertEquals(legacyId, host.worldId());
+            assertEquals(FP, host.rulesFingerprint());
+        } finally {
+            host.close();
+        }
+    }
+
+    @Test
+    void presentFingerprintMismatchIsRefusedAndRefuseWritesNothing() throws Exception {
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+        new SqlMigrator(jdbi).migrate();
+        PostgresWorldStore store = new PostgresWorldStore(jdbi);
+        int worldId = populatedWorld(jdbi, store, 7L, FP + 1);
+        List<String> worldsBefore = worldsSnapshot(jdbi);
+        List<Long> countsBefore = worldWorldCounts(jdbi);
+
+        WorldVersionMismatchException fingerprint = assertThrows(
+                WorldVersionMismatchException.class,
+                () -> store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
+                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP),
+                "a present stored fingerprint that differs is never ignored");
+        assertEquals(worldId, fingerprint.storedWorldId());
+        assertEquals(FP + 1, fingerprint.stored().rulesFingerprint());
+        assertEquals(FP, fingerprint.running().rulesFingerprint());
+        assertThrows(WorldVersionMismatchException.class,
+                () -> store.ensureActiveWorld(8L, RuleRegistry.WILDS_RULES_VERSION,
+                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP + 1,
+                        OnVersionMismatch.REFUSE));
+
+        assertEquals(worldsBefore, worldsSnapshot(jdbi), "REFUSE leaves wilds_meta.worlds as-is");
+        assertEquals(countsBefore, worldWorldCounts(jdbi), "REFUSE writes nothing to wilds_world");
+    }
+
+    @Test
+    void archiveRetiresTheOldWorldAtomicallyAndKeepsItsRowsExportable(@TempDir Path tempDir)
+            throws Exception {
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+        new SqlMigrator(jdbi).migrate();
+        PostgresWorldStore store = new PostgresWorldStore(jdbi);
+        int worldA = populatedWorld(jdbi, store, 7L, FP);
+        List<Long> countsBefore = worldWorldCounts(jdbi);
+        StringWriter exportBefore = new StringWriter();
+        store.exportWalJsonl(worldA, exportBefore);
+
+        ActiveWorld rolled = store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION + 1,
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP + 1,
+                OnVersionMismatch.ARCHIVE);
+        assertTrue(rolled.rolledOver());
+        assertEquals(worldA, rolled.archived().worldId());
+        assertEquals(WorldRecord.ARCHIVED, rolled.archived().status());
+        assertEquals(RuleRegistry.WILDS_RULES_VERSION, rolled.archived().rulesVersion());
+        WorldRecord worldB = rolled.world();
+        assertNotEquals(worldA, worldB.worldId());
+        assertEquals(WorldRecord.ACTIVE, worldB.status());
+        assertEquals(RuleRegistry.WILDS_RULES_VERSION + 1, worldB.rulesVersion());
+        assertEquals(FP + 1, worldB.rulesFingerprint());
+
+        try (var handle = jdbi.open()) {
+            assertEquals(1L, count(handle, "SELECT count(*) FROM wilds_meta.worlds WHERE world_id = "
+                    + worldA + " AND status = 'ARCHIVED' AND ended_at IS NOT NULL"),
+                    "A is ARCHIVED with ended_at set");
+            assertEquals(1L, count(handle, "SELECT count(*) FROM wilds_meta.worlds WHERE world_id = "
+                    + worldB.worldId() + " AND status = 'ACTIVE' AND ended_at IS NULL"
+                    + " AND rules_fingerprint = " + (FP + 1)), "B is ACTIVE with its fingerprint");
+            assertEquals(1L, count(handle,
+                    "SELECT count(*) FROM wilds_meta.worlds WHERE status = 'ACTIVE'"));
+        }
+        assertEquals(countsBefore, worldWorldCounts(jdbi),
+                "archiving touches no wilds_world rows");
+
+        StringWriter exportAfter = new StringWriter();
+        store.exportWalJsonl(worldA, exportAfter);
+        assertEquals(exportBefore.toString(), exportAfter.toString(),
+                "the archived world exports byte-identically");
+        assertEquals(new WalHeader(7L, RuleRegistry.WILDS_RULES_VERSION, WildsEngine.API_VERSION,
+                FP).encode(), exportAfter.toString().lines().findFirst().orElseThrow());
+        Path walPath = tempDir.resolve("archived.jsonl");
+        Files.writeString(walPath, exportAfter.toString());
+        StringWriter hOut = new StringWriter();
+        StringWriter hErr = new StringWriter();
+        assertEquals(0, HeadlessMain.execute(
+                new String[] {"replay", "--seed", "7", "--wal", walPath.toString(), "--hash"},
+                new PrintWriter(hOut), new PrintWriter(hErr)), hErr.toString());
+        assertEquals(1L, store.appendClockAdvance(worldB.worldId(), 0L, null),
+                "B starts its own dense wal_seq");
+    }
+
+    @Test
+    void concurrentArchiveBootsArchiveTheOldWorldExactlyOnce() throws Exception {
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+        new SqlMigrator(jdbi).migrate();
+        PostgresWorldStore store = new PostgresWorldStore(jdbi);
+        int worldA = store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP).worldId();
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch gate = new CountDownLatch(1);
+        List<Callable<ActiveWorld>> boots = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            boots.add(() -> {
+                ready.countDown();
+                gate.await();
+                return store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION + 1,
+                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP + 1,
+                        OnVersionMismatch.ARCHIVE);
+            });
+        }
+        List<ActiveWorld> results = new ArrayList<>();
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<ActiveWorld>> futures = new ArrayList<>();
+            for (Callable<ActiveWorld> boot : boots) {
+                futures.add(executor.submit(boot));
+            }
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "both boots parked at the gate");
+            gate.countDown();
+            for (Future<ActiveWorld> future : futures) {
+                results.add(future.get());
+            }
+        }
+        assertEquals(1L, results.stream().filter(ActiveWorld::rolledOver).count(),
+                "exactly one boot archives: " + results);
+        ActiveWorld winner = results.stream().filter(ActiveWorld::rolledOver).findFirst()
+                .orElseThrow();
+        ActiveWorld loser = results.stream().filter(r -> !r.rolledOver()).findFirst()
+                .orElseThrow();
+        assertEquals(worldA, winner.archived().worldId());
+        assertEquals(winner.world(), loser.world(), "the other boot sees B as a plain match");
+        try (var handle = jdbi.open()) {
+            assertEquals(1L, count(handle,
+                    "SELECT count(*) FROM wilds_meta.worlds WHERE status = 'ACTIVE'"));
+            assertEquals(2L, count(handle, "SELECT count(*) FROM wilds_meta.worlds"));
+            assertEquals(1L, count(handle, "SELECT count(*) FROM wilds_meta.worlds"
+                    + " WHERE status = 'ARCHIVED' AND world_id = " + worldA));
+        }
+    }
+
+    @Test
+    void archiveWhoseInsertFailsRollsBackAndLeavesTheOldWorldActive() throws Exception {
+        SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
+        Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
+        new SqlMigrator(jdbi).migrate();
+        PostgresWorldStore store = new PostgresWorldStore(jdbi);
+        int worldA = populatedWorld(jdbi, store, 7L, FP);
+        // Stands in for the server dying between the ARCHIVED update and the new-world insert.
+        jdbi.useHandle(handle -> handle.execute("ALTER TABLE wilds_meta.worlds ADD CONSTRAINT"
+                + " test_reject_seed_99 CHECK (world_seed <> 99)"));
+        List<String> worldsBefore = worldsSnapshot(jdbi);
+        List<Long> countsBefore = worldWorldCounts(jdbi);
+
+        assertThrows(RuntimeException.class, () -> store.ensureActiveWorld(99L,
+                RuleRegistry.WILDS_RULES_VERSION, WildsEngine.API_VERSION,
+                WorldHost.WILDS_PROTOCOL_VERSION, FP, OnVersionMismatch.ARCHIVE));
+
+        assertEquals(worldsBefore, worldsSnapshot(jdbi),
+                "the ARCHIVED update rolled back with the failed insert");
+        assertEquals(countsBefore, worldWorldCounts(jdbi));
+        assertEquals(worldA, store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP).worldId(),
+                "world A is still the active world");
+    }
+
+    /** Inserts an ACTIVE worlds row directly (a legacy or foreign-binary world). */
+    private static int insertWorldRow(Jdbi jdbi, long seed, int rulesVersion, Long fingerprint) {
+        return jdbi.withHandle(handle -> handle.select("INSERT INTO wilds_meta.worlds (title,"
+                        + " world_seed, rules_version, engine_version, protocol_version,"
+                        + " rules_fingerprint, jvm_version) VALUES ('Ironwood Wilds', ?, ?, ?, ?,"
+                        + " ?, '25') RETURNING world_id", seed, rulesVersion,
+                        WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, fingerprint)
+                .mapTo(int.class).one());
+    }
+
+    /** A world with a seat registration, a clock anchor, an event and a checkpoint. */
+    private static int populatedWorld(Jdbi jdbi, PostgresWorldStore store, long seed,
+            long fingerprint) {
+        int worldId = store.ensureActiveWorld(seed, RuleRegistry.WILDS_RULES_VERSION,
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, fingerprint).worldId();
+        PostgresAuthStore auth = new PostgresAuthStore(jdbi, Clock.systemUTC(),
+                new SecureRandom());
+        UserRecord user = auth.upsertUser(
+                new ExternalIdentity("https://id.example:8443", "gate-" + worldId), "Sam");
+        SeatRecord seat = store.createSeat(user.userId(), "Gate Seat " + worldId,
+                ControllerKind.HUMAN);
+        store.appendCommand(worldId, 0L, seat.seatId(), UUID.randomUUID(),
+                new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"), null);
+        store.appendClockAdvance(worldId, 500L, null);
+        store.appendEvents(worldId, List.of(StoredWorldEvent.of(new WorldEvent.OwnerRegistered(
+                new OwnerId(0, 1), new ActorId(0, 1), 1L, 0L, new OwnerId(0, 1), "pub", "priv"),
+                seat.seatId())));
+        store.saveCheckpoint(worldId, 2L, 500L, 42L, "{\"tick\":1}");
+        return worldId;
+    }
+
+    /** Row counts of command_wal, world_checkpoints and world_events (all worlds). */
+    private static List<Long> worldWorldCounts(Jdbi jdbi) {
+        try (var handle = jdbi.open()) {
+            return List.of(
+                    count(handle, "SELECT count(*) FROM wilds_world.command_wal"),
+                    count(handle, "SELECT count(*) FROM wilds_world.world_checkpoints"),
+                    count(handle, "SELECT count(*) FROM wilds_world.world_events"));
+        }
     }
 
     // ------------------------------------------------------------------ seat metadata
@@ -302,7 +555,7 @@ class PostgresStoresTest {
         new SqlMigrator(jdbi).migrate();
         PostgresWorldStore store = new PostgresWorldStore(jdbi);
         int worldId = store.ensureActiveWorld(7L, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION).worldId();
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP).worldId();
 
         store.saveCheckpoint(worldId, 5L, 1_000L, 42L, "{\"tick\":1}");
         for (int i = 2; i <= 12; i++) {
@@ -337,7 +590,7 @@ class PostgresStoresTest {
         SeatRecord seat = store.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
 
         int world1 = store.ensureActiveWorld(9L, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION).worldId();
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP).worldId();
         UUID registerCmdId = UUID.randomUUID();
         assertEquals(1L, store.appendCommand(world1, 0L, seat.seatId(), registerCmdId,
                 new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"), null));
@@ -353,7 +606,7 @@ class PostgresStoresTest {
         store.exportWalJsonl(world1, out1);
         List<String> lines1 = out1.toString().lines().toList();
         assertEquals(new WalHeader(9L, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION).encode(),
+                WildsEngine.API_VERSION, FP).encode(),
                 lines1.get(0), "line 1 is the canonical WAL_HEADER");
         assertEquals(3, lines1.size());
         Path wal1Path = tempDir.resolve("world1.jsonl");
@@ -371,7 +624,7 @@ class PostgresStoresTest {
                     + " WHERE world_id = ?", world1);
         }
         int world2 = store.ensureActiveWorld(11L, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION).worldId();
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP).worldId();
         assertNotEquals(world1, world2);
         assertEquals(1L, store.appendCommand(world2, 0L, seat.seatId(), UUID.randomUUID(),
                 new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"), null),
@@ -498,7 +751,7 @@ class PostgresStoresTest {
         new SqlMigrator(jdbi).migrate();
         PostgresWorldStore store = new PostgresWorldStore(jdbi);
         int worldId = store.ensureActiveWorld(5L, RuleRegistry.WILDS_RULES_VERSION,
-                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION).worldId();
+                WildsEngine.API_VERSION, WorldHost.WILDS_PROTOCOL_VERSION, FP).worldId();
 
         OwnerId owner = new OwnerId(0, 1);
         ActorId actor = new ActorId(0, 1);

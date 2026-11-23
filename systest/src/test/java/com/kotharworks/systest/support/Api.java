@@ -195,6 +195,11 @@ public final class Api {
         return get("/api/v1/meta");
     }
 
+    /** The rules catalog ({@code GET /api/v1/rules}); requires authentication. */
+    public Resp rules() {
+        return get("/api/v1/rules");
+    }
+
     public Resp me() {
         return get("/api/v1/auth/me");
     }

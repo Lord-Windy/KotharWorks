@@ -16,7 +16,6 @@
 package com.kotharworks.wilds.server.adapters.http;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -35,6 +34,7 @@ import com.kotharworks.wilds.server.domain.CommandOutcome;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.domain.SeatAuthorizationException;
 import com.kotharworks.wilds.server.domain.SeatAuthorizer;
+import com.kotharworks.wilds.server.domain.SeatCharter;
 import com.kotharworks.wilds.server.domain.WorldHost;
 import com.kotharworks.wilds.server.ports.AuthStorePort;
 import com.kotharworks.wilds.server.ports.CreatedToken;
@@ -45,7 +45,8 @@ import com.kotharworks.wilds.server.ports.WorldStorePort;
 /**
  * Seat routes: chartering ({@code POST /api/v1/seats} — the only path into the
  * world for registration, submitted as a {@code RegisterOwner} command through
- * {@code WorldHost} with a deterministic {@code cmdId}) and {@code iw_bot_}
+ * {@code WorldHost} with the deterministic {@link SeatCharter#registerCmdId}
+ * {@code cmdId} that an archive rollover's seat carry-over also uses) and {@code iw_bot_}
  * token minting/revocation for non-HUMAN seats ({@code ROLE_RESEARCHER}, seat
  * must be owned by the caller regardless of role).
  */
@@ -90,7 +91,7 @@ public final class SeatRoutes {
         String suppliedActorLabel = ApiJson.optString(body, "initialActorLabel");
         String label = suppliedActorLabel != null && !suppliedActorLabel.isBlank()
                 ? ApiJson.validatePrintable(suppliedActorLabel, "initialActorLabel", 1, 80)
-                : trimmed + "'s Actor";
+                : SeatCharter.defaultActorLabel(trimmed);
         UserRecord user = authStore.findUser(human.userId())
                 .orElseGet(() -> UserRecord.active(human.userId(), human.displayName(), null));
 
@@ -124,8 +125,7 @@ public final class SeatRoutes {
                 }
             }
         }
-        UUID cmdId = UUID.nameUUIDFromBytes(("seat-register:" + worldHost.worldId() + ":"
-                + seat.seatId()).getBytes(StandardCharsets.UTF_8));
+        UUID cmdId = SeatCharter.registerCmdId(worldHost.worldId(), seat.seatId());
         CommandOutcome outcome = worldHost.submit(seat.seatId(), cmdId,
                 new WorldCommand.RegisterOwner(seat.seatId(), seat.seatName(), label));
         switch (outcome) {

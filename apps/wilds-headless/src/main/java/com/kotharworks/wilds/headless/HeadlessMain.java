@@ -48,7 +48,10 @@ public final class HeadlessMain {
     /** Bad arguments, unknown subcommand, or file I/O failure. */
     public static final int EXIT_USAGE = 1;
 
-    /** WAL header carries an unsupported {@code rulesVersion} or {@code engineVersion}. */
+    /**
+     * WAL header carries an unsupported {@code rulesVersion} or {@code engineVersion}, or a
+     * {@code rulesFingerprint} that differs from this rig's rules.
+     */
     public static final int EXIT_VERSION_MISMATCH = 2;
 
     /** WAL body or header seed diverges from expected integrity invariants. */

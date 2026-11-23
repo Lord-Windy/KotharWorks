@@ -17,28 +17,38 @@ package com.kotharworks.wilds.rules;
 
 import com.kotharworks.wilds.id.RuleId;
 
+import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Map;
+import java.util.List;
 import java.util.Objects;
+import java.util.SequencedCollection;
 import java.util.SequencedMap;
 import java.util.TreeMap;
-import java.util.function.Function;
 
 /**
  * Compile-time structural rule catalog: the closed set of place kinds and task kinds a
  * world runs under, keyed by {@link RuleId} and iterated in deterministic lexicographic
- * order ({@code TreeMap}, never hash-ordered). Immutable after construction.
+ * order ({@code TreeMap}, never hash-ordered). Immutable after construction; built with
+ * {@link #builder()}.
  *
  * <p>Deliberately gameplay-neutral: no doctrines, skills, or combat tables — only the
  * structural vocabulary the neutral {@code WorldState} schema needs.
+ *
+ * <p>Every definition is a {@link RuleDef}. The whole catalog serializes through the single
+ * canonical writer {@link RulesJson}, and {@link #fingerprint()} digests that output, so a
+ * change to any field of any definition moves the fingerprint (pinned by
+ * {@code RulesVersionPinTest}, which then demands a {@link #WILDS_RULES_VERSION} bump).
  */
 public final class RuleRegistry {
 
-    /** Rules schema version carried by every {@code WorldState}; bump on schema change. */
+    /**
+     * Rules schema version carried by every {@code WorldState}; bump on any rule or
+     * mechanic change (enforced by {@code RulesVersionPinTest}).
+     */
     public static final int WILDS_RULES_VERSION = 1;
 
     /** Structural kind of a place (e.g. {@code camp}, {@code trail}, {@code landmark}). */
-    public record PlaceKindDef(RuleId id, String name) {
+    public record PlaceKindDef(RuleId id, String name) implements RuleDef {
         public PlaceKindDef {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(name, "name");
@@ -56,7 +66,7 @@ public final class RuleRegistry {
      * ({@code 0 .. Long.MAX_VALUE}); only {@code maxBatches = 1} is meaningful.
      */
     public record TaskKindDef(RuleId id, String name, long minDurationMs, long maxDurationMs,
-                              int maxBatches) {
+                              int maxBatches) implements RuleDef {
         public TaskKindDef {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(name, "name");
@@ -76,30 +86,64 @@ public final class RuleRegistry {
         }
     }
 
-    private final TreeMap<RuleId, PlaceKindDef> placeKinds;
-    private final TreeMap<RuleId, TaskKindDef> taskKinds;
+    /**
+     * Accumulates definitions per family. Rejects null definitions
+     * ({@link NullPointerException}) and duplicate ids within one family
+     * ({@link IllegalArgumentException}); the same slug in different families is allowed.
+     * Reusable: {@link #build()} copies, so later additions never alias a built registry.
+     */
+    public static final class Builder {
 
-    public RuleRegistry(Map<RuleId, PlaceKindDef> placeKinds, Map<RuleId, TaskKindDef> taskKinds) {
-        Objects.requireNonNull(placeKinds, "placeKinds");
-        Objects.requireNonNull(taskKinds, "taskKinds");
-        this.placeKinds = copyValidated(placeKinds, PlaceKindDef::id, "placeKinds");
-        this.taskKinds = copyValidated(taskKinds, TaskKindDef::id, "taskKinds");
+        private final TreeMap<RuleId, PlaceKindDef> placeKinds = new TreeMap<>();
+        private final TreeMap<RuleId, TaskKindDef> taskKinds = new TreeMap<>();
+
+        private Builder() {
+        }
+
+        /** Adds a place kind; its id must be new among place kinds. */
+        public Builder placeKind(PlaceKindDef def) {
+            Objects.requireNonNull(def, "placeKind def");
+            putUnique(placeKinds, def, "placeKinds");
+            return this;
+        }
+
+        /** Adds a task kind; its id must be new among task kinds. */
+        public Builder taskKind(TaskKindDef def) {
+            Objects.requireNonNull(def, "taskKind def");
+            putUnique(taskKinds, def, "taskKinds");
+            return this;
+        }
+
+        /** Builds an immutable registry from a defensive copy of the current contents. */
+        public RuleRegistry build() {
+            return new RuleRegistry(placeKinds, taskKinds);
+        }
+
+        private static <D extends RuleDef> void putUnique(TreeMap<RuleId, D> family, D def,
+                                                          String familyName) {
+            if (family.containsKey(def.id())) {
+                throw new IllegalArgumentException("duplicate " + familyName + " id: "
+                        + def.id().slug());
+            }
+            family.put(def.id(), def);
+        }
     }
 
-    private static <D> TreeMap<RuleId, D> copyValidated(
-            Map<RuleId, D> source, Function<D, RuleId> idExtractor, String mapName) {
-        TreeMap<RuleId, D> copy = new TreeMap<>();
-        for (Map.Entry<RuleId, D> entry : source.entrySet()) {
-            RuleId key = Objects.requireNonNull(entry.getKey(), mapName + " contains a null key");
-            D def = Objects.requireNonNull(entry.getValue(), mapName + " contains a null value");
-            RuleId defId = idExtractor.apply(def);
-            if (!key.equals(defId)) {
-                throw new IllegalArgumentException(mapName + " key " + key.slug()
-                        + " does not match definition id " + defId.slug());
-            }
-            copy.put(key, def);
-        }
-        return copy;
+    private final TreeMap<RuleId, PlaceKindDef> placeKinds;
+    private final TreeMap<RuleId, TaskKindDef> taskKinds;
+    private final long fingerprint;
+
+    private RuleRegistry(TreeMap<RuleId, PlaceKindDef> placeKinds,
+                         TreeMap<RuleId, TaskKindDef> taskKinds) {
+        this.placeKinds = new TreeMap<>(placeKinds);
+        this.taskKinds = new TreeMap<>(taskKinds);
+        // Eager: the registry is immutable, so the digest is computed exactly once.
+        this.fingerprint = RulesFingerprint.of(this);
+    }
+
+    /** A fresh, empty {@link Builder}. */
+    public static Builder builder() {
+        return new Builder();
     }
 
     /**
@@ -107,17 +151,13 @@ public final class RuleRegistry {
      * and task kinds {@code wait}/{@code travel}.
      */
     public static RuleRegistry minimalDefault() {
-        TreeMap<RuleId, PlaceKindDef> places = new TreeMap<>();
-        places.put(new RuleId("camp"), new PlaceKindDef(new RuleId("camp"), "Camp"));
-        places.put(new RuleId("trail"), new PlaceKindDef(new RuleId("trail"), "Trail"));
-        places.put(new RuleId("landmark"), new PlaceKindDef(new RuleId("landmark"), "Landmark"));
-
-        TreeMap<RuleId, TaskKindDef> tasks = new TreeMap<>();
-        tasks.put(new RuleId("wait"),
-                new TaskKindDef(new RuleId("wait"), "Wait", 1_000L, 3_600_000L, 10));
-        tasks.put(new RuleId("travel"),
-                new TaskKindDef(new RuleId("travel"), "Travel", 0L, Long.MAX_VALUE, 1));
-        return new RuleRegistry(places, tasks);
+        return builder()
+                .placeKind(new PlaceKindDef(new RuleId("camp"), "Camp"))
+                .placeKind(new PlaceKindDef(new RuleId("trail"), "Trail"))
+                .placeKind(new PlaceKindDef(new RuleId("landmark"), "Landmark"))
+                .taskKind(new TaskKindDef(new RuleId("wait"), "Wait", 1_000L, 3_600_000L, 10))
+                .taskKind(new TaskKindDef(new RuleId("travel"), "Travel", 0L, Long.MAX_VALUE, 1))
+                .build();
     }
 
     /** Place kinds in ascending {@link RuleId} order; unmodifiable view. */
@@ -128,5 +168,24 @@ public final class RuleRegistry {
     /** Task kinds in ascending {@link RuleId} order; unmodifiable view. */
     public SequencedMap<RuleId, TaskKindDef> taskKinds() {
         return Collections.unmodifiableSequencedMap(taskKinds);
+    }
+
+    /**
+     * Every definition in fixed family order (place kinds, then task kinds), each family
+     * ascending by {@link RuleId}; unmodifiable.
+     */
+    public SequencedCollection<RuleDef> definitions() {
+        List<RuleDef> all = new ArrayList<>(placeKinds.size() + taskKinds.size());
+        all.addAll(placeKinds.values());
+        all.addAll(taskKinds.values());
+        return Collections.unmodifiableList(all);
+    }
+
+    /**
+     * Deterministic 64-bit digest of this catalog's canonical {@link RulesJson} form; see
+     * {@link RulesFingerprint#of(RuleRegistry)}. Excludes {@link #WILDS_RULES_VERSION}.
+     */
+    public long fingerprint() {
+        return fingerprint;
     }
 }

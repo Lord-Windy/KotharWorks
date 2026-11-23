@@ -25,14 +25,13 @@ import com.kotharworks.wilds.observe.OwnerObservation;
 import com.kotharworks.wilds.observe.PlaceDto;
 import com.kotharworks.wilds.replay.JsonCodec;
 import com.kotharworks.wilds.replay.JsonCodec.JsonObj;
-import com.kotharworks.wilds.rules.RuleRegistry;
 import com.kotharworks.wilds.state.ActiveTask;
 import com.kotharworks.wilds.state.TaskSpec;
 
 /**
- * Explicit reflection-free serializers for fogged observations and the rule
- * catalog. Everything renders through {@link JsonCodec}, so wire forms stay
- * canonical and escaped.
+ * Explicit reflection-free serializers for fogged observations (the rule
+ * catalog renders through {@code RulesJson} in {@code libs/wilds}). Everything
+ * renders through {@link JsonCodec}, so wire forms stay canonical and escaped.
  */
 public final class ObservationJson {
 
@@ -58,30 +57,6 @@ public final class ObservationJson {
                 .map(place -> (JsonCodec.JsonValue) place)
                 .toList())));
         return JsonCodec.write(new JsonObj(entries));
-    }
-
-    /** Serializes the rule catalog plus the pinned rules version. */
-    public static String rules(RuleRegistry rules, int rulesVersion) {
-        Objects.requireNonNull(rules, "rules");
-        List<JsonCodec.JsonValue> placeKinds = new ArrayList<>();
-        for (RuleRegistry.PlaceKindDef kind : rules.placeKinds().values()) {
-            placeKinds.add(new JsonObj(List.of(
-                    JsonObj.entry("id", ApiJson.str(kind.id().slug())),
-                    JsonObj.entry("name", ApiJson.str(kind.name())))));
-        }
-        List<JsonCodec.JsonValue> taskKinds = new ArrayList<>();
-        for (RuleRegistry.TaskKindDef kind : rules.taskKinds().values()) {
-            taskKinds.add(new JsonObj(List.of(
-                    JsonObj.entry("id", ApiJson.str(kind.id().slug())),
-                    JsonObj.entry("name", ApiJson.str(kind.name())),
-                    JsonObj.entry("minDurationMs", ApiJson.num(kind.minDurationMs())),
-                    JsonObj.entry("maxDurationMs", ApiJson.num(kind.maxDurationMs())),
-                    JsonObj.entry("maxBatches", ApiJson.num(kind.maxBatches())))));
-        }
-        return JsonCodec.write(new JsonObj(List.of(
-                JsonObj.entry("rulesVersion", ApiJson.num(rulesVersion)),
-                JsonObj.entry("placeKinds", new JsonCodec.JsonArr(placeKinds)),
-                JsonObj.entry("taskKinds", new JsonCodec.JsonArr(taskKinds)))));
     }
 
     private static JsonObj owner(OwnerDto owner) {
