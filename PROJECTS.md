@@ -198,6 +198,24 @@ auth/CSRF/logout/XSS escaping E2E, multi-seat & two-user fog isolation with
 monotonic SSE cursors, mid-flight crash with `PAUSE_WHILE_DOWN` recovery and
 bit-for-bit `wilds-headless replay` `WorldHash` parity).
 
+## System tests (`systest/`)
+
+### wilds-systest — dockerized live system test suite
+
+**Status:** in-development · **Artifact:** `com.kotharworks:wilds-systest` (opt-in
+`-Psystest` reactor profile) · **Package:** `com.kotharworks.systest` · **Depends on:** —
+(black-box: no server/engine dependency; JUnit 5 + Playwright Java, test scope)
+
+`./systest.sh` (repo root) runs everything in Docker: `mvn install` with the regular
+unit + Testcontainers integration suite, then the live suite against a real
+`wilds-server --storage postgres` + PostgreSQL 17 stack, then a SIGKILL/restart phase.
+Live tests mix **bot mode** (scripted `SCRIPT_BOT` agents over REST/SSE with scoped
+`iw_bot_` tokens) and **human mode** (emulated players in headless Chromium driving the
+SSR `/play` console and `wilds-ui.js`), plus mixed scenarios, security, regression and
+crash-recovery suites. The runner joins the server's network namespace, so the
+dev-local loopback fuse is untouched. Failure artifacts (screenshots, traces, page
+HTML, server logs) land in `systest/reports/`. See [`systest/README.md`](systest/README.md).
+
 ## External dependencies
 
 | Dependency    | Scope | Used by                          |
@@ -210,6 +228,8 @@ bit-for-bit `wilds-headless replay` `WorldHash` parity).
 | error_prone_annotations | provided | `wilds-server` (resolves @GuardedBy inside JDBI3/HikariCP class files under `-Werror`) |
 | slf4j-simple | runtime | `wilds-server` (clean provider for HikariCP/Testcontainers logs) |
 | Testcontainers junit-jupiter + postgresql | test | `wilds-server` (singleton `postgres:17-alpine`) |
+| Playwright Java (+ bundled Chromium) | test | `wilds-systest` (human-mode browser tests; `-Psystest` only) |
+| junit-platform-console-standalone | runner | `wilds-systest` (live-suite launcher inside Docker) |
 | wilds-headless | test | `wilds-server` (cold `HeadlessMain` WAL replay parity) |
 
 ## Dependency graph
@@ -220,4 +240,5 @@ libs/auth           (nimbus-jose-jwt only)
 libs/wilds           (zero runtime deps)
   ├── apps/wilds-headless
   └── apps/wilds-server
+systest              (no module deps — exercises the deployed apps over HTTP/SSE/browser)
 ```

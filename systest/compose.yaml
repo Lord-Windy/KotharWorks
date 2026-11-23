@@ -1,0 +1,99 @@
+# KotharWorks system-test stack. Drive it with ./systest.sh from the repo root;
+# you should not need to call docker compose directly (see systest/README.md).
+name: kotharworks-systest
+
+x-toolbox: &toolbox
+  image: kotharworks-systest-toolbox:${PLAYWRIGHT_VERSION:-1.65.0}
+  environment: &toolbox-env
+    HOST_UID: ${HOST_UID:-}
+    HOST_GID: ${HOST_GID:-}
+
+services:
+  # Builds the toolbox image only (JDK 25 + Maven + Chromium); never started.
+  toolbox:
+    <<: *toolbox
+    build:
+      context: ./docker
+      args:
+        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.65.0}
+    profiles: ["tools"]
+
+  # Copies the checkout, runs `mvn install` (+ the regular unit/integration suite
+  # unless SKIP_UNIT=1) and stages runnable classpaths into the `out` volume.
+  build:
+    <<: *toolbox
+    profiles: ["tools"]
+    working_dir: /work
+    environment:
+      <<: *toolbox-env
+      SKIP_UNIT: ${SKIP_UNIT:-0}
+      MVN_EXTRA_ARGS: ${MVN_EXTRA_ARGS:-}
+    volumes:
+      - ..:/src:ro
+      - m2:/root/.m2
+      - out:/out
+      - ./reports:/reports
+      # Testcontainers (Postgres ITs) talks to the host daemon from inside this container.
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+    command: ["/src/systest/docker/bin/build.sh"]
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: wilds
+      POSTGRES_USER: wilds
+      POSTGRES_PASSWORD: wilds
+    # Throwaway data: fast, and wiped with the stack. Survives a *server* restart.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wilds -d wilds"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  server:
+    <<: *toolbox
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WILDS_SEED: ${WILDS_SEED:-1}
+      WILDS_TIME_SCALE: ${WILDS_TIME_SCALE:-10}
+      WILDS_PUMP_INTERVAL_MS: ${WILDS_PUMP_INTERVAL_MS:-100}
+    volumes:
+      - out:/out:ro
+      - ./docker/bin:/systest-bin:ro
+    command: ["/systest-bin/serve.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/v1/meta"]
+      interval: 1s
+      timeout: 3s
+      retries: 90
+      start_period: 5s
+
+  # Drives the live suite. Shares the server's network namespace, so the server is
+  # reachable on 127.0.0.1:8080 — real loopback, dev-local auth fuse untouched.
+  runner:
+    <<: *toolbox
+    profiles: ["tools"]
+    network_mode: "service:server"
+    shm_size: "1gb"
+    environment:
+      <<: *toolbox-env
+      SYSTEST_SOAK_SECONDS: ${SYSTEST_SOAK_SECONDS:-20}
+      SYSTEST_DOWNTIME_MS: ${SYSTEST_DOWNTIME_MS:-0}
+      SYSTEST_EVENTUALLY_SECONDS: ${SYSTEST_EVENTUALLY_SECONDS:-20}
+    volumes:
+      - out:/out:ro
+      - state:/state
+      - ./reports:/reports
+      - ./docker/bin:/systest-bin:ro
+    entrypoint: ["/systest-bin/run-live.sh"]
+
+volumes:
+  m2:
+    name: kotharworks-systest-m2
+    external: true
+  out:
+  state:

@@ -101,6 +101,7 @@ kotharworks/  (com.kotharworks:kotharworks-parent · Pure Java 25 LTS · -Werror
 ## 5. Non-Negotiable Definition of Done (Every Ticket)
 
 - [ ] `~/.sdkman/candidates/mvnd/current/bin/mvnd test` passes cleanly across the entire reactor with **zero compiler warnings** (`-Xlint:all,-serial -Werror`).
+- [ ] `./systest.sh` passes (Docker: unit + integration + live bot/human suite); bug fixes add a regression test.
 - [ ] Every new `.java` and `pom.xml` file carries the **Apache License 2.0** header (`Copyright 2026 Samuel "Lord-Windy" Brown`).
 - [ ] `PROJECTS.md` is updated whenever a module is added, removed, or promoted from `scaffold` to `in-development`.
 - [ ] Zero gameplay-specific nouns (no Holds, Raids, Skills, Techs, Items, Parties, or Tithe Ships) leak into engine state, wire endpoints, or SQL migrations.

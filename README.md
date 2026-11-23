@@ -21,6 +21,9 @@ mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am
 
 # Test a single module (and any upstream library dependencies)
 mvnd test -pl libs/wilds -am
+
+# Full system test gate, entirely in Docker (unit + integration + live bots/humans)
+./systest.sh
 ```
 
 *(Note: `.mvn/mvnd.properties` pins the KotharWorks daemon to JDK `25.0.3-tem`

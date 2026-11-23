@@ -187,4 +187,15 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Black-box system test harness (Playwright + live HTTP bots). Opt-in so the
+             default `mvnd test` stays light; ./systest.sh activates it inside Docker. -->
+        <profile>
+            <id>systest</id>
+            <modules>
+                <module>systest</module>
+            </modules>
+        </profile>
+    </profiles>
 </project>

@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright 2026 Samuel "Lord-Windy" Brown
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.kotharworks</groupId>
+        <artifactId>kotharworks-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>wilds-systest</artifactId>
+    <name>KotharWorks :: systest</name>
+    <description>Black-box live system test suite for Ironwood Wilds: scripted bots over REST/SSE and
+        emulated humans in headless Chromium, run against the dockerized server + PostgreSQL stack</description>
+
+    <properties>
+        <!-- Single source of truth: ./systest.sh reads this to build the Chromium layer
+             of the toolbox image, so the browser always matches the driver. -->
+        <playwright.version>1.65.0</playwright.version>
+        <junit-console.version>1.11.4</junit-console.version>
+        <!-- The suites need a live stack; they are launched by systest/docker/bin/run-live.sh,
+             never by a plain `mvn test`. -->
+        <skipTests>true</skipTests>
+    </properties>
+
+    <!-- Deliberately NO dependency on the server or engine modules: this suite talks to
+         the product only over HTTP, SSE and the browser, exactly like a real client. -->
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+            <version>${playwright.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <!-- Stage the runtime classpath + JUnit console launcher for the runner. -->
+                    <execution>
+                        <id>stage-test-classpath</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <includeScope>test</includeScope>
+                            <outputDirectory>${project.build.directory}/systest-lib</outputDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>stage-junit-console</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>org.junit.platform</groupId>
+                                    <artifactId>junit-platform-console-standalone</artifactId>
+                                    <version>${junit-console.version}</version>
+                                    <destFileName>junit-console.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${project.build.directory}</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

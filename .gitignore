@@ -30,3 +30,6 @@ worktrees/
 
 # Queensland
 queensland.state.jso*
+
+# System test reports
+systest/reports/

@@ -52,7 +52,26 @@ mvnd -q -Dmvnd.rawStreams=true compile exec:java -pl apps/wilds-server -am
 
 # Clean all target/ directories
 mvnd clean
+
+# Full gate in Docker: unit + integration suite, then live bot/human system suite
+./systest.sh
+./systest.sh live --test BotProtocol --keep   # iterate on one live test class
 ```
+
+### System test suite (`systest/`)
+
+`./systest.sh` is the one command every developer and agent runs before calling work
+done; it needs only Docker. It runs the regular Maven suite, then boots
+`wilds-server` + PostgreSQL in Docker and drives it with scripted bots (REST/SSE) and
+emulated humans (headless Chromium), including a kill -9 recovery phase. Reports and
+failure artifacts (screenshots, traces, logs) land in `systest/reports/`.
+
+- New gameplay/API behaviour gets a live test in the matching `systest/` package.
+- **Every bug fix gets a regression test** in `systest/.../regression/` (or a unit test
+  in the owning module when it is not observable black-box), naming the commit/ticket.
+- Live tests are black-box: never add a dependency from `systest` on server/engine code.
+- See [systest/README.md](systest/README.md) for conventions (shared world, seat
+  names, `Await` instead of sleeps, human vs bot helpers).
 
 ### Adding a new module
 
@@ -188,7 +207,8 @@ Batch caveats:
    ```bash
    st status <KEY> in-progress
    ```
-3. Implement and verify `mvnd test` passes cleanly with zero warnings.
+3. Implement and verify `mvnd test` passes cleanly with zero warnings, then run
+   `./systest.sh` (Docker) and make sure it passes.
 4. **Commit and push** before marking `done` (once a remote is configured):
    ```bash
    git add <files>
