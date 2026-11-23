@@ -62,8 +62,9 @@ import com.kotharworks.wilds.server.ports.WorldStorePort;
  * mailbox, one Commit-Before-Mutate WAL row per seat in ascending
  * {@code seatId} order (whatever order the adapter lists them in), with the
  * charter route's {@link SeatCharter} naming and {@code cmdId}; one failing
- * seat is logged and never aborts boot, and a non-rollover boot submits
- * nothing.
+ * seat is logged and never aborts boot, and a non-rollover boot of a fully
+ * owned world submits nothing. Any boot registers seats left without an
+ * owner, so an interrupted carry-over resumes (review finding 11-M1).
  */
 @Timeout(60)
 class RolloverSeatCarryOverTest {
@@ -219,6 +220,91 @@ class RolloverSeatCarryOverTest {
                     && formatted(r).contains("injected listing failure")), messages());
         } finally {
             rolled.close();
+        }
+    }
+
+    /**
+     * Review finding 11-M1: the archive transaction commits, then the process dies
+     * before the carry-over loop. The next boot with the same command line sees a
+     * world that already matches the running pin (no rollover), and must still
+     * finish the carry-over instead of leaving every seat ownerless for good.
+     */
+    @Test
+    void carryOverInterruptedByACrashAfterTheArchiveCommitResumesOnTheNextBoot() {
+        InMemoryWorldStore store = new InMemoryWorldStore();
+        List<SeatRecord> seats = bootWorldAWithTwoRegisteredSeats(store);
+
+        // The archive commit lands, then the process dies before any WorldHost runs.
+        ActiveWorld crashed = store.ensureActiveWorld(2L,
+                WorldHost.runningPin(2L).rulesVersion(), WorldHost.runningPin(2L).engineVersion(),
+                WorldHost.runningPin(2L).protocolVersion(),
+                WorldHost.runningPin(2L).rulesFingerprint(), OnVersionMismatch.ARCHIVE);
+        assertTrue(crashed.rolledOver());
+        int worldB = crashed.world().worldId();
+        assertEquals(0, registerOwners(store, worldB).size(), "nothing carried over yet");
+
+        logs.clear();
+        WorldHost restarted = boot(store, 2L, OnVersionMismatch.ARCHIVE);
+        try {
+            assertEquals(worldB, restarted.worldId());
+            assertTrue(restarted.archivedWorld().isEmpty(), "no rollover on the restart");
+            List<WalRecord.CommandEntry> registrations = registerOwners(store, worldB);
+            assertEquals(2, registrations.size(), "the carry-over finished on restart");
+            for (int i = 0; i < seats.size(); i++) {
+                SeatRecord seat = seats.get(i);
+                assertEquals(seat.seatId(), registrations.get(i).seatId(),
+                        "ascending seatId order");
+                assertEquals(SeatCharter.registerCmdId(worldB, seat.seatId()).toString(),
+                        registrations.get(i).cmdId());
+                assertTrue(restarted.view().findOwnerBySeatKey(seat.seatId()).isPresent(),
+                        "seat " + seat.seatId() + " owns in world B");
+            }
+            assertTrue(logs.stream().anyMatch(r -> r.getLevel() == Level.WARNING
+                    && formatted(r).contains("2 seat(s) with no owner")),
+                    "WARNING names the resumed carry-over: " + messages());
+        } finally {
+            restarted.close();
+        }
+
+        // Once complete, a further boot is a no-op.
+        logs.clear();
+        WorldHost again = boot(store, 2L, OnVersionMismatch.REFUSE);
+        try {
+            assertEquals(2, registerOwners(store, worldB).size(), "idempotent once complete");
+            assertFalse(logs.stream().anyMatch(r -> formatted(r).contains("re-registered")),
+                    "a fully owned world submits and logs nothing: " + messages());
+        } finally {
+            again.close();
+        }
+    }
+
+    @Test
+    void aPartialCarryOverRegistersOnlyTheMissingSeats() {
+        InMemoryWorldStore store = new InMemoryWorldStore();
+        List<SeatRecord> seats = bootWorldAWithTwoRegisteredSeats(store);
+        SeatRecord done = seats.get(0);
+        SeatRecord missing = seats.get(1);
+
+        // Rollover boot where the second seat's append fails (stands in for dying mid-loop).
+        ScriptedStore faulty = new ScriptedStore(store);
+        int worldB = 2;
+        faulty.failOnceCmdId = SeatCharter.registerCmdId(worldB, missing.seatId());
+        boot(faulty, 2L, OnVersionMismatch.ARCHIVE).close();
+        assertEquals(List.of(done.seatId()), registerOwners(store, worldB).stream()
+                .map(WalRecord.CommandEntry::seatId).toList());
+
+        logs.clear();
+        WorldHost restarted = boot(store, 2L, OnVersionMismatch.REFUSE);
+        try {
+            List<WalRecord.CommandEntry> registrations = registerOwners(store, worldB);
+            assertEquals(List.of(done.seatId(), missing.seatId()), registrations.stream()
+                    .map(WalRecord.CommandEntry::seatId).toList(), "only the gap was filled");
+            assertTrue(restarted.view().findOwnerBySeatKey(missing.seatId()).isPresent());
+            assertTrue(logs.stream().anyMatch(r -> r.getLevel() == Level.INFO
+                    && formatted(r).contains("re-registered 1 of 1 seats into world_id "
+                            + worldB)), messages());
+        } finally {
+            restarted.close();
         }
     }
 

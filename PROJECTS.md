@@ -220,7 +220,8 @@ authoritative. With
 `--on-version-mismatch=archive`, one advisory-locked transaction marks the old world `ARCHIVED` and
 starts a fresh `ACTIVE` world without touching any `wilds_world` row; permanent seats are then
 re-registered through the `WorldHost` mailbox (WAL-logged, `seat_id` order) before the listener
-starts. `/api/v1/meta` and `/api/v1/rules` expose `rulesFingerprint` as `0x` + 16 hex digits.
+starts. Every boot registers any seat still without an owner, so a crash between the archive commit
+and the end of the carry-over is finished by the next start. `/api/v1/meta` and `/api/v1/rules` expose `rulesFingerprint` as `0x` + 16 hex digits.
 
 ## System tests (`systest/`)
 

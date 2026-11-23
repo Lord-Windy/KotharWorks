@@ -38,7 +38,10 @@ import java.util.Objects;
  * (the registry's {@code TreeMap} order), fixed field order per entry, integers as
  * {@link JsonInt} (signed 64-bit, locale-free) and the compact {@link JsonCodec} writer.
  * {@link #entry} is an exhaustive {@code switch} over the sealed {@link RuleDef} with no
- * {@code default}, so a new family that is not serialized fails compilation.
+ * {@code default}, so a new {@code permits} type with no switch arm fails compilation.
+ * The rest (a family missing from {@code catalogEntries} or
+ * {@link RuleRegistry#definitions()}, or a record field missing from its arm) still
+ * compiles; {@code RulesCatalogCompletenessTest} catches those by reflection.
  */
 public final class RulesJson {
 

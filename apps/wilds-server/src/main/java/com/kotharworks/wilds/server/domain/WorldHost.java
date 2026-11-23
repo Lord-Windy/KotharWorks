@@ -249,9 +249,7 @@ public final class WorldHost {
         this.view = engine.view();
         publishClockAnchor();
         this.writerThread = Thread.ofVirtual().name("wilds-world-host").start(this::runWriter);
-        if (active.rolledOver()) {
-            reRegisterSeatsAfterRollover();
-        }
+        registerOwnerlessSeats(active.rolledOver());
     }
 
     /**
@@ -269,26 +267,42 @@ public final class WorldHost {
     }
 
     /**
-     * Seat carry-over after an archive rollover (ticket 11 §3.6): seats are
-     * permanent, but their owners lived in the archived world, so every seat is
-     * re-registered in ascending {@code seatId} order through the ordinary
-     * mailbox ({@link #submit}), getting a WAL row before any mutation. A seat
-     * that fails is logged and left on the {@code /play} "Retry registration"
-     * path, which dedupes on the same {@link SeatCharter#registerCmdId}; it
-     * never aborts boot.
+     * Seat carry-over (ticket 11 §3.6): seats are permanent, but after an archive
+     * rollover their owners lived in the archived world, so every seat with no
+     * owner in the active world is registered in ascending {@code seatId} order
+     * through the ordinary mailbox ({@link #submit}), getting a WAL row before any
+     * mutation. This runs on <em>every</em> boot, not just the rollover boot: a
+     * process that died after the archive commit but before (or during) the
+     * carry-over finishes it on the next start, when the new world already
+     * matches the running pin (review finding 11-M1). It is idempotent through
+     * {@link SeatCharter#registerCmdId}. A boot that finds every seat owned
+     * submits and logs nothing. A seat that fails is logged and left on the
+     * {@code /play} "Retry registration" path; it never aborts boot.
+     *
+     * @param rolledOver whether this boot just archived the previous world
      */
-    private void reRegisterSeatsAfterRollover() {
+    private void registerOwnerlessSeats(boolean rolledOver) {
         List<SeatRecord> seats;
         try {
             seats = worldStore.findAllSeats().stream()
+                    .filter(seat -> view.findOwnerBySeatKey(seat.seatId()).isEmpty())
                     .sorted(Comparator.comparingLong(SeatRecord::seatId))
                     .toList();
         } catch (RuntimeException storeFailure) {
             LOG.log(System.Logger.Level.WARNING,
-                    "world {0} could not list seats to re-register after rollover; seats stay"
+                    "world {0} could not list seats for owner carry-over; seats stay"
                             + " on the retry-registration path: {1}",
                     Integer.toString(worldId), storeFailure.getMessage());
             return;
+        }
+        if (seats.isEmpty()) {
+            return;
+        }
+        if (!rolledOver) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "world {0} has {1} seat(s) with no owner (interrupted carry-over or"
+                            + " failed registration); registering them now",
+                    Integer.toString(worldId), Integer.toString(seats.size()));
         }
         int registered = 0;
         for (SeatRecord seat : seats) {
@@ -299,21 +313,21 @@ public final class WorldHost {
             switch (outcome) {
                 case CommandOutcome.Ok _ -> registered++;
                 case CommandOutcome.Rejected rejected -> LOG.log(System.Logger.Level.WARNING,
-                        "world {0} rejected re-registering seat {1} after rollover ({2}: {3});"
+                        "world {0} rejected re-registering seat {1} during carry-over ({2}: {3});"
                                 + " the seat stays on the retry-registration path",
                         Integer.toString(worldId), Long.toString(seat.seatId()),
                         rejected.errorCode(),
                         rejected.message());
                 case CommandOutcome.StorageUnavailable unavailable -> LOG.log(
                         System.Logger.Level.WARNING,
-                        "world {0} could not re-register seat {1} after rollover ({2});"
+                        "world {0} could not re-register seat {1} during carry-over ({2});"
                                 + " the seat stays on the retry-registration path",
                         Integer.toString(worldId), Long.toString(seat.seatId()),
                         unavailable.message());
             }
         }
         LOG.log(System.Logger.Level.INFO,
-                "re-registered {0} of {1} seats into world_id {2} after rollover",
+                "re-registered {0} of {1} seats into world_id {2}",
                 Integer.toString(registered), Integer.toString(seats.size()),
                 Integer.toString(worldId));
     }

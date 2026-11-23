@@ -492,10 +492,11 @@ class PostgresStoresTest {
         PostgresWorldStore store = new PostgresWorldStore(jdbi);
         UserRecord user = auth.upsertUser(
                 new ExternalIdentity("https://id.example:8443", "event-owner"), "Sam");
-        SeatRecord seat = store.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
-
+        // Boot first: a seat that exists at boot with no owner is registered by the host
+        // itself (seat carry-over), and this test charters it with its own cmdId.
         WorldHost host = new WorldHost(store, new InMemoryEventBus(), 1L, 1L,
                 WorldHost.DEFAULT_QUIET_ADVANCE_MS, Long.MAX_VALUE);
+        SeatRecord seat = store.createSeat(user.userId(), "Sam Seat", ControllerKind.HUMAN);
         UUID cmdId = UUID.randomUUID();
         CommandOutcome outcome = host.submit(seat.seatId(), cmdId,
                 new WorldCommand.RegisterOwner(seat.seatId(), "Sam", "Sam"));
