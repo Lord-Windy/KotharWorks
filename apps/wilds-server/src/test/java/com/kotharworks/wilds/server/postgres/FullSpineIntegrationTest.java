@@ -235,6 +235,22 @@ class FullSpineIntegrationTest {
             assertTrue(stuck.body().contains("name=\"seatName\" value=\"Orphan Seat\""),
                     stuck.body());
             assertTrue(stuck.body().contains("value=\"HUMAN\""), stuck.body());
+            assertTrue(stuck.body().contains(
+                    "http-equiv=\"refresh\" content=\"1; url=/play?registeringAttempt=1\""),
+                    stuck.body());
+
+            for (String junk : new String[] {"banana", "-5", "99999999999999999999"}) {
+                HttpResponse<String> garbage = http.send(
+                        get(base + "/play?registeringAttempt=" + junk, alice), ofString());
+                assertTrue(garbage.body().contains("url=/play?registeringAttempt=1\""),
+                        junk + ": " + garbage.body());
+            }
+            HttpResponse<String> exhausted = http.send(
+                    get(base + "/play?registeringAttempt=10", alice), ofString());
+            assertFalse(exhausted.body().contains("http-equiv=\"refresh\""), exhausted.body());
+            assertTrue(exhausted.body().contains("Registration is taking longer than expected"),
+                    exhausted.body());
+            assertTrue(exhausted.body().contains("id=\"claim-seat-form\""), exhausted.body());
 
             HttpResponse<String> retried = http.send(postJson(base + "/api/v1/seats",
                     "{\"seatName\":\"Orphan Seat\",\"controllerKind\":\"HUMAN\"}", alice,

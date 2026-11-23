@@ -42,8 +42,10 @@ the two-phase task mechanics and queue runner with O(1) heap-ticket cancellation
 `com.kotharworks.wilds.task`), the outward-only `WorldEvent` outbox with monotonic
 cursors (`com.kotharworks.wilds.event`), the deeply immutable `WorldView` and
 fog-of-war `ObservationProjector` (`com.kotharworks.wilds.observe`), the
-`CommandCodec`/`WalHeader`/`WalRecord` replay codecs, and the golden replay + 5,000-step seeded
-fuzz harnesses. See
+`CommandCodec`/`WalHeader`/`WalRecord` replay codecs, the `EventPayloadCodec` that owns the
+at-rest `WorldEvent` format (stable lowercase kinds, variant payload plus embedded
+`scopeOwner`, pinned byte-for-byte by `EventPayloadCodecTest`), and the golden replay +
+5,000-step seeded fuzz harnesses. See
 [`planning/README.md`](planning/README.md) and
 [`planning/ironwood_wilds_planning/README.md`](planning/ironwood_wilds_planning/README.md).
 
@@ -117,7 +119,9 @@ outcome is unknown — commit landed, ack lost — is reconciled from the WAL ta
 any further command, append or checkpoint), seat-scoped `cmdId`
 UUID idempotency with bounded LRU receipt caching and WAL-backed pre-checkpoint
 reconstruction, pre-mutation `CLOCK_ADVANCE` anchors plus a quiet `ClockPump`
-adapter, and lock-free volatile `WorldView` MVCC reads with
+adapter, lock-free volatile `WorldView` MVCC reads plus a lock-free
+`currentLogicalNowMs()` display clock extrapolated from the last committed anchor
+(so `/play` progress bars and `/api/v1/meta` stay continuous across reloads), with
 checkpoint-hash-verified + WAL-tail boot recovery, `PAUSE_WHILE_DOWN` clock resume
 (logical time never advances offline), periodic + graceful-close checkpointing
 (retention: latest ten) and a best-effort final `CLOCK_ADVANCE(currentLogicalMs)`
@@ -135,12 +139,13 @@ under `pg_advisory_xact_lock(hashtextextended(...))` — zero orphan users, zero
 23505 races; SHA-256-only session/token credentials), `PostgresWorldStore`
 (append-only WAL + batched `ON CONFLICT (world_id, event_cursor) DO NOTHING`
 event backfill, latest-ten checkpoint retention, cursor-streamed `exportWalJsonl`
-byte-compatible with `wilds-headless` replay) and `WorldEventPayloadCodec`
-(payload_json round-trip, scopeOwner embedded). The Testcontainers 2.x suite (`postgres/`) boots a singleton
+byte-compatible with `wilds-headless` replay; `payload_json` is written and read
+exclusively through `libs/wilds`' `EventPayloadCodec`, so no adapter depends on another). The Testcontainers 2.x suite (`postgres/`) boots a singleton
 `postgres:17-alpine` once per JVM and proves migration idempotency, 20-virtual-
 thread JIT identity races, split-brain store-fault immunity (RAM never ahead of
 WAL, HTTP 503) and full `kill -9` recovery with zero cursor rewind.
-`domain/SeatAuthorizer` bridges `libs/auth`
+`domain/PrintableText` holds the printable-text and seat-name rules shared by the HTTP
+adapter and both stores. `domain/SeatAuthorizer` bridges `libs/auth`
 principals to permanent seats (`ports/SeatRecord`) and in-world `OwnerId`s, with
 role quota charter policy (`ControllerKind`), `wilds:seat` bot-token resource
 scoping, and per-seat token-bucket rate limiting (`429 RATE_LIMITED`). `ports/`
@@ -167,7 +172,9 @@ Ticket 09 adds `adapters/web/` — an escape-by-default HTML builder (`Html`,
 tags/attrs) rendering
 the SSR structural console: `GET /play` (registered PUBLIC with HUMAN_ONLY
 enforced in-handler so anonymous browsers get the mandated 303 -> `/auth/login`
-instead of a bare 401; unseated users get a Claim Seat form, seated users the
+instead of a bare 401; unseated users get a Claim Seat form, seats still awaiting
+their `RegisterOwner` a self-refreshing page capped at ten attempts with a Retry
+registration form, seated users the
 console — header bar with multi-seat switcher (`?seatId=`, defaulting to the
 first `HUMAN` seat) and form logout redirecting to `/chronicle`, "While You Were
 Away" catch-up banner via `?since=`, fogged place & topology panel with

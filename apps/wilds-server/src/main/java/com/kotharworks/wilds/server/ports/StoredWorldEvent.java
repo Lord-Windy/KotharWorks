@@ -18,6 +18,7 @@ package com.kotharworks.wilds.server.ports;
 import java.util.Objects;
 
 import com.kotharworks.wilds.event.WorldEvent;
+import com.kotharworks.wilds.replay.EventPayloadCodec;
 
 /**
  * One persisted world event. Full rows carry the private summary and the
@@ -77,15 +78,7 @@ public record StoredWorldEvent(long cursor, long occurredMs, String kind, Long s
 
     /** The canonical lowercase kind of an engine event (SSE {@code event:} name). */
     public static String kindOf(WorldEvent event) {
-        Objects.requireNonNull(event, "event");
-        return switch (event) {
-            case WorldEvent.OwnerRegistered _ -> "owner_registered";
-            case WorldEvent.TaskStarted _ -> "task_started";
-            case WorldEvent.TaskBatchCompleted _ -> "task_batch_completed";
-            case WorldEvent.TaskCancelled _ -> "task_cancelled";
-            case WorldEvent.TaskFailed _ -> "task_failed";
-            case WorldEvent.PlaceDiscovered _ -> "place_discovered";
-        };
+        return EventPayloadCodec.kind(event);
     }
 
     /** The public projection of a row: only cursor/time/kind/publicSummary survive. */

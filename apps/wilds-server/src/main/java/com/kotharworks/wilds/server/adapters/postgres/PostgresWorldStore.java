@@ -28,6 +28,7 @@ import java.util.UUID;
 import com.kotharworks.auth.principal.UserId;
 import com.kotharworks.wilds.command.WorldCommand;
 import com.kotharworks.wilds.replay.CommandCodec;
+import com.kotharworks.wilds.replay.EventPayloadCodec;
 import com.kotharworks.wilds.replay.WalHeader;
 import com.kotharworks.wilds.replay.WalRecord;
 import com.kotharworks.wilds.server.domain.ControllerKind;
@@ -281,7 +282,7 @@ public final class PostgresWorldStore implements WorldStorePort {
                             .bindByType(4, event.seatId(), Long.class)
                             .bindByType(5, event.publicSummary(), String.class)
                             .bind(6, event.privateSummary())
-                            .bind(7, WorldEventPayloadCodec.encode(event.event()))
+                            .bind(7, EventPayloadCodec.encode(event.event()))
                             .add();
                 }
                 batch.execute();
@@ -346,7 +347,7 @@ public final class PostgresWorldStore implements WorldStorePort {
         if (privateSeatView) {
             return StoredWorldEvent.full(cursor, occurredMs, kind,
                     rs.getLong("seat_id"), publicSummary, privateSummary,
-                    WorldEventPayloadCodec.decode(kind, cursor, occurredMs,
+                    EventPayloadCodec.decode(kind, cursor, occurredMs,
                             publicSummary, privateSummary, rs.getString("payload")));
         }
         return StoredWorldEvent.publicProjection(new StoredWorldEvent(cursor,

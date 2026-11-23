@@ -142,17 +142,22 @@ public final class CommandCodec {
     private static JsonCodec.JsonArr encodeTasks(List<TaskSpec> tasks) {
         List<JsonCodec.JsonValue> encoded = new ArrayList<>(tasks.size());
         for (TaskSpec spec : tasks) {
-            encoded.add(new JsonCodec.JsonObj(switch (spec) {
-                case TaskSpec.Wait(long durationMs, int batches) -> List.of(
-                        JsonCodec.JsonObj.entry("type", str("wait")),
-                        JsonCodec.JsonObj.entry("durationMs", new JsonCodec.JsonInt(durationMs)),
-                        JsonCodec.JsonObj.entry("batches", new JsonCodec.JsonInt(batches)));
-                case TaskSpec.Travel(PlaceId destination) -> List.of(
-                        JsonCodec.JsonObj.entry("type", str("travel")),
-                        JsonCodec.JsonObj.entry("destination", str(destination.toWire())));
-            }));
+            encoded.add(encodeSpec(spec));
         }
         return new JsonCodec.JsonArr(encoded);
+    }
+
+    /** Canonical task-spec object, shared with {@link EventPayloadCodec}. */
+    static JsonCodec.JsonObj encodeSpec(TaskSpec spec) {
+        return new JsonCodec.JsonObj(switch (spec) {
+            case TaskSpec.Wait(long durationMs, int batches) -> List.of(
+                    JsonCodec.JsonObj.entry("type", str("wait")),
+                    JsonCodec.JsonObj.entry("durationMs", new JsonCodec.JsonInt(durationMs)),
+                    JsonCodec.JsonObj.entry("batches", new JsonCodec.JsonInt(batches)));
+            case TaskSpec.Travel(PlaceId destination) -> List.of(
+                    JsonCodec.JsonObj.entry("type", str("travel")),
+                    JsonCodec.JsonObj.entry("destination", str(destination.toWire())));
+        });
     }
 
     private static List<TaskSpec> decodeTasks(JsonCodec.JsonObj root, String key) {

@@ -75,6 +75,8 @@ public final class PlayRoutes {
     private static final int CATCH_UP_LIMIT = 50;
     private static final int LOG_TAIL = 30;
     private static final int QUEUE_SLOTS = 5;
+    private static final int MAX_REGISTERING_ATTEMPTS = 10;
+    private static final String REGISTERING_ATTEMPT_PARAM = "registeringAttempt";
 
     private final AuthStorePort authStore;
     private final WorldStorePort worldStore;
@@ -126,6 +128,7 @@ public final class PlayRoutes {
             throw new IllegalArgumentException(
                     "query parameter \"since\" must be >= 0, got: " + since);
         }
+        int registeringAttempt = registeringAttempt(query);
         String csrfToken = csrfTokenFor(ctx);
         List<SeatRecord> seats = worldStore.findSeatsByOwner(human.userId());
         if (seats.isEmpty()) {
@@ -140,10 +143,23 @@ public final class PlayRoutes {
         WorldView view = worldHost.view();
         OwnerRow owner = view.findOwnerBySeatKey(seat.seatId()).orElse(null);
         if (owner == null) {
-            respondHtml(ctx, registeringPage(human, seat, seats, csrfToken));
+            respondHtml(ctx, registeringPage(human, seat, seats, csrfToken,
+                    requestedSeatId, registeringAttempt));
             return;
         }
         respondHtml(ctx, consolePage(human, seat, seats, owner, view, since, csrfToken));
+    }
+
+    private static int registeringAttempt(Map<String, String> query) {
+        String raw = query.get(REGISTERING_ATTEMPT_PARAM);
+        if (raw == null) {
+            return 0;
+        }
+        try {
+            return Math.clamp(Long.parseLong(raw.trim()), 0, MAX_REGISTERING_ATTEMPTS);
+        } catch (NumberFormatException _) {
+            return 0;
+        }
     }
 
     private static SeatRecord selectSeat(List<SeatRecord> seats, Long requestedSeatId) {
@@ -177,16 +193,16 @@ public final class PlayRoutes {
 
     // ------------------------------------------------------------------ page scaffolding
 
-    private static Html head(String title, String csrfToken, boolean selfRefresh) {
+    private static Html head(String title, String csrfToken, String refreshUrl) {
         Html html = Html.create().doctype()
                 .open("html", new Html.Attr("lang", "en"))
                 .open("head")
                 .voidTag("meta", new Html.Attr("charset", "utf-8"))
                 .voidTag("meta", new Html.Attr("name", "viewport"),
                         new Html.Attr("content", "width=device-width, initial-scale=1"));
-        if (selfRefresh) {
+        if (refreshUrl != null) {
             html.voidTag("meta", new Html.Attr("http-equiv", "refresh"),
-                    new Html.Attr("content", "1"));
+                    new Html.Attr("content", "1; url=" + refreshUrl));
         }
         return html.el("title", new Html.Attr[0], "Ironwood Wilds — " + title)
                 .voidTag("meta", new Html.Attr("name", "csrf-token"),
@@ -240,7 +256,7 @@ public final class PlayRoutes {
     // ------------------------------------------------------------------ unseated view
 
     private Html unseatedPage(Principal.HumanPrincipal human, String csrfToken) {
-        Html html = head("Claim Seat", csrfToken, false)
+        Html html = head("Claim Seat", csrfToken, null)
                 .open("body")
                 .open("header", new Html.Attr("class", "console-bar"))
                 .open("h1").text("Ironwood Wilds").close("h1")
@@ -279,8 +295,12 @@ public final class PlayRoutes {
     // ------------------------------------------------------------------ registering view
 
     private Html registeringPage(Principal.HumanPrincipal human, SeatRecord seat,
-            List<SeatRecord> seats, String csrfToken) {
-        Html html = head("Entering", csrfToken, true)
+            List<SeatRecord> seats, String csrfToken, Long requestedSeatId, int attempt) {
+        boolean exhausted = attempt >= MAX_REGISTERING_ATTEMPTS;
+        String refreshUrl = exhausted ? null
+                : "/play?" + (requestedSeatId == null ? "" : "seatId=" + requestedSeatId + "&")
+                        + REGISTERING_ATTEMPT_PARAM + "=" + (attempt + 1);
+        Html html = head("Entering", csrfToken, refreshUrl)
                 .open("body")
                 .open("header", new Html.Attr("class", "console-bar"))
                 .open("h1").text("Ironwood Wilds").close("h1")
@@ -292,9 +312,12 @@ public final class PlayRoutes {
         return html.close("header")
                 .open("div", new Html.Attr("class", "panel"))
                 .open("p").text("Seat \"" + seat.seatName()
-                        + "\" is entering the world — this page refreshes itself.")
+                        + (exhausted ? "\" is not registered yet."
+                                : "\" is entering the world — this page refreshes itself."))
                 .close("p")
-                .open("p").text("If this takes more than a few seconds, retry registration.")
+                .open("p").text(exhausted
+                        ? "Registration is taking longer than expected — use Retry registration."
+                        : "If this takes more than a few seconds, retry registration.")
                 .close("p")
                 .open("form", new Html.Attr("id", "claim-seat-form"),
                         new Html.Attr("method", "post"),
@@ -328,7 +351,7 @@ public final class PlayRoutes {
         }
 
         long logicalNowMs = worldHost.currentLogicalNowMs();
-        Html html = head(seat.seatName(), csrfToken, false)
+        Html html = head(seat.seatName(), csrfToken, null)
                 .open("body", new Html.Attr("class", "console"),
                         new Html.Attr("data-world-id", String.valueOf(worldHost.worldId())),
                         new Html.Attr("data-seat-id", String.valueOf(seat.seatId())),

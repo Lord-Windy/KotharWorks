@@ -19,15 +19,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-import com.kotharworks.wilds.event.WorldEvent;
+import com.kotharworks.wilds.replay.EventPayloadCodec;
 import com.kotharworks.wilds.replay.JsonCodec;
 import com.kotharworks.wilds.replay.JsonCodec.JsonArr;
 import com.kotharworks.wilds.replay.JsonCodec.JsonInt;
 import com.kotharworks.wilds.replay.JsonCodec.JsonObj;
-import com.kotharworks.wilds.replay.JsonCodec.JsonStr;
 import com.kotharworks.wilds.replay.JsonCodec.JsonValue;
 import com.kotharworks.wilds.server.ports.StoredWorldEvent;
-import com.kotharworks.wilds.state.ActiveTask;
 import com.kotharworks.wilds.state.TaskSpec;
 
 /**
@@ -69,7 +67,7 @@ public final class EventCodec {
                 : ApiJson.str(event.privateSummary())));
         entries.add(JsonObj.entry("payload", event.event() == null
                 ? JsonCodec.JsonNull.INSTANCE
-                : payload(event.event())));
+                : EventPayloadCodec.payload(event.event())));
         return new JsonObj(entries);
     }
 
@@ -88,50 +86,6 @@ public final class EventCodec {
                 JsonObj.entry("publicSummary", event.publicSummary() == null
                         ? JsonCodec.JsonNull.INSTANCE
                         : ApiJson.str(event.publicSummary()))));
-    }
-
-    /**
-     * The wire payload object for one engine event. Persistence reuses exactly
-     * this shape inside {@code world_events.payload_json}, so a recovered row
-     * serializes byte-identically to the live SSE/REST frame.
-     */
-    public static JsonObj payloadJson(WorldEvent event) {
-        return payload(event);
-    }
-
-    private static JsonObj payload(WorldEvent event) {
-        return switch (event) {
-            case WorldEvent.OwnerRegistered e -> new JsonObj(List.of(
-                    JsonObj.entry("ownerId", ApiJson.str(e.ownerId().toWire())),
-                    JsonObj.entry("initialActorId", ApiJson.str(e.initialActorId().toWire()))));
-            case WorldEvent.TaskStarted e -> new JsonObj(List.of(
-                    JsonObj.entry("actorId", ApiJson.str(e.actorId().toWire())),
-                    JsonObj.entry("task", task(e.task()))));
-            case WorldEvent.TaskBatchCompleted e -> new JsonObj(List.of(
-                    JsonObj.entry("actorId", ApiJson.str(e.actorId().toWire())),
-                    JsonObj.entry("spec", spec(e.spec())),
-                    JsonObj.entry("batchesLeftAfter", new JsonInt(e.batchesLeftAfter()))));
-            case WorldEvent.TaskCancelled e -> new JsonObj(List.of(
-                    JsonObj.entry("actorId", ApiJson.str(e.actorId().toWire())),
-                    JsonObj.entry("cancelledActive", new JsonCodec.JsonBool(e.cancelledActive())),
-                    JsonObj.entry("clearedPendingCount", new JsonInt(e.clearedPendingCount()))));
-            case WorldEvent.TaskFailed e -> new JsonObj(List.of(
-                    JsonObj.entry("actorId", ApiJson.str(e.actorId().toWire())),
-                    JsonObj.entry("spec", spec(e.spec())),
-                    JsonObj.entry("failureCode", ApiJson.str(e.failureCode().name()))));
-            case WorldEvent.PlaceDiscovered e -> new JsonObj(List.of(
-                    JsonObj.entry("placeId", ApiJson.str(e.placeId().toWire())),
-                    JsonObj.entry("discoveredByActor", ApiJson.str(e.discoveredByActor().toWire()))));
-        };
-    }
-
-    private static JsonObj task(ActiveTask task) {
-        return new JsonObj(List.of(
-                JsonObj.entry("startedAtMs", new JsonInt(task.startedAtMs())),
-                JsonObj.entry("dueAtMs", new JsonInt(task.dueAtMs())),
-                JsonObj.entry("heapTicket", new JsonInt(task.heapTicket())),
-                JsonObj.entry("spec", spec(task.spec())),
-                JsonObj.entry("batchesLeft", new JsonInt(task.batchesLeft()))));
     }
 
     /** Shared by {@code EventCodec} and {@code ObservationJson}. */

@@ -69,7 +69,6 @@ import com.kotharworks.wilds.server.adapters.memory.InMemoryEventBus;
 import com.kotharworks.wilds.server.adapters.postgres.PostgresAuthStore;
 import com.kotharworks.wilds.server.adapters.postgres.SqlMigrator;
 import com.kotharworks.wilds.server.adapters.postgres.PostgresWorldStore;
-import com.kotharworks.wilds.server.adapters.postgres.WorldEventPayloadCodec;
 import com.kotharworks.wilds.server.domain.CommandOutcome;
 import com.kotharworks.wilds.server.domain.ControllerKind;
 import com.kotharworks.wilds.server.domain.WorldHost;
@@ -493,7 +492,7 @@ class PostgresStoresTest {
     }
 
     @Test
-    void worldEventPayloadCodecRoundTripsAllSixEventVariantsAndRejectsIntOverflow() {
+    void worldEventsRoundTripAllSixVariantsThroughJsonb() {
         SharedPostgresContainer.FreshDatabase db = SharedPostgresContainer.freshDatabase();
         Jdbi jdbi = Jdbi.create(db.jdbcUrl(), db.username(), db.password());
         new SqlMigrator(jdbi).migrate();
@@ -534,11 +533,6 @@ class PostgresStoresTest {
                     "variant #" + i + " must round-trip losslessly through JSONB");
         }
 
-        // Narrowing-cast guard: > Integer.MAX_VALUE integer fields must fail fast.
-        assertThrows(IllegalArgumentException.class, () -> WorldEventPayloadCodec.decode(
-                "task_cancelled", 7L, 4_000L, null, "bad",
-                "{\"actorId\":\"act:0:1\",\"cancelledActive\":false,"
-                        + "\"clearedPendingCount\":5000000000,\"scopeOwner\":\"own:0:1\"}"));
     }
 
     // ------------------------------------------------------------------ helpers
