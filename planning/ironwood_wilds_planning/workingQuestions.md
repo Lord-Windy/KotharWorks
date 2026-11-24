@@ -1,28 +1,18 @@
 # Ironwood Wilds — Working Questions (review of V1)
 
-*Review of [IronwoodWildsFlavour.md](IronwoodWildsFlavour.md) and [IronwoodWildsMechanics.md](IronwoodWildsMechanics.md), 2026-11-24. Each item has an ID so it can be answered, deferred or struck. Line numbers refer to the docs as they stood at review time.*
+*Review of [IronwoodWildsFlavour.md](IronwoodWildsFlavour.md) and [IronwoodWildsMechanics.md](IronwoodWildsMechanics.md), 2026-11-24. Each item has an ID so it can be answered, deferred or struck. Line numbers refer to the docs as they stood at review time. Answered items are deleted once the docs are updated; the decisions are logged in [Mechanics §13](IronwoodWildsMechanics.md#13-open-mechanical-questions).*
 
 ---
 
 ## A. Bugs & inconsistencies
 
-- [ ] **A1. Carrack timing doesn't work.** A ~3-season slip with the keel laid at midsummer (37.5% of the Day) launches at ~112%, after the Night ([Mechanics:330](IronwoodWildsMechanics.md#101-bill-of-materials), [Flavour:195](IronwoodWildsFlavour.md#8-what-the-homeland-needs-exports)). A 3-season keel must go down by the end of Thaw, or the carrack slip time shrinks to ~2 seasons.
-- [ ] **A2. Declaring a hull is free, so slip time isn't a decision.** "Keel laid" happens when a hull is opened or declared, so the best play is to declare a carrack at tick 0, and Yard hulls opened on day one get the whole Day. Options:
-  - *Keel laid = keel line filled.* "Keel down by midsummer" becomes a gathering race.
-  - *One solo hull occupies the slipway.* Declaring a carrack blocks galleys.
-  - If keel = filled line: make the keel old-growth and only the **mainmast** heart ironwood. Otherwise Lv 60 Woodcutting, a band-4 expedition and seasoning all have to happen by ~week 1.
-- [ ] **A3. Pacing vs. a full reset.** Skills and Tech reset every ~4 weeks, but the skill curve is Lv 1–99 exponential (an MMO-for-years curve). Heart ironwood needs Lv 60; the origin head start is +2–4. Design the curve backwards from the season length (see E2).
-- [ ] **A4. Posted characters at the Night.** Only "characters at the Hold" board the last Convoy ([Mechanics:101](IronwoodWildsMechanics.md#42-the-dusk--the-night-new)). An offline player with people at an outpost would lose them as `LEFT_TO_THE_NIGHT`, which strains P3. Proposal: outpost staff walk home automatically during the Dusk (everyone knows the date).
-- [ ] **A5. Stockade timber at the Dusk.** "Every trunk in the wall is a trunk not going home." So why not tear it down and ship it in the Dusk? Needs a rule. Could be a good Dusk decision: strip the walls while raids peak.
-- [ ] **A6. Leftover names from the old brief.**
+- [ ] 📌 **A3. Pacing vs. a full reset.** *(Pinned: after the other questions.)* Skills and Tech reset every ~4 weeks, but the skill curve is Lv 1–99 exponential (an MMO-for-years curve). Heart ironwood needs Lv 60; the origin head start is +2–4. Design the curve backwards from the season length (see E2).
+- [ ] 📌 **A6. Leftover names from the old brief.** *(Pinned: sweep at the end of the review.)*
   - "retreat to the Keep" ([Mechanics:472](IronwoodWildsMechanics.md#124-hard-rule-goods-and-walls-never-lives)) should be the Hall.
   - **Stone Tools** in Tier I ([Mechanics:295](IronwoodWildsMechanics.md#9-household-tech-tree-changed)) doesn't fit a chartered House in 1300; "charter-issue iron"?
   - **Infirmary** ([Mechanics:156](IronwoodWildsMechanics.md#54-vitals-needs--equipment)) isn't in the tech tree.
   - `03-ProceduralGeneration.md` / `06-VerticalSliceAndRoadmap.md` still say True Ironwood Groves, Barrow, First-Age, Stone keeps.
-- [ ] **A7. Ambiguous units.** "Notice rises per day", "three days at a camp", "Days" in the check-in table: real days or Wilds days? At 1 real day ≈ 1 Wilds week that is a 7× difference. Add a units convention and tag every duration.
-- [ ] **A8. Banned-words list will false-positive.** "office" and "power" are banned ([Flavour:183](IronwoodWildsFlavour.md#75-rules-for-writers--grammars)), but §2 says "offices are elected". Split into a hard **lint list** (robot, plastic, electricity, battery, computer…) and a **meaning rule** ("never use these *for City things*").
-- [ ] **A9. Dens emptying vs. prime hunting.** "By late Winter the dens are emptying" ([Flavour:74](IronwoodWildsFlavour.md#41-the-day-and-the-night)) vs. Winter = prime hunting. Could become a mechanic: wild beast availability drops during the Dusk.
-- [ ] **A10. Rival corpses vs. tidy-up rule.** Open Q2 proposes Rival corpses in the City, but Stewards leave no bodies ([Flavour:185](IronwoodWildsFlavour.md#75-rules-for-writers--grammars)). Use traces instead: chalk marks, a Rival-cut feathered cloak, Rival labels on the Chronicle.
+- [ ] 📌 **A7. Ambiguous units.** *(Pinned: after the other questions.)* "Notice rises per day", "three days at a camp", "Days" in the check-in table: real days or Wilds days? At 1 real day ≈ 1 Wilds week that is a 7× difference. Add a units convention and tag every duration.
 
 ## B. Structural gaps (mechanics)
 
@@ -56,7 +46,6 @@
 | Doc Q | Recommendation |
 | :--- | :--- |
 | Flavour Q1 (bred for this place) | Already resolved as written: truth Hidden, suspicion Rumoured. Keep it. |
-| Flavour Q2 (Rival in the City) | Yes, as traces only (see A10). |
 | Flavour Q3 (institution names) | Keep *the Council*, *the Arsenal*, *factors*. |
 | Flavour Q4 (grim land, lovely beasts) | Yes. It's the tone. |
 | Flavour Q5 + Q7 (beasts in the Night; has anyone wintered) | Combine: the beasts winter in the City's warm halls; those who tried to winter followed them for the warmth and were tidied away. Plant one rare Stated trace (a journal page found at Thaw), never explained. |

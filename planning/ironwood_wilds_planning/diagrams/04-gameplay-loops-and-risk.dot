@@ -119,7 +119,7 @@ digraph GameplayLoops {
             fillcolor="#0b1220",
             color="#79c0ff",
             penwidth=1.6,
-            label=<<b>Dusk -&gt; Last Convoy -&gt; the Night</b><br/><font point-size="9" color="#a5d6ff">Thaw · Summer · Autumn · Winter · fixed, published end<br/>Anyone not aboard: LEFT_TO_THE_NIGHT<br/>Unlaunched hulls fail · everything in the Wilds resets</font>>
+            label=<<b>Dusk -&gt; Last Convoy -&gt; the Night</b><br/><font point-size="9" color="#a5d6ff">Thaw · Spring · Summer · Autumn · Dusk · fixed, published end<br/>Outposts strike, expeditions recalled · walls stripped<br/>Unlaunched hulls fail · everything in the Wilds resets</font>>
         ];
 
         outfit [

@@ -10,7 +10,7 @@
 
 ## 1. Game Shape
 
-A persistent, online, text-based colonisation simulation played over `POST /api/v1/commands` + SSE by humans, scripted bots, and (Phase 2) evolved genetic agents. A player runs one **Household**: a roster of mortal characters working a Hold on a procedurally generated continent, exporting goods and ships to an off-map Homeland in return for **Supply Favor**, and earning **Renown†** that carries into the next season. A season (**Chronicle**) is one **Day** of the Wilds, a habitable year from Thaw to Winter, and it ends on a fixed date when **the Night** falls ([§4](#4-season-structure-chronicles-changed)).
+A persistent, online, text-based colonisation simulation played over `POST /api/v1/commands` + SSE by humans, scripted bots, and (Phase 2) evolved genetic agents. A player runs one **Household**: a roster of mortal characters working a Hold on a procedurally generated continent, exporting goods and ships to an off-map Homeland in return for **Supply Favor**, and earning **Renown†** that carries into the next season. A season (**Chronicle**) is one **Day** of the Wilds, a habitable year from Thaw to the Dusk, and it ends on a fixed date when **the Night** falls ([§4](#4-season-structure-chronicles-changed)).
 
 ## 2. Design Pillars
 
@@ -54,7 +54,7 @@ A persistent, online, text-based colonisation simulation played over `POST /api/
                      Renown → banked → spent in the Night on next Chronicle's Outfit
                               (starting kit, slipway kits, House ship fittings)
 
-   SEASON (~4 weeks)    Thaw → Summer → Autumn → Winter → Dusk (last Convoy) → the Night (reset)
+   SEASON (~4 weeks)    Thaw → Spring → Summer → Autumn → Dusk (last Convoy) → the Night (reset)
 ```
 
 ### 3.1 The check-in rhythm [NEW]
@@ -75,36 +75,39 @@ Repeat orders should be tuned (mostly by tool durability and input stock) to run
 
 ## 4. Season Structure (Chronicles) **[CHANGED]**
 
-- **A Chronicle is one Day of the Wilds**: the habitable year from Thaw to the end of Winter ([flavour §4.1](IronwoodWildsFlavour.md#41-the-day-and-the-night)). It ends when **the Night** falls, on a **fixed date published at Chronicle start**. Nothing ends a Chronicle early, and bots can plan against the deadline from tick zero. Target length is **~4 real weeks** (range 3–6, set per Chronicle).
+- **A Chronicle is one Day of the Wilds**: the habitable year from Thaw to the end of the Dusk ([flavour §4.1](IronwoodWildsFlavour.md#41-the-day-and-the-night)). It ends when **the Night** falls, on a **fixed date published at Chronicle start**. Nothing ends a Chronicle early, and bots can plan against the deadline from tick zero. Target length is **~4 real weeks** (range 3–6, set per Chronicle).
 - **Maintenance restarts** pause the logical clock (`PAUSE_WHILE_DOWN`) and resume from `command_wal` + snapshots with no lost progress.
 - **Chronicle resets happen during the Night.** The finished world is archived, and the next Chronicle boots at Thaw with a fresh continent (a fresh stretch of coast) and a fresh **City quarter** from `libs/procgen`, plus **3–5 Myth Flags**.
 - **Myth Flags**: seeded season parameters describing the war's state:
   - *Rival posture* (`DESPERATE` / `BRAZEN` / `FAILING`): scales NPC raid pressure and the Rival's public launch count (bragging rights only).
   - *Homeland shortage*: which export categories carry standing requisition bonuses this season.
-  - *Interior signature*: a beast migration, a hard winter, a City quarter that is unusually active, and so on.
+  - *Interior signature*: a beast migration, a bitter Dusk, a City quarter that is unusually active, and so on.
   - *Calendar* **[NEW]**: *Late Thaw*, *Long Summer*, *Early Night* and so on. Shifts season boundaries and the Night date. Drawn at Chronicle start, so the published end date already includes it.
   - *Dusk event* **[CHANGED]** (was *Season climax*): the final push during the Dusk ([§4.2](#42-the-dusk--the-night-new)), e.g. a Rival fleet in the strait, an early freeze closing the upper rivers, a Council demand for one more hull. It no longer ends the Chronicle; the Night does.
 
 ### 4.1 The Wilds year [NEW]
-Four playable seasons, then the Night. Season boundaries are a pure function of `(clock, Chronicle calendar)`: deterministic, replay-safe, and readable by bots.
+Five playable seasons, then the Night. **There is no Winter** **[CHANGED]**: the cold season is the Dusk, and the Night follows it ([flavour §4.1](IronwoodWildsFlavour.md#41-the-day-and-the-night)). Season boundaries are a pure function of `(clock, Chronicle calendar)`: deterministic, replay-safe, and readable by bots.
 
 | Season | Share | At 4 weeks | Plumage ([§8.2](#82-plumage-seasons-replaces-torpor)) | Rivers ([§7.2](#72-rivers-shifting-channels)) | Pressure |
 | :--- | :---: | :---: | :--- | :--- | :--- |
-| **Thaw** | 25% | ~7 days | Winter plumage, starting to turn | High water after the Breaking; `SNAGGED` / `BRAIDED` common | Arrival. Tents up, first scouting runs. Raids rare. |
-| **Summer** | 25% | ~7 days | **Moult**: pens can be plucked, wild hides low grade | Glacier melt; mostly `OPEN`, braiding at depth | Long days. Expeditions push deep; galley keels go down. |
-| **Autumn** | 25% | ~7 days | Plumage coming in thick | Falling and clearing; best travel of the year | Rival raids peak. Last sensible date to lay a carrack keel has passed. |
-| **Winter** | 25% | ~7 days | **Full winter plumage**: prime hides and down | `ICED` common; `CLOSED` in bands 3–4 late in the season | Prime hunting. Deserter raids for food. Ends in the **Dusk**. |
+| **Thaw** | 20% | ~5.5 days | Winter plumage, starting to turn | High water after the Breaking; `SNAGGED` / `BRAIDED` common | Arrival. Tents up, first scouting runs, fields sown. Raids rare. |
+| **Spring** **[NEW]** | 20% | ~5.5 days | Turning; moult begins late | Falling; snags clearing, `BRAIDED` at depth | First galley keels. Heart-ironwood runs. **Carrack keel cutoff at the end of Spring.** |
+| **Summer** | 20% | ~5.5 days | **Moult**: pens can be plucked, wild hides low grade | Glacier melt; mostly `OPEN`, braiding at depth | Long days. Expeditions push deep. **Cog keel cutoff.** |
+| **Autumn** | 20% | ~5.5 days | Plumage coming in thick | Falling and clearing; best travel of the year | Rival grows brazen; raids rising. **Galley keel cutoff.** |
+| **the Dusk** **[CHANGED]** | 20% | ~5.5 days | **Full winter plumage**: prime hides and down, but **the dens empty** as it wears on ([§8.2](#82-plumage-seasons-replaces-torpor)) | `ICED` common; `CLOSED` in bands 3–4 late in the season | **Raids peak** (the Rival's last push, deserters after food). No keels laid. Walls come down ([§12.1](#121-rings)). Outposts strike, expeditions recalled. Ends with the **last Convoy**. |
 | **the Night** | — | 2–4 days downtime | — | — | Not played. Rollover, Hall of Chronicles, Outfit spending. |
 
-- **Calendar granularity (proposal):** 1 real day ≈ 1 Wilds week, so a 4-week Chronicle is ~28 Wilds weeks (7 per season). Channel states re-roll each Wilds week (once a real day), and the Convoy heartbeat (every 3 game-days) comes round roughly every 10 real hours. In the fiction the Night lasts months. In play it is a few real days with the clock stopped.
+- **Calendar granularity (proposal):** 1 real day ≈ 1 Wilds week, so a 4-week Chronicle is ~28 Wilds weeks (~5–6 per season). Channel states re-roll each Wilds week (once a real day), and the Convoy heartbeat (every 3 game-days) comes round roughly every 10 real hours. In the fiction the Night lasts months. In play it is a few real days with the clock stopped.
 
 ### 4.2 The Dusk & the Night [NEW]
-- **The Dusk** is the last stretch of Winter (proposal: the final ~10% of the Chronicle, ~3 real days at 4 weeks). The Dusk-event Myth Flag fires here.
-- **The last Convoy** sails on Night-eve. It sweeps staged goods as usual, then **embarks the roster**. Characters at the Hold go home: this isn't a roster exit, and the Hall of Chronicles records them as having served the year.
-- **Left to the Night:** any character still out on an expedition when the last Convoy sails, or whose expedition resolves after it, leaves the roster as `LEFT_TO_THE_NIGHT` ([§5.5](#55-leaving-the-roster-changed)).
-  - Expedition resolution is deterministic at departure, but the muster screen shows only a **fogged warning** ("*may not be back before the last Convoy*") worked out from the march legs alone, not from beats. Risk stays the player's call.
-- **Homecoming:** a House whose whole roster is aboard the last Convoy earns a small Renown bonus ([§4.3](#43-renown--the-outfit-new)).
-- **Hulls:** an unlaunched solo hull fails at the Night ([§10.3](#103-solo-builds-challenge)). Yard hulls are guarded by the **keel-laying cutoff** ([§10.2](#102-the-yard-shared)).
+- **The Dusk** **[CHANGED]** is the fifth and last season of the Day (was the last stretch of Winter). The Dusk-event Myth Flag fires here. It is the endgame: raids peak, the dens empty, walls are stripped for timber ([§12.1](#121-rings)), and everyone makes for the Landing.
+- **The last Convoy** sails on Night-eve, at the end of the Dusk. It sweeps staged goods as usual, then **embarks the roster**. Characters at the Hold go home: this isn't a roster exit, and the Hall of Chronicles records them as having served the year.
+- **Everyone comes home by default** **[CHANGED]**. Missing the last Convoy is flavour, not a trap: nobody is lost to the Night because the player was asleep.
+  - **Outposts strike.** Each outpost's posted characters drop their orders at the last moment that still lets them walk home before the last Convoy (worked out from the river-graph distance; everyone knows the date). They carry what their packs hold; the rest of the outpost stock is left. Haul trips and anyone else away from the Hold do the same.
+  - **Expeditions are recalled.** Every expedition carries an automatic **Convoy recall**: at the last beat that still lets the march home make the last Convoy, the party abandons its remaining objectives and turns for home. This is part of the deterministic resolution at departure, like the Retreat Gambit.
+- **Left to the Night:** only by choice. An expedition mustered so late that even the march out and back can't make the last Convoy shows a plain warning at muster (*"they will not be back before the last Convoy"*) and needs confirming. Those characters leave the roster as `LEFT_TO_THE_NIGHT` ([§5.5](#55-leaving-the-roster-changed)).
+- **Homecoming:** a House whose whole roster is aboard the last Convoy earns a small, **flat** Renown bonus ([§4.3](#43-renown--the-outfit-new)). With automatic strikes and recalls nearly every House earns it, **on purpose**: it is a kindness, so a House that had a bad year still banks something toward its next Outfit. It doesn't scale with performance, so it matters most to the Houses that earned least. Only a confirmed late muster ([Left to the Night](#42-the-dusk--the-night-new)) forfeits it.
+- **Hulls:** a hull of any kind launches only if its keel was laid in time ([§10.1](#101-bill-of-materials)). An unlaunched solo hull fails at the Night ([§10.3](#103-solo-builds-challenge)); an unlaunched Yard hull is broken up ([§10.2](#102-the-yard-shared)).
 - **P3 still holds.** An offline player loses nothing at the Night that the reset wasn't going to take anyway. `LEFT_TO_THE_NIGHT` changes only the record (Memorial Roll instead of homecoming) and forfeits the homecoming bonus.
 - **During the Night:** the world is archived, the Hall of Chronicles is published, and Houses spend Renown on their next **Outfit**. The new Chronicle boots at Thaw.
 
@@ -112,7 +115,7 @@ Four playable seasons, then the Night. Season boundaries are a pure function of 
 > **Principle agreed (2026-11):** Renown is banked across Chronicles and spent on what the House brings to the next one. Costs, sizes and the full catalogue are still placeholders.
 
 Doing well should matter beyond one season.
-- **Renown†** is a per-House **currency earned during a Chronicle**, **banked** across resets and **spent** during the Night. Proposed sources: ship launches (solo launches especially), Convoy Favor totals, deep City objectives completed, heart ironwood felled, mossbacks taken, the **homecoming** bonus, and a small, **capped** **well-kept House** bonus for days spent at *Good table* or better ([§5.7](#57-food--the-table-new)). Food never converts to Renown in any other way.
+- **Renown†** is a per-House **currency earned during a Chronicle**, **banked** across resets and **spent** during the Night. Proposed sources: ship launches (solo launches especially), Convoy Favor totals, deep City objectives completed, heart ironwood felled, mossbacks taken, the flat **homecoming** bonus (a floor for Houses that had a poor year, [§4.2](#42-the-dusk--the-night-new)), and a small, **capped** **well-kept House** bonus for days spent at *Good table* or better ([§5.7](#57-food--the-table-new)). Food never converts to Renown in any other way.
 - **Lifetime Renown** (total ever earned, never reduced by spending) is the House's standing with the Council. It grows the charter hold by small, capped steps.
 - **The Outfit.** Each House sails out at Thaw on a charter ship whose **hold has fixed capacity** (*hold space*). Every Outfit item costs **Renown + hold space**. The hold is the fairness cap: a veteran House starts *better equipped*, not *out of reach*. Bots are benchmarked from a zero-Renown, base-hold start.
 - **Outfit items are consumed by the Chronicle** and lost to the Night like everything else, unless they are fitted to a House ship ([§10.7](#107-the-house-ship-stretch-new)).
@@ -166,7 +169,7 @@ Deterministic first-person journal composed from the character's `WorldEvent` hi
 | :--- | :--- | :--- |
 | `DIED` | Health 0 on an expedition. | **Cairn / Memorial Roll** with persona, final journal and generated epitaph. |
 | `SAILED` **[NEW]** | Berthed as crew on a launched hull ([§10](#10-ships-new)). | **Muster Roll**: hull name, berth (e.g. *crossbowman, starboard castle*), final journal line. |
-| `LEFT_TO_THE_NIGHT` **[NEW]** | Not back at the Hold when the last Convoy sails ([§4.2](#42-the-dusk--the-night-new)). | **Memorial Roll**, like `DIED`, with a Night epitaph (*"Last seen poling upriver, three days before the ice"*). |
+| `LEFT_TO_THE_NIGHT` **[NEW]** | On an expedition knowingly mustered too late to make the last Convoy ([§4.2](#42-the-dusk--the-night-new)). Outposts and ordinary expeditions come home automatically. | **Memorial Roll**, like `DIED`, with a Night epitaph (*"Last seen poling upriver, three days before the ice"*). |
 
 Any exit frees a bed and loses the character's skills (P4). Going home on the last Convoy at Chronicle end is not an exit; everyone's skills are lost at the reset anyway.
 
@@ -242,7 +245,7 @@ Yields, beast tier and encounter threat are looked up by band (P8). The City spa
 - Site-to-Site travel runs over the precomputed `WaypointGraph`. Most interior edges are **river edges** that need a boat; land edges are slower and lower-capacity (faster with striders).
 - Each river edge has a **channel state** (`OPEN` / `BRAIDED` / `SNAGGED` / `ICED` / `CLOSED`) that sets travel time, hazard and boat-size limits.
 - **Channel states re-roll weekly** on a world heartbeat, drawn from `stream("river", edgeIndex, weekIndex)`. They are deterministic, visitation-order independent, and replay-safe.
-- **The roll table is weighted by season and band** ([§4.1](#41-the-wilds-year-new)): snags after the Breaking in Thaw, open water in Summer and Autumn, `ICED` in Winter, and `CLOSED` in bands 3–4 late in Winter. The season is a pure function of the clock, so this adds no ordering dependence.
+- **The roll table is weighted by season and band** ([§4.1](#41-the-wilds-year-new)): snags after the Breaking in Thaw and clearing through Spring, open water in Summer and Autumn, `ICED` in the Dusk, and `CLOSED` in bands 3–4 late in the Dusk. The season is a pure function of the clock, so this adds no ordering dependence.
 - **Trips lock the channel state at departure.** An in-progress trip finishes under the state it started with, so there is no mid-trip rerouting and no dependence on heartbeat ordering.
 - Scouting publishes the current week's channel states to the Household (fogged). Stale knowledge is a real cost.
 - **Rivercraft** lowers hazard rolls and travel time. **Boats** (punt → keelboat → barge, built at a Boat Shed) set party/cargo capacity on river edges.
@@ -254,7 +257,7 @@ Ironwood is common across the forest; size and quality rise with depth.
 | :--- | :---: | :---: | :--- | :--- |
 | **Young ironwood** | 0–1 | Lv. 10 | Plentiful | Tier II–III construction, boats, repairs. |
 | **Old-growth ironwood** | 2–3 | Lv. 35 | Common at depth | Tier IV builds; **galleys and cogs**. |
-| **Heart ironwood** | 4 | Lv. 60 | **≤2 stands per continent** | **Carrack** keels and mainmasts; top Convoy multiplier; sighting one posts a public rumour. |
+| **Heart ironwood** | 4 | Lv. 60 | **≤2 stands per continent** | **Carrack** mainmasts (keels are old-growth, [§10.1](#101-bill-of-materials)); top Convoy multiplier; sighting one posts a public rumour. |
 
 Ordinary softwoods (ash, hemlock, grey-pine) remain for early fuel and timber. Ironwood dulls tools: each batch costs extra tool durability, reduced by tool tier.
 
@@ -273,10 +276,12 @@ Ordinary softwoods (ash, hemlock, grey-pine) remain for early fuel and timber. I
 
 ### 8.2 Plumage seasons (replaces torpor)
 The beasts are warm-blooded, so there are no cold/warm activity windows. Instead, plumage follows the Wilds year ([§4.1](#41-the-wilds-year-new)):
-- **Winter plumage** (Winter, lingering into early Thaw): hides and down taken now are a higher grade. Hunting yields more value, and beasts are at full strength.
-- **Moult** (Summer): wild hides are lower grade, but **penned beasts can be plucked** (Husbandry action), a renewable down/feather yield with no kill.
-- **Turning** (late Thaw, Autumn): grades between the two.
+- **Winter plumage** (the Dusk, lingering into early Thaw; settlers keep the Homeland word): hides and down taken now are a higher grade. Hunting yields more value, and beasts are at full strength.
+- **Moult** (Summer, starting late Spring): wild hides are lower grade, but **penned beasts can be plucked** (Husbandry action), a renewable down/feather yield with no kill.
+- **Turning** (late Thaw, Spring, Autumn): grades between the two.
 - The plumage phase is fully deterministic from `(clock, band, species)`, so bots and GAs can plan around it. Deeper bands run colder and come into winter plumage earlier.
+
+**The dens empty in the Dusk [NEW].** Each wild species has a **den occupancy** that falls through the Dusk toward zero at the last Convoy, starting earliest in the deepest bands. Occupancy scales how much quarry a `HUNT`, `CAPTURE` or `TAKE_CLUTCH` objective can find; an empty den costs beats and yields nothing. So prime hides are a **window**, not a season: late Autumn into early Dusk, shallow bands last. Occupancy is deterministic from `(clock, band, species)` like plumage. **Penned beasts are unaffected** (P3). Where the wild beasts go is never Stated ([flavour §4.1](IronwoodWildsFlavour.md#41-the-day-and-the-night)).
 
 ### 8.3 Capture loop
 `TRACK → TRAP or SUBDUE → TRANSPORT → PEN → (BREED | PLUCK | IMPRINT | TAME) → USE or SHIP`
@@ -297,7 +302,7 @@ Tech unlocks belong to the Household for the whole Chronicle (some Tier I nodes 
 1. **Tier I — Camp & Timber:** **Charter Tents** (issued; the starting beds) **[CHANGED]** (was Lean-To Bunks), Stone Tools, Charcoal Pit-Kiln, Ditch & Stakes, Camp Rations, **Signal Beacon** (enables Convoy staging), **Drying Racks**, **Field Camps** **[NEW]** (felling camps, diggings and weirs; [§12.5](#125-outposts-new)).
 2. **Tier II — Hearth & Bloomery:** **Timber Hall** (beds, replaces tents), Timber Palisade, Ridge Watchtower, Bloomery, Wrought-Iron Tools & Spears, Vaulted Cellar (stone-lined, sunk below the hall), Militia Drill, **Tannery & Down-House**, **Small Pens**, **Boat Shed (punt, keelboat)**, **Silt Tillage** **[NEW]** (farmsteads and grazing runs).
 3. **Tier III — Iron & Crucible:** **Stone Footings** (building `Condition` resists raid damage and fire), **Timber Gate & Fighting Platform**, Blast Furnace & Steel, Crossbows, Apothecary Poultices, Deep-Shaft Shoring, **Ropewalk**, **Feathered-Hide Armour**, **Large Pens & Hatchery**, **Boat Shed (barge)**, **Saltpetre Works**.
-4. **Tier IV — Ironwood & Salvage:** Seasoned Ironwood Beams (rot- and fire-proof), **Ironwood Stockade** (replaces the palisade; won't burn and shrugs off shot, but costs young ironwood that could have gone home), **Ironwood Longhall**, **Old-Steel Plate** (refashioned City cookware), **Mossback-Plate**, **Great Pens**.
+4. **Tier IV — Ironwood & Salvage:** Seasoned Ironwood Beams (rot- and fire-proof), **Ironwood Stockade** (replaces the palisade; won't burn and shrugs off shot, but costs young ironwood that could have gone home, unless it is stripped in the Dusk, [§12.1](#121-rings)), **Ironwood Longhall**, **Old-Steel Plate** (refashioned City cookware), **Mossback-Plate**, **Great Pens**.
 
 **Removed [CHANGED]:** Dressed-Stone Curtain Wall, stone Gatehouse and Stone Keep (build-for-the-year rule). **Slipway** and **Great Slipway** are no longer Tech nodes. Each is built from a Renown-bought **Outfit kit** ([§4.3](#43-renown--the-outfit-new)), or from a House ship's shipwright's loft ([§10.7](#107-the-house-ship-stretch-new)).
 
@@ -318,31 +323,41 @@ Every hull class has a **Bill of Materials** (BoM) made of **lines**:
 
 | Line | Galley | Cog | Carrack |
 | :--- | :--- | :--- | :--- |
-| Hull timber | old-growth | old-growth | old-growth + **heart** keel/mast |
+| **Keel** **[NEW]** | old-growth | old-growth | old-growth |
+| Hull timber | old-growth | old-growth | old-growth + **heart** mainmast |
 | Fittings | iron | iron | iron + anchors |
 | Propulsion | oars, benches | cordage, sailcloth | cordage, sailcloth (more) |
 | Sealing | pitch, tallow | pitch, tallow | pitch, tallow |
 | Provisions | crew × days rations | ″ (+ live shellbacks) | ″ |
 | Arms | per marine | per marine | per marine + guns? |
 | **Crew** | many characters, low skill floor | fewer, Vanguard/Ranging floor | fewer, higher floor + Rivercraft/Command officers |
-| **Minimum slip time** **[NEW]** | ~1 season | ~2 seasons | ~3 seasons |
+| **Minimum slip time** **[NEW]** (fitting-out included) | 1 season | 2 seasons | 3 seasons |
+| **Keel cutoff** **[NEW]** | end of Autumn | end of Summer | end of Spring |
 
 Crew value scales with relevant skills, so trained marines are worth more than fresh recruits. **Arbitrage guard:** the value of an untrained recruit berthed as crew must stay below the recruit's Favor cost.
 
-**Slip time [NEW].** A hull launches at `max(every line filled, keel laid + minimum slip time)`, plus a short fitting-out delay. The *keel is laid* when a Yard hull is opened or a solo build is declared. Gathering materials is still the real limit; slip time makes **when to commit** a decision. At ~3 seasons, a carrack keel must go down by about midsummer to launch before the Night. Historical anchor: large round ships took about a year on the slip and galleys a few months, though the Arsenal's pre-cut parts could go together very fast.
-- *Seasoning (proposal):* heart ironwood counts toward a carrack's keel/mast line only after it has seasoned for a set time from felling. That pushes heart-ironwood expeditions into the first half of the year.
+**Slip time [NEW].** A hull launches at `max(every line filled + fitting-out, keel laid + minimum slip time)`.
+- **The keel is laid when the Keel line is filled** **[CHANGED]**, not when a hull is opened or declared. Opening a Yard hull or declaring a solo build is free and starts no clock, so "keel down in time" is a **gathering race** for old-growth, not a button pressed at tick zero.
+- **Keel cutoff:** a Keel line can only be completed while `keel laid + minimum slip time ≤ last Convoy`. After its class's cutoff, a hull's Keel line takes no more contributions, and that hull can't launch this Chronicle. In the Dusk no keel of any class can be laid.
+- With five equal seasons ([§4.1](#41-the-wilds-year-new)): a galley keel laid by the end of Autumn, a cog by the end of Summer, and a carrack by the **end of Spring**. A carrack laid on the last day of Spring launches on Night-eve, with the last Convoy waiting.
+- Gathering materials is still the real limit; slip time makes **when to commit** a decision. Historical anchor: large round ships took about a year on the slip and galleys a few months, though the Arsenal's pre-cut parts could go together very fast.
+- **The keel is old-growth for every class.** Only the carrack's **mainmast** needs heart ironwood, and that line can be filled any time before launch. This keeps a carrack keel reachable by the end of Spring without a band-4 expedition in the first week.
+- *Seasoning (proposal):* heart ironwood counts toward a carrack's mainmast line only after it has seasoned for a set time from felling. That pushes heart-ironwood expeditions into the first half of the year (Spring to early Summer) without gating the keel.
 
 ### 10.2 The Yard (shared)
 - A **world-level shared build** at the main Landing. Any Household may contribute to any open line with a `contributeToYard` command.
 - Contributions are **irrevocable** and recorded per Household. Overfill **rolls to the next hull** of the same class (no waste, and no griefing by hoarding a line).
 - Berthed crew leave the roster as `SAILED` at launch.
-- **Keel-laying cutoff [NEW]:** the Yard only opens a new hull of a class if its minimum slip time can finish before the Night. Late in the year the Yard builds galleys only, and in the Dusk it opens nothing. A Yard hull still unlaunched at the Night is broken up. *(Open: partial credit to contributors? See [§13](#13-open-mechanical-questions).)*
+- **No slipway limit at the Yard [CHANGED].** The Yard is where everyone builds ships, so it has no slipway to occupy: it keeps one open hull per class at a time, and opening one costs nothing. Slip time starts only when that hull's Keel line is filled ([§10.1](#101-bill-of-materials)).
+- **Keel cutoff [NEW]:** past a class's cutoff the Yard's open hull of that class stops taking Keel contributions. Late in the year only galley keels can go down, and in the Dusk none can. A Yard hull still unlaunched at the Night is broken up. *(Open: partial credit to contributors? See [§13](#13-open-mechanical-questions).)*
 - **Launch:** when every line is filled and the slip time has passed, the hull launches after a short fitting-out delay. Each contributing House gets Favor and Renown in proportion to its share, plus a completion bonus to whichever House filled the final line. A public Chronicle `LAUNCH` entry names the hull and lists the muster roll and contributing Houses.
 
 ### 10.3 Solo builds (challenge)
 - **The slipway comes from Renown [CHANGED].** A House must arrive with a **Slipway kit** (galley, cog) or a **Great Slipway kit** (carrack) in its Outfit ([§4.3](#43-renown--the-outfit-new)), or own a House ship with a shipwright's loft ([§10.7](#107-the-house-ship-stretch-new)). It then builds the Slipway in its Bailey and may **declare a solo build** of a hull class. Shipwrighting still needs high Carpentry. The build uses the same BoM, crew included, and only that House can contribute.
 - **All or nothing:** a launch pays a **premium** over an equivalent Yard share (Favor + substantially more Renown) and posts a `LAUNCH — built alone` Chronicle entry and a Hall of Chronicles record. **Failure pays nothing**, and committed materials are lost.
-- **Deadline:** the hull must launch before **the Night**. A solo build can't be declared if its minimum slip time can't finish by then. An unlaunched solo hull at the Night is a failure.
+- **One hull on the ways [NEW].** A Slipway (galleys, cogs) or Great Slipway (any class) holds **one solo hull at a time**. The expert line is two hulls in one Day: a galley laid early in Thaw and launched by the end of Spring, then a carrack keel laid on the freed ways before the Spring cutoff.
+  - *Proposal:* until its keel is laid, a declared solo hull can be struck from the ways to free them; goods already committed to it are lost.
+- **Deadline:** the hull must launch before **the Night**, so its keel must be laid by its class's cutoff ([§10.1](#101-bill-of-materials)). An unlaunched solo hull at the Night is a failure.
 - **Crew on failure (proposal):** characters berthed on a failed solo hull return to the roster. Only materials are forfeit.
 - **The Fleet List [NEW]:** every hull a House launches alone goes on its permanent **Fleet List**: hull name (from the constrained name builder, [§11.5](#115-first-discovery-naming-new)), class, Chronicle and muster roll. It carries across Chronicles and shows on the House's public page.
   - *Stretch:* later Chronicles' war dispatches mention Fleet List ships by name (*"the Grey Heron, built alone by House Ashford, took a Rival cog off the Narrows"*). This is deterministic prose from `stream("dispatch", …)`, with no mechanical effect.
@@ -439,6 +454,7 @@ All expedition sites are **instanced per delve**: no kill-stealing, no griefing.
 - Re-scouting by a different character may add a second label ("*The Prison* — or *A Counting-House*, says Mara").
 - Labels may leak as public Chronicle rumours ("*House Ashford reports a torture house in the eastern quarter*").
 - **No free-form player notes.** The map holds only scout labels and discovery names.
+- **Rival traces [NEW].** The Rival delves the City too, but is never met there and leaves **no bodies** (tidy-up rule). A scout report may list Rival traces among a building's observable features: a half-scrubbed chalk mark in a Rival hand, a scrap of Rival-cut feathered cloak somewhere the Stewards haven't reached yet. Rival **labels** for City buildings reach the Chronicle as rumours, like other Houses' labels. Traces are drawn from `stream("rival-trace", …)` and have **no mechanical effect**.
 
 ### 11.5 First-discovery naming [NEW]
 - The **first House to discover** a City building or a Wilds Site (grove, den, river reach, crag, City landmark) earns **naming rights** over it.
@@ -454,6 +470,8 @@ All expedition sites are **instanced per delve**: no kill-stealing, no griefing.
 ### 12.1 Rings
 *Build for the year **[CHANGED]**: no masonry fortifications ([§9](#9-household-tech-tree-changed)).*
 1. **Outer Works:** Ditch & Stakes → Timber Palisade → Ironwood Stockade, plus Timber Gate & Fighting Platform and Watchtower. Sets **Fortification Integrity** and the number of ranged volley rounds before a breach. Stockade trunks are young ironwood that wasn't exported: a real trade-off.
+   - **Stripping the walls [NEW].** Any ironwood structure (the Ironwood Stockade, Ironwood Longhall, Seasoned Ironwood Beams) can be taken down with a `DISMANTLE` action that returns a share of its ironwood (placeholder ~75%, less for damaged `Condition`) as stock ready to stage. Each section stripped lowers Fortification Integrity at once. Softwood palisades return nothing worth shipping.
+   - It is allowed any time, but it is a **Dusk decision**: raids peak in the Dusk ([§4.1](#41-the-wilds-year-new)), so a House strips its wall while the torches are coming. Strip early and the Hold is open; strip late and the trunks miss the last Convoy. The lost share stops a wall being used as a raid-proof timber store.
 2. **Bailey & Workshops:** Pit-Kiln, Sawpit, Bloomery, Forge, Tannery, Pens, Boat Shed, Slipway, Study, Beacon. Exposed to condition damage and pillage on a breach (less with Stone Footings).
 3. **Hall & Cellar [CHANGED]** (was Keep & Vault): Charter Tents → Timber Hall → Ironwood Longhall, plus the Vaulted Cellar. A **100% raid-immune stockpile floor** (`vaultProtectedCap`) and sanctuary for non-combatants. A House ship's hold counts as this ring from day one ([§10.7](#107-the-house-ship-stretch-new)).
 
@@ -485,7 +503,7 @@ An **outpost** is a **claimed Site with a camp on it**: the Hold's reach into th
 | **Felling camp** | Groves (any band) | Ironwood by grade, softwoods | Field Camps | Ironwood dulls tools: tool supply sets the pace. |
 | **Diggings** | Fens, crags | Bog-iron, hematite, stone | Field Camps | — |
 | **Weir** | River reaches | Eels, fish, fat | Field Camps | Channel state affects the catch. |
-| **Farmstead** | **Silt flats** | Barley, oats, roots, greens | Silt Tillage | **Sow in Thaw, reap late Summer–Autumn, once a year.** Sowing late gives nothing; this is a commitment decision like slip time. |
+| **Farmstead** | **Silt flats** | Barley, oats, roots, greens | Silt Tillage | **Sow in Thaw or Spring, reap late Summer–Autumn, once a year.** Sowing after Spring gives nothing; this is a commitment decision like slip time. |
 | **Grazing run** | Gravel bars | Slateback meat, down (plucked in moult) | Silt Tillage + Small Pens | Plumage seasons ([§8.2](#82-plumage-seasons-replaces-torpor)). |
 | **Saltpetre works** | Den caves (band 3) | Saltpetre | Saltpetre Works | Beasts nearby. |
 
@@ -508,6 +526,7 @@ An **outpost** is a **claimed Site with a camp on it**: the Hold's reach into th
 - **No one is ever killed at an outpost** (P5). Raids only drive people off and ruin things.
 - **Lingering Notice:** each House keeps a per-Site Notice residue. Abandoning an outpost and re-founding on the same ground starts it hotter. The same Site claimed by another House is unaffected.
 - **The decision:** hold it another day at PROBED, or haul out and abandon it? Pulling out on time is good play. Like everything else, outposts are gone after the Night.
+- **The Dusk strike:** if the player hasn't pulled out, every outpost strikes automatically in time for its people to walk home for the last Convoy ([§4.2](#42-the-dusk--the-night-new)).
 
 ---
 
@@ -523,11 +542,11 @@ An **outpost** is a **claimed Site with a camp on it**: the Hold's reach into th
 6. **Calendar granularity:** is 1 real day ≈ 1 Wilds week right? It sets the channel re-roll cadence, the Convoy period and slip times in real hours ([§4.1](#41-the-wilds-year-new)).
 7. **Unfinished Yard hulls at the Night:** broken up with nothing paid (current proposal), or partial Renown to contributors? The keel-laying cutoff should make this rare.
 8. **Returning hands:** settlers go home every year, so players will ask why theirs never come back. Either (a) contracts run one year and settlers are paid off and scattered, or (b) an Outfit item re-hires a named settler: same persona, journal and life marks, skills reset to the origin baseline. That gives continuity in the prose and no extra power.
-9. **Left-to-the-Night warning:** is a fogged, march-legs-only warning at muster the right amount of information?
+9. *(Resolved 2026-11: outposts strike and expeditions are recalled automatically; Left to the Night only by a confirmed late muster, [§4.2](#42-the-dusk--the-night-new).)*
 10. **House ship:** name (great cog / holk / nef), fitting catalogue, and whether a House can ever own more than one.
-11. **Heart-ironwood seasoning:** adopt the seasoning delay ([§10.1](#101-bill-of-materials)) or keep slip time as the only clock?
+11. **Heart-ironwood seasoning:** adopt the seasoning delay on the carrack mainmast line ([§10.1](#101-bill-of-materials)) or keep slip time as the only clock?
 12. **Outpost numbers:** Notice rates and thresholds, `outpostStockCap`, Notice decay while unmanned, and whether a House has a hard cap on outposts or only the roster limit.
 13. **The Table numbers:** tier bonuses, ration cost per character per day, and the well-kept House Renown cap ([§5.7](#57-food--the-table-new)).
 14. **Repeat-order cap:** is 36 h right against the real check-in cadence? Should a House get an idle-alert digest rather than one alert per character?
 
-**Decided (2026-11):** ironwood grades; feathered warm-blooded beasts (no torpor); indestructible, escalating Stewards; one City, outskirts in band 2; zero-control objective expeditions everywhere, scouting first; per-House lingering alert; solo builds all-or-nothing with a deadline at the Night; Rival race is bragging rights only; no free-form map notes; first discoverer names things; **a Chronicle is one Day (Thaw–Winter) ending at a fixed, published Night**; **Holds are built for the year (no masonry fortifications)**; **Renown is banked and spent on the Outfit, capped by hold space**; **solo builds need a Renown-bought slipway kit**; **solo hulls go on a permanent Fleet List**; **the House ship is the one thing that survives the Night (stretch)**; **outposts are claimed Sites with escalating Notice, raided non-lethally, and arrive after rivers**; **food is a House-level, bonus-only Table with ship's biscuit as an unlimited floor at the Hold; running out of rations away from home sends people home**; **every repeat order has a stop condition or stops after 36 h**.
+**Decided (2026-11):** ironwood grades; feathered warm-blooded beasts (no torpor); indestructible, escalating Stewards; one City, outskirts in band 2; zero-control objective expeditions everywhere, scouting first; per-House lingering alert; solo builds all-or-nothing with a deadline at the Night; Rival race is bragging rights only; no free-form map notes; first discoverer names things; **a Chronicle is one Day (Thaw–the Dusk) ending at a fixed, published Night**; **Holds are built for the year (no masonry fortifications)**; **Renown is banked and spent on the Outfit, capped by hold space**; **solo builds need a Renown-bought slipway kit**; **solo hulls go on a permanent Fleet List**; **the House ship is the one thing that survives the Night (stretch)**; **outposts are claimed Sites with escalating Notice, raided non-lethally, and arrive after rivers**; **food is a House-level, bonus-only Table with ship's biscuit as an unlimited floor at the Hold; running out of rations away from home sends people home**; **every repeat order has a stop condition or stops after 36 h**; **five seasons (Thaw, Spring, Summer, Autumn, the Dusk) and no Winter**; **the keel is laid when the Keel line is filled, with per-class keel cutoffs; keels are old-growth, only the carrack mainmast is heart ironwood**; **one solo hull on a slipway at a time; no slipway limit at the Yard**; **outposts strike and expeditions are recalled for the last Convoy automatically**; **ironwood structures can be stripped for export**; **wild dens empty through the Dusk**; **the Rival in the City is traces only**; **the homecoming bonus stays, flat and near-universal, as a kindness to Houses that had a poor year**.

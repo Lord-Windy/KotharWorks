@@ -53,30 +53,31 @@ Every fact in this bible sits at one of three levels. Writers (and `libs/procgen
 
 ## 4. The Ironwood Wilds
 
-- **A cold, unfeeling continent across the grey water.** Forest covers most of it, from the shoreline to the glaciers, and ironwood is common in it. Short grey summers, long sleet-bound winters, low cloud, high wind off the ice.
+- **A cold, unfeeling continent across the grey water.** Forest covers most of it, from the shoreline to the glaciers, and ironwood is common in it. Short grey summers, a sleet-bound Dusk, low cloud, high wind off the ice.
 - **Ironwood** is slow-growing, grey-barked, resinous and extremely dense. Seasoned, it is close to rot-proof, hard to burn, and **does not splinter**; it dents and holds. It ruins ordinary axes.
-- **Better the further in.** The coastal stands are young growth, already cut and re-cut. **Old-growth** ironwood upriver is big enough for galleys and cogs. Only the rare **heart ironwood** giants of the deep interior are tall and straight enough for a carrack's keel or mainmast. *(Mechanics: [ironwood grades](IronwoodWildsMechanics.md#73-ironwood-grades).)*
+- **Better the further in.** The coastal stands are young growth, already cut and re-cut. **Old-growth** ironwood upriver is big enough for galleys and cogs. Only the rare **heart ironwood** giants of the deep interior are tall and straight enough for a carrack's mainmast. *(Mechanics: [ironwood grades](IronwoodWildsMechanics.md#73-ironwood-grades).)*
 - **Mineral wealth:** bog-iron in the fens, hematite in the crags, slate and good building stone everywhere, and saltpetre crusting the cave walls where the beasts den (for the powder the new cannon need).
 - **The rivers are the roads.** Broad, braided, glacier-fed, fast and silt-grey. Their channels **shift week to week**: gravel bars walk downstream, banks collapse, fallen trees (sweepers and snags) block yesterday's channel, and ice clogs them in season. Charts go stale within a week. Most travel is by boat: poled punts, keelboats and river barges. A pilot who can *read the water* is worth more than a good smith.
 
 ### 4.1 The Day and the Night
-- **Five seasons.** The Wilds have **Thaw, Summer, Autumn, Winter, and the Night**. The Homeland, far to the south, has only the first four. Everything from Thaw to the end of Winter is called **the Day**. *(Mechanics: [the Wilds year](IronwoodWildsMechanics.md#41-the-wilds-year-new).)*
+- **Five seasons, then the Night.** The Wilds have **Thaw, Spring, Summer, Autumn and the Dusk**, and together they are called **the Day**. **There is no winter in the Wilds**: the cold comes with the Dusk, and after the Dusk comes the Night. The Homeland, far to the south, keeps the ordinary four seasons, and settlers still call the beasts' thick cold-weather feathers *winter plumage*. *(Mechanics: [the Wilds year](IronwoodWildsMechanics.md#41-the-wilds-year-new).)*
 - **A charter runs for one Day.** Ships bring the Houses in with the Thaw, and **the last Convoy** takes them home before the Night. Nobody stays.
 - **The Night.** This close to the ice, the sun goes and does not come back for months. The wind comes down off the glacier hard enough to strip a roof and cold enough to kill a sleeper before morning. The sea freezes, so no ship can come or go. A few have stayed: a crew that missed the last Convoy, a House sure its hall was stout enough. **None of them has ever been seen again.** The next spring's ships found nothing they could recognise.
 - **The Breaking.** At Thaw the ice lets go all at once. Meltwater floods tear down the valleys, rivers jump their beds, and the coast is scoured to gravel. Last year's Holds are gone: a scatter of nails, a hearthstone, a ditch half full of silt. It doesn't matter, because nobody charters the same coast twice. The Council sends each year's Houses to a fresh stretch.
 - **The year has a texture:**
-  - **Thaw:** high brown water, sweepers in every channel, mud to the knee, beasts still in winter feathers. Tents go up.
-  - **Summer:** long grey days, glacier melt braiding the rivers, the beasts in moult and the pens being plucked. Expeditions push deep; galley keels go down.
-  - **Autumn:** rivers falling clear, the best travelling of the year, plumage coming in thick. The Rival is at its most brazen.
-  - **Winter:** short days, rivers icing from the edges in, the beasts in full winter plumage: the best hides of the year.
-  - **The Dusk:** the last weeks of Winter. Everyone is counting days. Slipways work by torchlight; the Convoy rides at anchor, waiting.
+  - **Thaw:** high brown water, sweepers in every channel, mud to the knee, beasts still in winter feathers. Tents go up and the first seed goes into the silt.
+  - **Spring:** the water dropping, the silt drying pale on the flats, the beasts starting to turn. The first galley keels go down, and every House with a carrack in mind is racing to lay its keel before the season ends.
+  - **Summer:** long grey days, glacier melt braiding the rivers, the beasts in moult and the pens being plucked. Expeditions push deep.
+  - **Autumn:** rivers falling clear, the best travelling of the year, plumage coming in thick. The Rival grows brazen.
+  - **The Dusk:** short days, rivers icing from the edges in, the beasts in full winter plumage, the best hides of the year for anyone who can still find them. The raiders are at their boldest. Everyone is counting days. Walls come down to be rafted to the Landing; slipways work by torchlight; the Convoy rides at anchor, waiting.
 - **The Rival keeps the same calendar.** Both Republics arrive with the Thaw and race the same Night home.
-- **Rumoured:** *"Where do the beasts go in the Night?"* By late Winter the dens are emptying. Some say the beasts burrow and sleep; some say they walk north into the ice; some say they go to the City. *"The ones who stayed are in the City still."* (`SUPERSTITIOUS`) *"A wise House has its people home before the Dusk."* (`METICULOUS`) *"They found my uncle's cookpot the next spring. Good pot."* (`WRY`)
+- **Rumoured:** *"Where do the beasts go in the Night?"* As the Dusk draws on, the dens empty, the deepest first. *(Mechanics: [the dens empty](IronwoodWildsMechanics.md#82-plumage-seasons-replaces-torpor).)* Some say the beasts burrow and sleep; some say they walk north into the ice; some say they go to the City. *"The ones who stayed are in the City still."* (`SUPERSTITIOUS`) *"A wise House has its people home before the Dusk."* (`METICULOUS`) *"They found my uncle's cookpot the next spring. Good pot."* (`WRY`)
 
 ### 4.2 Holds: build for the year
 - **No castles.** There isn't time to raise one, and the Night would take it anyway. A House arrives with charter-issue tents and whatever its hold carried, raises a timber hall, sinks a stone-lined cellar beneath it, and throws up a palisade.
 - **Stone is for hearths, kilns, forges, footings and cellars.** No curtain walls, no keeps.
-- **The proudest Holds end the year behind an ironwood stockade.** It won't burn, and shot only dents it. But every trunk in the wall is a trunk not going home, and the Night takes the wall too. *(Mechanics: [build for the year](IronwoodWildsMechanics.md#9-household-tech-tree-changed), [the Hold](IronwoodWildsMechanics.md#121-rings).)*
+- **The proudest Holds stand behind an ironwood stockade.** It won't burn, and shot only dents it. But every trunk in the wall is a trunk not going home, and the Night takes the wall too.
+- **So in the Dusk, the walls come down.** The trunks are pulled, trimmed and rafted down to the Landing for the last Convoy, just as the raiders are at their boldest. Strip the wall too early and there is nothing between the Hold and the torches; too late, and the trunks are still on the bank when the Convoy sails. *(Mechanics: [build for the year](IronwoodWildsMechanics.md#9-household-tech-tree-changed), [the Hold](IronwoodWildsMechanics.md#121-rings).)*
 
 ### 4.3 Outposts: build for the month
 - **The Hold is where a House sleeps; the outposts are where it works.** A felling camp in a grove two days upriver, a weir across a side channel, a farmstead on the silt, a scrape of diggings in the fen. A few tents, a sawpit or a drying frame, a ring of sharpened stakes, and a boat pulled up on the gravel.
@@ -134,9 +135,10 @@ Their **feathered hides** are, frankly, **better than anything the Homeland can 
 
 ### 7.1 What players see (Stated)
 - Up the rivers lies **the City**: the one great ruin of the **First Folk**, and the only one on the continent. It is **vast**, far bigger than any charter can reach. Each year's coast faces a different **quarter** of it, whose outskirts begin in the middle reaches and whose heart lies far inland, near the ice. The Council issues a **map** of that quarter's streets on the first day. Every House has a copy, but nobody knows what any of the buildings *are*.
-- The stone seems seamless and poured rather than laid. The halls are warm in winter, and lit with no flame anyone can find. Doors have no hinges. Rooms are clean.
+- The stone seems seamless and poured rather than laid. The halls are warm in the Dusk, and lit with no flame anyone can find. Doors have no hinges. Rooms are clean.
 - Within it walk the **Stewards**: tall, pale, still-faced figures **made in the likeness of people**. They do not speak to intruders (or speak, politely, in no tongue anyone knows). They do not tire, do not bleed, and **cannot be killed**. Strike one down and it gets up again. Drive a few off and more come back. Stay too long and the whole quarter turns out. **They are why nobody gets very far into the City.**
 - Expeditions are sent in with an objective and come back with a story. They might bring a few things out, or never come back at all.
+- **The Rival goes in too.** Nobody ever meets them there, and there are never Rival dead to find, because the Stewards tidy up. What scouts find are traces, and only where the Stewards haven't cleaned yet: a chalk mark in a Rival hand, half scrubbed away; a scrap of Rival-cut feathered cloak caught on a railing. Rival names for City buildings drift back through deserters and captured papers and turn up as rumours on the Chronicle. *(Mechanics: [Rival traces](IronwoodWildsMechanics.md#114-scouting--map-labels).)*
 - **The Stewards ignore the beasts.** A teg can wander a City street unmolested. A clever House eventually notices, and its people start going in **dressed as the local animals**, in feathered cloaks and crested hoods, shuffling along on all fours. This works far better than it has any right to.
 - Things carried out of the City (**salvage**) are wondrous to colonists:
   - **Old steel**: vessels and plates of a metal no Homeland smith can match. Pots, pans and lids are hammered flat and riveted into **armour**; a marine wearing a refashioned stewpot as a breastplate is a familiar sight.
@@ -180,7 +182,10 @@ Rules:
 4. **First to find it names it.** The House that first discovers a building or a place in the Wilds names it for everyone, and that name goes into the Chronicle. So the world fills up with names like *the Ramp Fortress*, *Pell's Drowned Reach* and *the Temple of Round Altars*, and they stick for the whole season. Discovery names follow the naming register in [§1](#1-tone--era).
 
 ### 7.5 Rules for writers & grammars
-1. **Never use:** robot, machine, mechanical, android, automaton, computer, program, plastic, electricity, battery, power, technology, car, office, or any equivalent. The characters don't have these concepts; the text doesn't either.
+1. **Modern concepts stay out of the text.** The characters don't have them, so the text doesn't either. This is enforced in two parts:
+   - **Lint list (hard ban).** Words with no period meaning. They must never appear in any game text, journal, rumour, label, item name or API field, and a grammar test fails the build if one does: *robot, android, automaton, computer, program/programme, plastic, electricity, electric, battery, technology, car, car park, laundromat, gym*, and their equivalents.
+   - **Meaning rule.** Words that are fine in period use but must **never be used for City things or the Stewards**: *machine, mechanical, engine, power, office, school, hospital, shop, station*, and any true building archetype. "Offices are elected" and "the Council's power" are fine; "a Steward machine" and "an office block" are not. This one needs a human (or a reviewing agent) to read for it.
+   - *Later version (stretch):* grow both parts into a **period dictionary**: modern word → period equivalent (or "no equivalent: describe the effect"), with the canon level each entry may appear at. Not needed for the first release.
 2. **Describe effects in period terms**, never causes: *"a sound felt in the teeth rather than heard"*, *"a sweet grey fog that closed the throat"* (fumigation), *"by morning the floor was clean, and Jory was gone"*.
 3. **Stewards tidy up.** The fallen are never found again. There are no bodies to recover and nothing to loot from the dead.
 4. **Stewards never leave the City.** They evict; they do not pursue beyond its edge, and they never come to the Holds. (Behaviour stated; the reason is hidden.)
@@ -192,9 +197,10 @@ Rules:
 ## 8. What the Homeland Needs (Exports)
 
 - **Ships, above all.** A ship is the most complicated thing this age can build. It isn't just a hull: it is ironwood frames and planking, iron fittings and anchors, cordage and sailcloth (or oars and rowing benches), pitch and tallow, stores, perhaps a cannon or two. Above all it is **a crew**: people who must be fed, housed, trained and armed before the ship sails. **Sending a ship home means sending people home.**
-- **Ships take time.** A galley wants a season on the slip, a cog half the Day, and a carrack nearly all of it. A carrack's keel has to be down by midsummer or it won't swim before the Night. The Arsenal is famous for working from pre-cut parts, and the Yard does the same.
+- **Ships take time.** A galley wants a season on the slip, a cog two, and a carrack three. A carrack's keel has to be down by the end of Spring or it won't swim before the Night; a carrack laid on the last day of Spring goes down the ways on Night-eve, with the Convoy waiting for her. The Arsenal is famous for working from pre-cut parts, and the Yard does the same.
+- **The keel is the commitment.** Nobody counts a ship as begun until her keel is down, and a keel is old-growth timber hauled from the middle reaches. Only a carrack's mainmast must be heart ironwood.
 - **The Yard** at the main Landing is where ships are built in common. Any House may bring materials and people. Each launch is entered on the public Chronicle with its muster roll and the Houses that built it. Late in the year the Yard lays down nothing it can't finish.
-- **Built alone.** A proud (or reckless) House may try to build an entire ship, crew and all, on its own slipway. A slipway needs a **slipway kit**: a master shipwright's chest of tools, the launching ways, and the Arsenal's warrant to build. The Council only grants these to a House with the standing to deserve them, and the kit fills most of a charter ship's hold. A House saves for years to try it. If the ship launches, the House's name is on every dispatch and the hull goes on the House's **Fleet List** for good. Years later a dispatch may still mention her (*"the Grey Heron, built alone by House Ashford, took a Rival cog off the Narrows"*). If it fails, the Council credits the House with nothing.
+- **Built alone.** A proud (or reckless) House may try to build an entire ship, crew and all, on its own slipway. A slipway needs a **slipway kit**: a master shipwright's chest of tools, the launching ways, and the Arsenal's warrant to build. The Council only grants these to a House with the standing to deserve them, and the kit fills most of a charter ship's hold. A House saves for years to try it. A slipway holds one hull at a time, so a House that wants a carrack lays its keel the moment the ways are clear. If the ship launches, the House's name is on every dispatch and the hull goes on the House's **Fleet List** for good. Years later a dispatch may still mention her (*"the Grey Heron, built alone by House Ashford, took a Rival cog off the Narrows"*). If it fails, the Council credits the House with nothing.
 - **Direct consignments** go home on the scheduled **Convoy**: timber, iron, finished arms, mossback-plate, hides and down, live beasts, poultices and medicines, and salvage. **The last Convoy** sails on the eve of the Night, and everyone goes home with it.
 - **Supply Favor** is the Council's ledger of what a House has delivered. It buys fresh settlers off the next ship.
 - **The race with the Rival** is a matter of pride. Dispatches compare the season's launches, and nobody is paid for winning.
@@ -246,9 +252,9 @@ Change a name here first, then sweep both documents.
 | Scheduled transport | **the Convoy** | Final |
 | Salvage gems | **glass-stones** | Working† |
 | Carry-over standing | **Renown** | Working† |
-| The habitable year | **the Day** (Thaw, Summer, Autumn, Winter) | Final |
+| The habitable year | **the Day** (Thaw, Spring, Summer, Autumn, the Dusk; no Winter) | Final |
 | The killing season | **the Night** | Final |
-| Last weeks of Winter | **the Dusk** | Working† |
+| Last season of the Day | **the Dusk** | Working† |
 | Thaw floods that wipe the coast | **the Breaking** | Working† |
 | Final sailing home | **the last Convoy** | Final |
 | Renown-bought starting kit | **the Outfit** | Working† |
@@ -265,7 +271,7 @@ Change a name here first, then sweep both documents.
 ## 12. Open Questions
 
 1. **Is "bred for this place" Hidden or Rumoured?** As written, players only ever *suspect* the First Folk shaped the beasts.
-2. **Does the Rival go into the City too?** Rival corpses and rival map labels could be fun discoveries, as long as the Rival never appears in person.
+2. *(Resolved 2026-11: yes, as traces only. See [§7.1](#71-what-players-see-stated).)*
 3. **Institutions:** are *the Council*, *the Arsenal* and *factors* acceptable generic names, or should the Homeland's institutions also go unnamed?
 4. **"Cold, unfeeling":** with the beasts now beautiful, is the contrast (grim land, lovely animals) the intended tone?
 5. **Where do the beasts go in the Night? (Hidden truth.)** One option: they winter in the City's warm halls and parks, as part of the estate the Stewards keep. That would tie the Night to the "Stewards ignore beasts" rule. Or they simply burrow, and the City rumour stays a rumour.
