@@ -157,8 +157,8 @@ Open [`prototype/index.html`](prototype/index.html) in any browser to click thro
 
 ## 5. Document Guide
 
-1. **[IronwoodWildsGameplay.md](IronwoodWildsGameplay.md)**  
-   The game & worldbuilding brief: the besieged Homeland and unresolved rival expedition, Chronicle Myth resets, **"Patient Hands, Living People"** (procedural personas, temperaments, scars, and first-person journals), OSRS skills × Household Tech Tree, True Ironwood scarcity, the Scheduled Tithe Ship, lethal PvM expeditions, and non-lethal 3-Ring Hold raids.
+1. **[IronwoodWildsFlavour.md](IronwoodWildsFlavour.md)** · **[IronwoodWildsMechanics.md](IronwoodWildsMechanics.md)**  
+   The game brief, split in two. **Flavour:** the setting bible: the unnamed island Homeland, the century-long naval war between two Noble Republics, the cold ironwood continent and its shifting rivers, reptilian beasts, the ruins and their Wardens (with canon levels for what is stated, rumoured, or hidden). **Mechanics:** pillars, **"Patient Hands, Living People"** personas and journals, skills × Household Tech Tree, depth bands and weekly river channels, hunting and husbandry, Convoy consignments and the shared **Yard** shipbuilding, lethal PvM expeditions, and non-lethal 3-Ring Hold raids.
 2. **[01-ServerArchitectureAndPatterns.md](01-ServerArchitectureAndPatterns.md)**  
    Dense flat entity schemas with generational IDs, bridging classic GoF patterns (`Command`, `Strategy`, `Prototype`, `Observer`) with Data-Oriented Java 25, compile-time `RuleRegistry`, single-writer Virtual-Thread concurrency, and strict `WorldHash` determinism gates.
 3. **[02-CommandsAndLazySimulation.md](02-CommandsAndLazySimulation.md)**  

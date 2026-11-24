@@ -5,7 +5,7 @@ digraph GameplayLoops {
         fontname="Liberation Sans",
         fontsize=14,
         fontcolor="#e6edf3",
-        label=<<b>Ironwood Wilds — Interlocking Gameplay Loops, Personas &amp; Asymmetric Risk</b><br/><font point-size="11" color="#8b949e">Zero PvP · Patient Hands + Living Personas · Mortal Skills x Permanent Tech Tree · Chronicle Resets</font>>,
+        label=<<b>Ironwood Wilds — Interlocking Gameplay Loops &amp; Asymmetric Risk</b><br/><font point-size="11" color="#8b949e">Zero PvP · Patient Hands · Mortal Skills x Household Tech · One Chronicle = one Day of the Wilds, ended by the Night</font>>,
         labelloc=t,
         pad="0.40",
         nodesep="0.45",
@@ -42,13 +42,13 @@ digraph GameplayLoops {
         roster [
             fillcolor="#1b2738",
             color="#58a6ff",
-            label=<<b>Household Roster (3 -&gt; 20 People)</b><br/><font point-size="9" color="#9ca3af">0% idle wandering · Procedural Personas &amp; Journals<br/>Individual Skills Lv.1–99 (XP dies with person!)</font>>
+            label=<<b>Household Roster (3 -&gt; 20 People)</b><br/><font point-size="9" color="#9ca3af">0% idle wandering · Personas &amp; Journals<br/>Skills Lv.1–99 (lost on death, sailing, or the Night)</font>>
         ];
 
         gather_craft [
             fillcolor="#1b2738",
             color="#58a6ff",
-            label=<<b>Timed Gathering &amp; Artisanry</b><br/><font point-size="9" color="#9ca3af">Ash, Bog-Iron, Hematite, Scarce True Ironwood<br/>Charcoal -&gt; Bloomery -&gt; Steel &amp; Rations</font>>
+            label=<<b>Timed Gathering, Wildcraft &amp; Artisanry</b><br/><font point-size="9" color="#9ca3af">Ironwood by grade, Bog-Iron, Hematite, Stone<br/>Hunting · Pens &amp; Plucking · Featherwork · Smithing</font>>
         ];
     }
 
@@ -62,18 +62,18 @@ digraph GameplayLoops {
         tech_tree [
             fillcolor="#16281c",
             color="#3fb950",
-            label=<<b>Household Tech Tree (Tiers I–IV)</b><br/><font point-size="9" color="#7ee787">Survives PvM character wipes!<br/>Bloomery -&gt; Stone Walls -&gt; Ironwood Works</font>>
+            label=<<b>Household Tech Tree (Tiers I–IV)</b><br/><font point-size="9" color="#7ee787">Survives character deaths (for the Chronicle)<br/>+ Steward Habits chain from City observations</font>>
         ];
 
-        hold_castle [
+        hold [
             fillcolor="#16281c",
             color="#3fb950",
-            label=<<b>3-Ring Hold / Castle Construction</b><br/><font point-size="9" color="#7ee787">1. Outer Works (Palisade, Curtain Wall, Gate)<br/>2. Bailey Workshops · 3. Vaulted Keep</font>>
+            label=<<b>3-Ring Hold — Built for the Year</b><br/><font point-size="9" color="#7ee787">1. Ditch -&gt; Palisade -&gt; Ironwood Stockade<br/>2. Bailey Workshops, Pens, Boat Shed, Slipway<br/>3. Tents -&gt; Timber Hall -&gt; Longhall + Vaulted Cellar<br/>No masonry fortifications</font>>
         ];
     }
 
     subgraph cluster_macro {
-        label=<<b>3. Macro Pressures, Risk &amp; Tithe Ship</b>>;
+        label=<<b>3. Macro Pressures, Risk &amp; Exports</b>>;
         fontcolor="#d29922";
         color="#4a3919";
         bgcolor="#181512";
@@ -83,21 +83,50 @@ digraph GameplayLoops {
             fillcolor="#2b2113",
             color="#d29922",
             penwidth=1.6,
-            label=<<b>Hold Raids (NON-LETHAL)</b><br/><font point-size="9" color="#f2cc60">Rumor Warning + HoldDefenseDoctrine<br/>0 Permadeath! Only unvaulted Bailey<br/>stock &amp; wall condition at risk</font>>
+            label=<<b>Hold Raids (NON-LETHAL)</b><br/><font point-size="9" color="#f2cc60">Rival · Deserters · Beasts (never Stewards)<br/>Rumour warning + Hold Defense Doctrine<br/>Only unvaulted Bailey stock &amp; Condition at risk</font>>
         ];
 
-        pvm_delves [
+        expeditions [
             fillcolor="#301619",
             color="#f85149",
             penwidth=1.6,
-            label=<<b>PvM Party Expeditions (LETHAL)</b><br/><font point-size="9" color="#ffa198">2–5 Person Party + CombatDoctrine Gambits<br/>Risk: Permadeath, Scars &amp; Cairn Epitaphs!<br/>Reward: Barrow Relics &amp; Myth Clues</font>>
+            label=<<b>Zero-Control Expeditions (LETHAL)</b><br/><font point-size="9" color="#ffa198">Scout first · Wilds sites &amp; the City<br/>Party + Objectives + Doctrine, by river<br/>Hides, live beasts, salvage, map labels<br/>Risk: death for the Chronicle</font>>
         ];
 
-        homeworld_supply [
+        convoy [
             fillcolor="#211b30",
             color="#bc8cff",
             penwidth=1.6,
-            label=<<b>Homeland Tithe Ship &amp; Beacon</b><br/><font point-size="9" color="#d2a8ff">Stage Goods -&gt; Scheduled Ship Arrival<br/>Earn Supply Favor + Public Chronicle Dispatch</font>>
+            label=<<b>The Convoy &amp; Beacon</b><br/><font point-size="9" color="#d2a8ff">Stage consignments -&gt; scheduled sweep<br/>Supply Favor + public Chronicle dispatch</font>>
+        ];
+
+        ships [
+            fillcolor="#211b30",
+            color="#bc8cff",
+            penwidth=1.6,
+            label=<<b>Ships — the Yard or Built Alone</b><br/><font point-size="9" color="#d2a8ff">Bill of Materials incl. crew (they leave as SAILED)<br/>Minimum slip time · keel-laying cutoff<br/>Favor + Renown · solo hulls -&gt; Fleet List</font>>
+        ];
+    }
+
+    subgraph cluster_season {
+        label=<<b>4. The Chronicle: one Day of the Wilds</b>>;
+        fontcolor="#79c0ff";
+        color="#264463";
+        bgcolor="#0f1722";
+        style="rounded,filled";
+
+        night [
+            fillcolor="#0b1220",
+            color="#79c0ff",
+            penwidth=1.6,
+            label=<<b>Dusk -&gt; Last Convoy -&gt; the Night</b><br/><font point-size="9" color="#a5d6ff">Thaw · Summer · Autumn · Winter · fixed, published end<br/>Anyone not aboard: LEFT_TO_THE_NIGHT<br/>Unlaunched hulls fail · everything in the Wilds resets</font>>
+        ];
+
+        outfit [
+            fillcolor="#0b1220",
+            color="#79c0ff",
+            penwidth=1.6,
+            label=<<b>Renown -&gt; the Outfit</b><br/><font point-size="9" color="#a5d6ff">Banked across Chronicles · spent in the Night<br/>Capped by charter-ship hold space<br/>Hall frame, tools, tegs, slipway kits<br/>Kept: Fleet List, House ship</font>>
         ];
     }
 
@@ -107,16 +136,26 @@ digraph GameplayLoops {
     gather_craft -> tech_tree [label=" Lore + Samples", color="#3fb950"];
     tech_tree -> gather_craft [label=" Unlocks Tools & Recipes", color="#3fb950", style=dashed, constraint=false];
 
-    gather_craft -> hold_castle [label=" Timber, Stone, Iron", color="#3fb950"];
-    tech_tree -> hold_castle [label=" Unlocks Fortifications", color="#3fb950"];
+    gather_craft -> hold [label=" Timber, Stone, Iron", color="#3fb950"];
+    tech_tree -> hold [label=" Unlocks Buildings", color="#3fb950"];
 
-    hold_castle -> hold_raids [label=" Walls + Vault Cap mitigate", color="#d29922"];
-    hold_raids -> hold_castle [label=" Damages Condition / Loots Bailey", color="#d29922", style=dashed, constraint=false];
+    hold -> hold_raids [label=" Walls + Vault Cap mitigate", color="#d29922"];
+    hold_raids -> hold [label=" Damages Condition / Loots Bailey", color="#d29922", style=dashed, constraint=false];
 
-    gather_craft -> pvm_delves [label=" Equip Vanguard Party", color="#f85149"];
-    pvm_delves -> tech_tree [label=" Tier III/IV Relic Salvage", color="#f85149", constraint=false];
-    pvm_delves -> roster [label=" Casualties drain skilled veterans!", color="#f85149", style=dotted, constraint=false];
+    gather_craft -> expeditions [label=" Equip party, guises, boats", color="#f85149"];
+    expeditions -> gather_craft [label=" Hides, captures, old steel", color="#f85149", style=dashed, constraint=false];
+    expeditions -> tech_tree [label=" Steward observations", color="#f85149", constraint=false];
+    expeditions -> roster [label=" Casualties drain veterans", color="#f85149", style=dotted, constraint=false];
 
-    gather_craft -> homeworld_supply [label=" Stage at Signal Beacon", color="#bc8cff"];
-    homeworld_supply -> roster [label=" Spend Favor -> Recruit New People!", color="#bc8cff", penwidth=1.8, constraint=false];
+    gather_craft -> convoy [label=" Stage at Signal Beacon", color="#bc8cff"];
+    gather_craft -> ships [label=" Contribute lines + crew", color="#bc8cff"];
+    convoy -> roster [label=" Spend Favor -> Recruits", color="#bc8cff", penwidth=1.8, constraint=false];
+    ships -> roster [label=" Crew sail away", color="#bc8cff", style=dotted, constraint=false];
+
+    ships -> outfit [label=" Renown", color="#79c0ff"];
+    convoy -> outfit [label=" Renown", color="#79c0ff"];
+    expeditions -> outfit [label=" Renown (deep objectives)", color="#79c0ff", constraint=false];
+    hold -> night [label=" Swept away by the Breaking", color="#79c0ff", style=dashed];
+    night -> outfit [label=" Homecoming bonus", color="#79c0ff"];
+    outfit -> roster [label=" Next Thaw: starting kit", color="#79c0ff", penwidth=1.8, constraint=false];
 }

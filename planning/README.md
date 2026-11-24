@@ -3,7 +3,8 @@
 ## Active Planning Suites
 
 - **[`ironwood_wilds_planning/`](ironwood_wilds_planning/README.md) — Ironwood Wilds Master Architecture & Implementation Suite**
-  - [`IronwoodWildsGameplay.md`](ironwood_wilds_planning/IronwoodWildsGameplay.md) — Worldbuilding, "Patient Hands, Living People" personas & journals, skills, Tech Tree, Tithe Ship, raids & PvM
+  - [`IronwoodWildsFlavour.md`](ironwood_wilds_planning/IronwoodWildsFlavour.md) — Setting bible: Homeland, the Long War, the Wilds, beasts, ruins & canon levels
+  - [`IronwoodWildsMechanics.md`](ironwood_wilds_planning/IronwoodWildsMechanics.md) — Pillars, personas & journals, skills, Tech Tree, rivers, husbandry, Convoy & Yard, raids & PvM
   - [`01-ServerArchitectureAndPatterns.md`](ironwood_wilds_planning/01-ServerArchitectureAndPatterns.md) — Generational dense entity schemas, GoF design patterns, Virtual-Thread `WorldHost` & `WorldHash` determinism gates
   - [`02-CommandsAndLazySimulation.md`](ironwood_wilds_planning/02-CommandsAndLazySimulation.md) — `POST /api/v1/commands` (`cmdId`), integer `LazyGauge` + `DueEventHeap`, Two-Phase fail-soft queues & `heapTicket` cancel
   - [`03-ProceduralGeneration.md`](ironwood_wilds_planning/03-ProceduralGeneration.md) — Multi-pass geography, Waypoint graphs, Myth flags, `NameGrammar`, `PersonaGenerator`, `JournalComposer` & `procgen_mvp` prose

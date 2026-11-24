@@ -48,7 +48,7 @@ digraph ProcgenPipeline {
 
         fields [label=<<b>Multi-Pass Region Fields</b><br/><font point-size="9" color="#9ca3af">Elevation (Simplex+Warp) · Hydrology<br/>Climate Lapse · Whittaker Biomes</font>>];
         ecology [label=<<b>Deposits &amp; True Ironwood Cap</b><br/><font point-size="9" color="#7ee787">Poisson-Disc Seams + &lt;=2 Ironwood Groves<br/>Precomputed Site/Waypoint Travel Graph</font>>];
-        myth [label=<<b>Chronicle MythFlags</b><br/><font point-size="9" color="#d2a8ff">3–5 Seeded Rival/Mystery Facts<br/>Feeds Rumors, Ruins &amp; Climax Raid</font>>];
+        myth [label=<<b>Chronicle MythFlags</b><br/><font point-size="9" color="#d2a8ff">3–5 Seeded Rival/Mystery Facts<br/>Feeds Rumours, Calendar &amp; Dusk Event</font>>];
     }
 
     subgraph cluster_people {

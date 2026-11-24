@@ -54,7 +54,7 @@ Each region (`48×48` underlying terrain cells for rich ASCII map rendering in `
 | **3. Climate & Biomes** | Elevation lapse + rain shadow -> Whittaker lookup table (8–12 biomes) | *Landing Shelterwood*, *Peat & Reed Fen*, *Wind-Scoured Crags*, *Sunken Barrow-Downs*, *Wet-Temperate Basin*. |
 | **4. Deposits & Ironwood** | Seeded Poisson-disc spacing coupled to geology + **True Ironwood Cap (`≤2` groves/world)** | Players read geology (peat fens = bog-iron; crags = hematite); **True Ironwood** spawns only in deep wet-temperate basins (`≥6` regions from any landing). |
 | **5. Sites & Waypoint Edges** | Suitability scoring + planar neighbor links with terrain-weighted `travelDurationMs` | Real logistics hauling distance across fens/ridges **without** tile-collision A* headaches in Slice 0! |
-| **6. Chronicle Myth (`MythFacts`)** | Single draw `stream("myth", 0, 0)` at Chronicle start fixes 3–5 world facts | Defines the unseen rival expedition's posture (*desperate*, *entrenched*, *dying*), signature interior ruin/atrocity, and end-of-Chronicle raid climax. |
+| **6. Chronicle Myth (`MythFacts`)** | Single draw `stream("myth", 0, 0)` at Chronicle start fixes 3–5 world facts | Defines the war's state for the year: Rival posture (`DESPERATE` / `BRAZEN` / `FAILING`), Homeland shortage, interior signature, the **Calendar** (season boundaries and the published Night date) and the **Dusk event**, the last push before the Night. The Night, not a climax, ends the Chronicle ([mechanics §4](IronwoodWildsMechanics.md#4-season-structure-chronicles-changed)). |
 
 ---
 
@@ -137,7 +137,7 @@ libs/procgen/src/main/java/com/kotharworks/procgen/
 │   ├── BiomeType.java             # Shelterwood, PeatFen, Crag, BarrowDowns, WetBasin...
 │   ├── RegionPassPipeline.java    # Elevation -> Hydrology -> Climate -> Biomes -> Sites
 │   ├── WaypointGraph.java         # Precomputed Site-to-Site travel costs + Ironwood cap
-│   └── MythGenerator.java         # 3–5 Chronicle Myth flags fixed at season start
+│   └── MythGenerator.java         # 3–5 Chronicle Myth flags (incl. Calendar, Dusk event) fixed at Thaw
 ├── delves/
 │   └── LairGraphGenerator.java    # Seeded room-DAG generator for PvM expeditions
 ├── persona/
